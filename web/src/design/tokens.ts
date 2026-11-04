@@ -70,7 +70,7 @@ export const GRAPH = {
   /** untyped pages: dim slate */
   ghost: "#5C6672",
   /** canvas labels */
-  labelColor: "#C9D4DE",
+  labelColor: "#D6DFE7",
   labelFont: FONTS.body,
   /**
    * Per-relation-type edge colors (semantic: color = what the relation IS;

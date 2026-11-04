@@ -511,8 +511,14 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     }
     if (view === "orbit" && selected && viewGraph?.graph.hasNode(selected)) {
       const attrs = viewGraph.graph.getNodeAttributes(selected);
-      if (reduced) camera.setState({ x: attrs.x, y: attrs.y, ratio: 0.4 });
-      else camera.animate({ x: attrs.x, y: attrs.y, ratio: 0.4 }, { duration: 500 });
+      // camera x/y are framed-graph (~[0,1]) space, not raw layout coords
+      // (see the auto-fit effect) — convert or the focus view centers on
+      // empty space
+      const center = sigma.graphToFramedGraph({ x: attrs.x, y: attrs.y });
+      if (Number.isFinite(center.x) && Number.isFinite(center.y)) {
+        if (reduced) camera.setState({ x: center.x, y: center.y, ratio: 0.4 });
+        else camera.animate({ x: center.x, y: center.y, ratio: 0.4 }, { duration: 500 });
+      }
     } else if (view === "field" && prevViewRef.current === "orbit" && fieldCameraRef.current) {
       const saved = fieldCameraRef.current;
       if (reduced) camera.setState(saved);
@@ -577,8 +583,14 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       const PAD = 1.18;
       const f = Math.max(((x1 - x0) * PAD) / spanX, ((y1 - y0) * PAD) / spanY);
       if (!Number.isFinite(f) || f > PAD || f < 0.06) return; // bad measurement
+      // CAMERA-SPACE TRAP: camera x/y live in the normalized ~[0,1] framed
+      // graph space, NOT raw layout coords — setting raw coords points the
+      // frustum outside the graph and the whole window renders empty. Always
+      // convert through graphToFramedGraph.
+      const center = sigma.graphToFramedGraph({ x: (x0 + x1) / 2, y: (y0 + y1) / 2 });
+      if (!Number.isFinite(center.x) || !Number.isFinite(center.y)) return;
       const cam = sigma.getCamera();
-      cam.setState({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, ratio: cam.getState().ratio * f });
+      cam.setState({ x: center.x, y: center.y, ratio: cam.getState().ratio * f });
       overlayDirty.current++;
     };
     raf = requestAnimationFrame(attempt);
