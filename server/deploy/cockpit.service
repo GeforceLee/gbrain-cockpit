@@ -8,12 +8,16 @@ After=network-online.target gbrain-serve.service
 [Service]
 Type=simple
 User=dev
+# Source-form service: the host runs bun (same runtime gbrain uses) and the
+# server is zero-runtime-deps by design, so the release tree is plain
+# source + web-dist. The compiled-binary channel stays available for
+# release builds (bun run compile:linux) but is not used here.
 # EnvironmentFile holds COCKPIT_BIND/PORT/TOKEN, GBRAIN_MCP_URL/TOKEN,
 # GBRAIN_BIN, COCKPIT_DIST_DIR — never commit real values. It lives at a
 # stable path OUTSIDE the release dirs so redeploys never lose it.
 EnvironmentFile=/home/dev/cockpit/cockpit.env
 WorkingDirectory=/home/dev/cockpit/current
-ExecStart=/home/dev/cockpit/current/cockpit
+ExecStart=/usr/local/bin/bun /home/dev/cockpit/current/server/src/index.ts
 Restart=always
 RestartSec=3
 # The audit trail lives under ~/.cockpit-audit (outside the program dir).
