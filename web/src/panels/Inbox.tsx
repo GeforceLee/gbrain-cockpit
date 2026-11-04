@@ -139,6 +139,30 @@ export function Inbox({
     others: others.length,
   };
 
+  // Channel down ≠ queue empty (e.g. gbrain thin-client hosts cannot run the
+  // trust CLI family): surface unavailability per queue instead of "empty".
+  // The trust queue backs proposals/held/facts/others; edges and takes have
+  // their own channels.
+  const trustDown =
+    report && report.trust.status !== "ok" ? firstLine(report.trust.error) : null;
+  const queueDown: Partial<Record<QueueId, string>> = {
+    ...(trustDown
+      ? { proposals: trustDown, held: trustDown, facts: trustDown, others: trustDown }
+      : {}),
+    ...(report && report.edgeProposals.status !== "ok"
+      ? { edges: firstLine(report.edgeProposals.error) }
+      : {}),
+    ...(report && report.takes.status !== "ok"
+      ? { takes: firstLine(report.takes.error) }
+      : {}),
+  };
+  const downNotices = (tabId: TabId): string[] =>
+    tabId === "all"
+      ? ([...new Set(Object.values(queueDown).filter(Boolean))] as string[])
+      : queueDown[tabId] !== undefined
+        ? [queueDown[tabId]!]
+        : [];
+
   useEffect(() => {
     if (!report) return;
     onTotal?.(
@@ -273,7 +297,10 @@ export function Inbox({
             aria-pressed={tab === tb.id}
             onClick={() => setTab(tb.id)}
           >
-            {tb.label} <span className="n">{tb.n}</span>
+            {tb.label}{" "}
+            <span className="n">
+              {tb.id !== "all" && queueDown[tb.id] !== undefined ? "?" : tb.n}
+            </span>
           </button>
         ))}
       </nav>
@@ -306,7 +333,12 @@ export function Inbox({
                 {t("inbox.listCaption")} · {visibleEntries.length}
               </span>
             </div>
-            {visibleEntries.length === 0 && (
+            {downNotices(tab).map((err, i) => (
+              <p key={i} className="muted empty-note">
+                {t("inbox.queueUnavailable")}: {err}
+              </p>
+            ))}
+            {visibleEntries.length === 0 && downNotices(tab).length === 0 && (
               <p className="muted empty-note">{t("inbox.empty")}</p>
             )}
             {visibleEntries.map((entry) => (
