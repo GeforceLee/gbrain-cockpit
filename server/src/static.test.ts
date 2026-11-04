@@ -79,4 +79,20 @@ describe("serveStatic", () => {
     const missing = await serveStatic(distRoot, "/nope.js");
     expect(missing.status).toBe(404);
   });
+
+  // regression: /favicon.ico does not exist in dist, so browsers re-request
+  // the 404 — a shared Response object throws ERR_BODY_ALREADY_USED on its
+  // second send (found live when the demo server died on page reload)
+  test("every 404 is a fresh, readable Response", async () => {
+    await makeDist();
+    const first = await serveStatic(distRoot, "/favicon.ico");
+    const second = await serveStatic(distRoot, "/favicon.ico");
+    const third = await serveStatic(distRoot, "/favicon.ico");
+    expect(first.status).toBe(404);
+    expect(second.status).toBe(404);
+    expect(third.status).toBe(404);
+    expect(await first.text()).toBe("not found");
+    expect(await second.text()).toBe("not found");
+    expect(await third.text()).toBe("not found");
+  });
 });

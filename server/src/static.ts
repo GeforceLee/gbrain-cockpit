@@ -20,7 +20,11 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
 };
 
-const NOT_FOUND = new Response("not found", { status: 404 });
+// A Response body can be consumed exactly once — a shared 404 instance
+// throws ERR_BODY_ALREADY_USED on its second send (found live: /favicon.ico
+// does not exist in dist, so every page load re-requested the same object
+// until the second one killed the request). Always mint a fresh Response.
+const notFound = (): Response => new Response("not found", { status: 404 });
 
 /** Resolve a request path to a file inside distRoot, or null if unsafe/absent. */
 export function resolveStaticPath(
@@ -51,15 +55,15 @@ export async function serveStatic(
   pathname: string,
 ): Promise<Response> {
   const file = resolveStaticPath(distRoot, pathname);
-  if (!file) return NOT_FOUND;
+  if (!file) return notFound();
 
   let size: number;
   try {
     const info = await stat(file);
-    if (!info.isFile()) return NOT_FOUND;
+    if (!info.isFile()) return notFound();
     size = info.size;
   } catch {
-    return NOT_FOUND;
+    return notFound();
   }
 
   const ext = file.slice(file.lastIndexOf("."));
