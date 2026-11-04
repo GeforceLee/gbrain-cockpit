@@ -13,13 +13,18 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // a relation between two pages. Views: 全景 overview (default) / 聚焦 focus
 // (a page's ≤2-step neighborhood) / 关系矩阵 relation matrix (neighborhood
 // grid) / 原版 stock (the same graph rendered with sigma's factory look, no
-// Mint Audit skin — an owner comparison affordance). FA2 layout coordinates
-// are frozen per graph fingerprint (localStorage) so dream diffs stay
-// comparable; labels render on sigma's canvas (native canvas text — immune
-// to HTML injection); node colors map page type, node size maps relation
-// count; relation color maps link_type, the amber dash stays reserved for
-// pending (un-adjudicated) dream relations; pages with pending proposals
-// pulse. All colors come from the same-source GRAPH palette.
+// Deep Field skin — an owner comparison affordance). Skin: Deep Field
+// (2026-11-04 style review, candidate A) — a dark observation window inset
+// in the light Mint desk: borderless luminous nodes with additive glow
+// sprites, no community hulls, hover = neighborhood focus (the hovered
+// page's 1-hop set stays lit, everything else dims through the nodeReducer).
+// FA2 layout coordinates are frozen per graph fingerprint (localStorage) so
+// dream diffs stay comparable; labels render on sigma's canvas (native
+// canvas text — immune to HTML injection); node colors map page type, node
+// size and label size map relation count; relation color maps link_type,
+// the amber dash stays reserved for pending (un-adjudicated) dream
+// relations; pages with pending proposals pulse. All colors come from the
+// same-source GRAPH palette.
 //
 // Performance contract: sigma mounts ONCE per data change — paradigm and
 // selection switches filter through nodeReducer (no graph rebuild, no WebGL
@@ -33,17 +38,9 @@ const NOISE_KEY = "cockpit.nebula.noise";
 const LAYOUT_PREFIX = "cockpit.nebula.layout.";
 const NOISE_DEGREE = 3;
 const MATRIX_MAX = 24;
-/** communities smaller than this draw no hull (sliver hulls read as bugs) */
-const HULL_MIN_POINTS = 4;
 
-/** deterministic role rotation by page type (cluster colors of the mockup) */
-const TYPE_ROLES = [
-  GRAPH.green,
-  GRAPH.amber,
-  GRAPH.ink,
-  "#FFFFFF", // hollow: white fill
-  GRAPH.ghost,
-] as const;
+/** deterministic role rotation by page type (Deep Field luminous roles) */
+const TYPE_ROLES = GRAPH.typeRoles;
 
 function typeColor(type: string | undefined): string {
   if (!type) return GRAPH.ghost;
@@ -57,30 +54,17 @@ function edgeTypeColor(type: string | undefined): string {
   return (type && GRAPH.edgeTypes[type]) || GRAPH.edgeUnknown;
 }
 
-function nodeRadius(degree: number, focus: boolean): number {
-  return (2.5 + Math.sqrt(degree) * 1.9) * (focus ? 1.15 : 1);
+/** #rrggbb → rgba(…, alpha); anything else passes through untouched */
+function withAlpha(hex: string, alpha: number): string {
+  if (hex.length !== 7 || hex[0] !== "#") return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
 }
 
-/** Andrew monotone chain convex hull, ported from the frozen mockup */
-function convexHull(points: [number, number][]): [number, number][] {
-  if (points.length < 3) return points;
-  const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
-    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const lower: [number, number][] = [];
-  for (const p of pts) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, p) <= 0) lower.pop();
-    lower.push(p);
-  }
-  const upper: [number, number][] = [];
-  for (let i = pts.length - 1; i >= 0; i--) {
-    const p = pts[i]!;
-    while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, p) <= 0) upper.pop();
-    upper.push(p);
-  }
-  upper.pop();
-  lower.pop();
-  return lower.concat(upper);
+function nodeRadius(degree: number, focus: boolean): number {
+  return (3 + Math.sqrt(degree) * 2.3) * (focus ? 1.15 : 1);
 }
 
 /** distance from a pointer to a segment — overlay-edge proximity hover */
@@ -297,11 +281,11 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       saveLayout(fingerprint, full);
     }
 
-    // communities (hulls + matrix ordering) — decorative on failure
+    // communities (matrix ordering only — the Deep Field skin draws no hulls)
     try {
       louvain.assign(full);
     } catch {
-      // leave unassigned; hulls simply won't draw
+      // leave unassigned; matrix ordering just falls back to degree sort
     }
 
     const degree = new Map<string, number>();
@@ -323,8 +307,17 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     noise: boolean;
     members: Set<string> | null;
     pending: Set<string>;
-  }>({ view, noise, members, pending: new Set() });
-  filterRef.current = { view, noise, members, pending: baseData?.pending ?? new Set() };
+    /** hovered page + its 1-hop neighbors (null when not hovering) */
+    hoverNear: Set<string> | null;
+  }>({ view, noise, members, pending: new Set(), hoverNear: null });
+  filterRef.current = {
+    view,
+    noise,
+    members,
+    pending: baseData?.pending ?? new Set(),
+    // hoverNear is event-driven state — carry it across the reassignment
+    hoverNear: filterRef.current.hoverNear,
+  };
 
   /** the single visibility predicate — sigma's nodeReducer AND the overlay
    *  both call it, so DOM and canvas can never disagree */
@@ -357,11 +350,13 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         size: nodeRadius(deg, view === "orbit"),
         x: pos.x,
         y: pos.y,
-        forceLabel: pending.has(slug),
-        // sigma 4 label styling (per-node): Space Mono, ink, tabular culling
+        forceLabel: pending.has(slug) || deg >= 8,
+        // sigma 4 label styling (per-node): body font, hubs bigger + heavier
+        // (Deep Field reads top-N pages first)
         labelFont: GRAPH.labelFont,
-        labelSize: 11,
-        labelColor: GRAPH.ink,
+        labelSize: Math.min(Math.max(10 + deg * 0.42, 11), 15),
+        labelWeight: deg >= 8 ? "600" : "400",
+        labelColor: GRAPH.labelColor,
       });
     }
     // ALL relations enter the sigma graph (the 原版 stock view renders them
@@ -377,7 +372,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       graph.addEdge(e.source, e.target, {
         link_type: e.link_type,
         isNew,
-        color: GRAPH.edge,
+        color: GRAPH.edgeUnknown,
         size: GRAPH.edgeWidth,
       });
       allEdges.push({ source: e.source, target: e.target, link_type: e.link_type, isNew });
@@ -419,10 +414,20 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         const shown = isHidden(node, graph.getNodeAttribute(node, "degree") ?? 0)
           ? { ...data, hidden: true }
           : data;
-        // 原版 stock view: strip the Mint Audit node skin (factory colors,
-        // default label font) while keeping data-driven size/position
+        // 原版 stock view: strip the Deep Field skin (factory colors, default
+        // label font) while keeping data-driven size/position — no focus dim
         if (filterRef.current.view === "plain") {
           return { ...shown, color: GRAPH.stock.node, labelColor: GRAPH.stock.label, labelFont: "sans-serif" };
+        }
+        // hover = neighborhood focus: pages outside the hovered page's 1-hop
+        // set fade (fill AND label) until the pointer leaves
+        const near = filterRef.current.hoverNear;
+        if (near && !near.has(node)) {
+          return {
+            ...shown,
+            color: withAlpha(typeof shown.color === "string" ? shown.color : GRAPH.ghost, GRAPH.dim),
+            labelColor: withAlpha(GRAPH.labelColor, GRAPH.dim),
+          };
         }
         return shown;
       },
@@ -436,7 +441,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       settings: {
         labelDensity: 0.6,
         labelGridCellSize: 100,
-        labelRenderedSizeThreshold: 6,
+        // Deep Field: hubs label first — small pages stay anonymous until zoom
+        labelRenderedSizeThreshold: 9,
         minCameraRatio: 0.02,
         maxCameraRatio: 12,
       },
@@ -450,6 +456,12 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     sigma.on("clickStage", () => setSelected(null));
     sigma.on("enterNode", ({ node }) => {
       hoveredRef.current = node;
+      // neighborhood focus: the hovered page's 1-hop set stays lit, the rest
+      // dims (applied reducer-side on this refresh, overlay-side for edges)
+      const near = new Set<string>([node]);
+      graph.forEachNeighbor(node, (nb) => near.add(nb));
+      filterRef.current.hoverNear = near;
+      sigma.refresh();
       overlayDirty.current++;
       const attrs = graph.getNodeAttributes(node);
       showTip(
@@ -460,6 +472,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     });
     sigma.on("leaveNode", () => {
       hoveredRef.current = null;
+      filterRef.current.hoverNear = null;
+      sigma.refresh();
       overlayDirty.current++;
       hideTip();
     });
@@ -508,6 +522,69 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     overlayDirty.current++;
   }, [view, selected, viewGraph]);
 
+  // overview/stock auto-fit: sigma's default camera frames the RAW bbox —
+  // hidden noise pages and layout outliers leave dead space around the
+  // visible cluster. Frame the VISIBLE pages instead. The camera matrices
+  // are not built until sigma's first refresh: measuring viewportToGraph
+  // before that returns garbage which would slam the ratio to its clamp and
+  // shrink the whole graph to subpixels (a broken-looking blank window), so
+  // the fit first self-checks readiness (graphToViewport of two distant
+  // points must be finite and non-degenerate) and retries next frame. The
+  // scale factor is also invariant-clamped: the visible bbox is a subset of
+  // the raw one the default camera frames, so a valid fit never needs to
+  // zoom out more than the padding factor — anything larger is a bad
+  // measurement and is rejected. Skipped right after a view switch so the
+  // orbit→overview camera restore wins; the orbit view centers itself.
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    const wrap = wrapRef.current;
+    if (!sigma || !wrap || !viewGraph || (view !== "field" && view !== "plain")) return;
+    if (prevViewRef.current !== view) return; // a transition effect owns this render
+    if (wrap.clientWidth === 0 || wrap.clientHeight === 0) return;
+    let raf = 0;
+    let tries = 0;
+    const attempt = () => {
+      if (sigmaRef.current !== sigma) return; // unmounted before the frame
+      const a = sigma.graphToViewport({ x: 0, y: 0 });
+      const b = sigma.graphToViewport({ x: 100, y: 100 });
+      const ready =
+        [a.x, a.y, b.x, b.y].every(Number.isFinite) &&
+        (Math.abs(a.x - b.x) > 1 || Math.abs(a.y - b.y) > 1);
+      if (!ready) {
+        if (++tries < 30) raf = requestAnimationFrame(attempt);
+        return; // keep the default framing — better than a wrong one
+      }
+      const { graph } = viewGraph;
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      let any = false;
+      graph.forEachNode((node, attrs) => {
+        if (isHidden(node, attrs.degree ?? 0)) return;
+        any = true;
+        x0 = Math.min(x0, attrs.x);
+        x1 = Math.max(x1, attrs.x);
+        y0 = Math.min(y0, attrs.y);
+        y1 = Math.max(y1, attrs.y);
+      });
+      if (!any || !(x1 > x0) || !(y1 > y0)) return;
+      const tl = sigma.viewportToGraph({ x: 0, y: 0 });
+      const br = sigma.viewportToGraph({ x: wrap.clientWidth, y: wrap.clientHeight });
+      const spanX = Math.abs(br.x - tl.x);
+      const spanY = Math.abs(br.y - tl.y);
+      if (!Number.isFinite(spanX) || !Number.isFinite(spanY) || spanX <= 0 || spanY <= 0) return;
+      const PAD = 1.18;
+      const f = Math.max(((x1 - x0) * PAD) / spanX, ((y1 - y0) * PAD) / spanY);
+      if (!Number.isFinite(f) || f > PAD || f < 0.06) return; // bad measurement
+      const cam = sigma.getCamera();
+      cam.setState({ x: (x0 + x1) / 2, y: (y0 + y1) / 2, ratio: cam.getState().ratio * f });
+      overlayDirty.current++;
+    };
+    raf = requestAnimationFrame(attempt);
+    return () => cancelAnimationFrame(raf);
+  }, [viewGraph, view, noise, isHidden, mountTick]);
+
   // selection emphasis + filter changes: attribute bumps + one refresh (the
   // reducer re-evaluates visibility on every refresh — no remount)
   useEffect(() => {
@@ -549,60 +626,39 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     return () => clearInterval(timer);
   }, [viewGraph, view, selected]);
 
-  // --- overlay canvas: hulls + node ink strokes + dashed new edges + rings ------
-  // sigma 4 has no dashed-edge or node-stroke primitives, so the overlay draws
-  // them camera-synced through sigma.graphToViewport/scaleSize. The rAF loop
-  // stays cheap when idle: it skips the whole draw unless the camera state,
-  // the dirty counter, or the canvas size changed since last frame.
+  // --- overlay canvas: node glow + typed relations + rings + vignette ----------
+  // sigma 4 has no glow, dashed-edge or vignette primitives, so the overlay
+  // draws them camera-synced through sigma.graphToViewport/scaleSize. The rAF
+  // loop stays cheap when idle: it skips the whole draw unless the camera
+  // state, the dirty counter, or the canvas size changed since last frame.
 
   useEffect(() => {
     if (!viewGraph || view === "matrix" || view === "plain") return;
-    const { graph, allEdges } = viewGraph;
+    const { graph, allEdges, pending } = viewGraph;
 
-    // hulls in GRAPH coordinates + per-community dominant type (region name)
-    const byCommunity = new Map<number, [number, number][]>();
-    const counts = new Map<number, number>();
-    const typeHist = new Map<number, Map<string, number>>();
-    graph.forEachNode((node, attrs) => {
-      if (isHidden(node, attrs.degree)) return;
-      const c = typeof attrs.community === "number" ? attrs.community : -1;
-      const list = byCommunity.get(c);
-      if (list) list.push([attrs.x, attrs.y]);
-      else byCommunity.set(c, [[attrs.x, attrs.y]]);
-      counts.set(c, (counts.get(c) ?? 0) + 1);
-      const type = typeof attrs.type === "string" && attrs.type ? attrs.type : null;
-      if (type) {
-        const hist = typeHist.get(c) ?? new Map<string, number>();
-        hist.set(type, (hist.get(type) ?? 0) + 1);
-        typeHist.set(c, hist);
-      }
-    });
-    const hulls = new Map<number, [number, number][]>();
-    if (view === "field") {
-      for (const [c, points] of byCommunity) {
-        if (points.length >= HULL_MIN_POINTS) hulls.set(c, convexHull(points));
-      }
-    }
-    // semantic region name (mockup: 项目群 · 12): the community's dominant
-    // page type + member count; communities without typed members fall back
-    // to the numeric id
-    const regionName = (c: number): string => {
-      const hist = typeHist.get(c);
-      let dominant: string | null = null;
-      let best = 0;
-      if (hist) {
-        for (const [type, n] of hist) {
-          if (n > best) {
-            best = n;
-            dominant = type;
-          }
+    // glow sprites: one radial-gradient disc per distinct node color (only a
+    // handful exist), drawn additively so stacked halos read as density
+    const glowCache = new Map<string, HTMLCanvasElement>();
+    function glowSprite(color: string): HTMLCanvasElement {
+      let sprite = glowCache.get(color);
+      if (!sprite) {
+        sprite = document.createElement("canvas");
+        sprite.width = sprite.height = 96;
+        const g = sprite.getContext("2d");
+        if (g) {
+          const grad = g.createRadialGradient(48, 48, 0, 48, 48, 48);
+          grad.addColorStop(0, withAlpha(color, 0.5));
+          grad.addColorStop(0.45, withAlpha(color, 0.22));
+          grad.addColorStop(1, withAlpha(color, 0));
+          g.fillStyle = grad;
+          g.fillRect(0, 0, 96, 96);
         }
+        glowCache.set(color, sprite);
       }
-      const count = counts.get(c) ?? 0;
-      return dominant ? `${dominant} · ${count}` : `·${c} ${count}`;
-    };
+      return sprite;
+    }
 
-    // NOTE: node strokes read attributes LIVE each frame (not a setup-time
+    // NOTE: glow reads node attributes LIVE each frame (not a setup-time
     // snapshot) because the pulse and selection effects mutate `size`.
 
     let raf = 0;
@@ -612,6 +668,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     let lastW = 0;
     let lastH = 0;
     let lastPaint = 0;
+    let vignette: { w: number; h: number; grad: CanvasGradient } | null = null;
     const onVisibility = () => {
       running = !document.hidden;
       if (running) {
@@ -620,6 +677,13 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
+    // rAF backstop: embedded webviews can leave rAF stalled while the page
+    // stays visible (the overlay would freeze on one frame forever). If no
+    // paint happened for 450ms, force one from the interval — with a healthy
+    // rAF this never fires.
+    const backstop = window.setInterval(() => {
+      if (running && performance.now() - lastPaint > 450) loop();
+    }, 500);
 
     function loop() {
       if (!running) return;
@@ -631,6 +695,17 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       const dpr = window.devicePixelRatio || 1;
       const w = wrap.clientWidth;
       const h = wrap.clientHeight;
+      // camera readiness gate: sigma's matrices lag its first refresh —
+      // painting before they exist draws NaN geometry (a frozen blank-ish
+      // frame). Skip such frames entirely; the next one catches up.
+      const ra = sigma.graphToViewport({ x: 0, y: 0 });
+      const rb = sigma.graphToViewport({ x: 100, y: 100 });
+      if (
+        ![ra.x, ra.y, rb.x, rb.y].every(Number.isFinite) ||
+        (Math.abs(ra.x - rb.x) <= 1 && Math.abs(ra.y - rb.y) <= 1)
+      ) {
+        return;
+      }
       const cam = sigma.getCamera().getState();
       const camKey = `${cam.x}|${cam.y}|${cam.ratio}|${cam.angle}`;
       // idle frames skip the whole draw; the 1s backstop guarantees recovery
@@ -658,35 +733,26 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       if (!ctx) return;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
+      const hoverNear = filterRef.current.hoverNear;
 
-      // community hulls (dashed ink) + region labels — overview only; a
-      // focus view of ≤2 hops renders slivers, not regions
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = GRAPH.hull;
-      ctx.lineWidth = 1.5;
-      for (const [c, hull] of hulls) {
-        if (hull.length < 3) continue;
-        ctx.beginPath();
-        hull.forEach((p, i) => {
-          const v = sigma.graphToViewport({ x: p[0], y: p[1] });
-          if (i === 0) ctx.moveTo(v.x, v.y);
-          else ctx.lineTo(v.x, v.y);
-        });
-        ctx.closePath();
-        ctx.stroke();
-        const anchor = sigma.graphToViewport({ x: hull[0]![0], y: hull[0]![1] });
-        ctx.setLineDash([]);
-        ctx.font = `700 11px ${GRAPH.regionFont}, "Noto Sans SC", sans-serif`;
-        ctx.fillStyle = GRAPH.hull;
-        ctx.fillText(regionName(c), anchor.x + 6, anchor.y - 6);
-        ctx.setLineDash([5, 4]);
-      }
-      ctx.setLineDash([]);
+      // node glow — additive so stacked halos accumulate like starlight;
+      // focused-out pages keep a faint mark instead of their glow
+      ctx.globalCompositeOperation = "lighter";
+      graph.forEachNode((node, attrs) => {
+        if (isHidden(node, attrs.degree)) return;
+        ctx.globalAlpha = hoverNear !== null && !hoverNear.has(node) ? GRAPH.dim : 1;
+        const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
+        const r = sigma.scaleSize(attrs.size) * GRAPH.glowRadius;
+        ctx.drawImage(glowSprite(String(attrs.color)), pos.x - r, pos.y - r, r * 2, r * 2);
+      });
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
 
       // relations — semantic: color = link_type, the amber dash is reserved
       // for the pending (un-adjudicated) STATE. Drawn on the overlay because
       // sigma's edge program can neither dash nor cheaply per-type color.
-      // Pending relations draw last so they sit on top.
+      // Pending relations draw last so they sit on top; an edge focuses out
+      // together with either endpoint outside the hovered 1-hop set.
       const solid: typeof allEdges = [];
       const pendingEdges: typeof allEdges = [];
       for (const e of allEdges) {
@@ -697,11 +763,18 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
         (e.isNew ? pendingEdges : solid).push(e);
       }
-      const drawEdge = (e: (typeof allEdges)[number], color: string, width: number, dash: number[]) => {
+      const drawEdge = (
+        e: (typeof allEdges)[number],
+        color: string,
+        width: number,
+        dash: number[],
+        alpha: number,
+      ) => {
         const a = graph.getNodeAttributes(e.source);
         const b = graph.getNodeAttributes(e.target);
         const va = sigma.graphToViewport({ x: a.x, y: a.y });
         const vb = sigma.graphToViewport({ x: b.x, y: b.y });
+        ctx.globalAlpha = alpha;
         ctx.strokeStyle = color;
         ctx.lineWidth = width;
         ctx.setLineDash(dash);
@@ -710,29 +783,45 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         ctx.lineTo(vb.x, vb.y);
         ctx.stroke();
       };
-      for (const e of solid) drawEdge(e, edgeTypeColor(e.link_type), 1.4, []);
-      for (const e of pendingEdges) drawEdge(e, GRAPH.edgeNew, GRAPH.edgeNewWidth, [6, 3]);
+      const nearEdge = (e: (typeof allEdges)[number]): boolean =>
+        hoverNear === null || (hoverNear.has(e.source) && hoverNear.has(e.target));
+      for (const e of solid) {
+        drawEdge(
+          e,
+          edgeTypeColor(e.link_type),
+          GRAPH.edgeWidth,
+          [],
+          nearEdge(e) ? GRAPH.edgeAlpha : GRAPH.edgeAlpha * GRAPH.dim,
+        );
+      }
+      for (const e of pendingEdges) {
+        drawEdge(e, GRAPH.edgeNew, GRAPH.edgeNewWidth, [6, 3], nearEdge(e) ? 1 : GRAPH.dim);
+      }
       ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
 
-      // node ink strokes (mockup: solid/hollow nodes carry a 1.5px ink stroke;
-      // ghost nodes are fill-only) — radius via sigma.scaleSize so zoom,
-      // pulse oscillation and selection bumps all track the rendered size
-      ctx.strokeStyle = GRAPH.ink;
-      ctx.lineWidth = 1.5;
-      graph.forEachNode((node, attrs) => {
-        if (isHidden(node, attrs.degree) || attrs.color === GRAPH.ghost) return;
+      // pending pages: steady amber ring (the size pulse stays the motion)
+      ctx.strokeStyle = GRAPH.pendingRing;
+      ctx.lineWidth = 1.8;
+      ctx.globalAlpha = 0.75;
+      for (const node of pending) {
+        if (!graph.hasNode(node)) continue;
+        const attrs = graph.getNodeAttributes(node);
+        if (isHidden(node, attrs.degree)) continue;
         const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
         ctx.beginPath();
-        ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size), 0, Math.PI * 2);
+        ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size) + 4, 0, Math.PI * 2);
         ctx.stroke();
-      });
+      }
+      ctx.globalAlpha = 1;
 
-      // hover/selected emphasis ring: ink, lw 2.5, at radius + 3.5 (mockup)
+      // hover/selected emphasis ring: white, lw 2.5, at radius + 3.5
       const focus = hoveredRef.current ?? selected;
       if (focus && graph.hasNode(focus)) {
         const attrs = graph.getNodeAttributes(focus);
         if (!isHidden(focus, attrs.degree)) {
           const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
+          ctx.strokeStyle = GRAPH.hoverRing;
           ctx.lineWidth = 2.5;
           ctx.beginPath();
           ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size) + 3.5, 0, Math.PI * 2);
@@ -747,13 +836,13 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         ctx.setLineDash([6, 5]);
         for (const frac of [0.18, 0.34]) {
           const r = frac * Math.min(w, h);
-          ctx.strokeStyle = GRAPH.hull;
+          ctx.strokeStyle = GRAPH.orbitRing;
           ctx.lineWidth = 1.5;
           ctx.beginPath();
           ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
           ctx.stroke();
           ctx.font = `400 10px ${GRAPH.labelFont}`;
-          ctx.fillStyle = GRAPH.hull;
+          ctx.fillStyle = GRAPH.orbitRing;
           ctx.fillText(
             frac < 0.3 ? tRef.current("nebula.hop1") : tRef.current("nebula.hop2"),
             center.x + r * 0.7,
@@ -762,11 +851,29 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         }
         ctx.setLineDash([]);
       }
+
+      // corner vignette — the window's glass, cached per size
+      if (!vignette || vignette.w !== w || vignette.h !== h) {
+        const grad = ctx.createRadialGradient(
+          w / 2,
+          h / 2,
+          Math.min(w, h) * 0.38,
+          w / 2,
+          h / 2,
+          Math.max(w, h) * 0.75,
+        );
+        grad.addColorStop(0, GRAPH.vignetteClear);
+        grad.addColorStop(1, GRAPH.vignette);
+        vignette = { w, h, grad };
+      }
+      ctx.fillStyle = vignette.grad;
+      ctx.fillRect(0, 0, w, h);
     }
     loop();
     return () => {
       running = false;
       cancelAnimationFrame(raf);
+      window.clearInterval(backstop);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [viewGraph, view, selected, noise, hiddenTypes, isHidden]);

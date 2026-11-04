@@ -845,21 +845,16 @@ button.batch-arm {
   transform: none;
 }
 
-/* the map: mint canvas + grid paper; sigma's stage is transparent (v3
- * default) so the CSS grid shows through; the overlay canvas above it draws
- * hulls / region labels / orbit rings and never takes pointer events */
+/* the map: Deep Field observation window — the app's second dark material
+ * (the terminal command block is the first), inset in the Mint desk behind
+ * the brand ink frame; sigma's stage is transparent so the CSS background
+ * shows through; the overlay canvas above it draws glow / typed relations /
+ * rings / vignette and never takes pointer events */
 .graph-wrap {
   position: relative;
   border: 3px solid var(--ink);
   box-shadow: 6px 6px 0 var(--ink);
-  background:
-    linear-gradient(var(--line-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--line-grid) 1px, transparent 1px),
-    var(--canvas);
-  background-size:
-    28px 28px,
-    28px 28px,
-    auto;
+  background: var(--graph-bg);
   height: 560px;
   overflow: hidden;
 }
@@ -912,9 +907,9 @@ button.batch-arm {
   pointer-events: none;
   display: none;
   z-index: 5;
-  background: var(--paper);
-  border: 2px solid var(--ink);
-  box-shadow: 3px 3px 0 var(--ink);
+  background: var(--graph-tip-bg);
+  color: var(--graph-tip-text);
+  border: 1px solid var(--graph-tip-border);
   font-family: var(--f-mono);
   font-size: 10.5px;
   padding: 5px 9px;
@@ -1044,7 +1039,7 @@ button.batch-arm {
   border-top-style: dashed;
 }
 
-/* 原版 stock view: plain white stage, no mint grid paper */
+/* 原版 stock view: plain white stage, no Deep Field window */
 .graph-wrap.graph-plain {
   background: var(--paper);
 }

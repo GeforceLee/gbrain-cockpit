@@ -4,9 +4,11 @@
 // any other canvas code imports GRAPH / TERMINAL directly. No color literal
 // may appear in a .css file or a component — only here.
 //
-// Source of truth: internal/mockups/5-approva-audit.html :root + canvas
-// constants (frozen 2026-11-04, internal/mockups/README.md §7). The backup
-// skin (v6 maple-care) would swap this module's values only.
+// Source of truth: internal/mockups/5-approva-audit.html :root (frozen
+// 2026-11-04, internal/mockups/README.md §7) for the DOM chrome; the GRAPH
+// canvas constants are the Deep Field skin picked in the 2026-11-04 style
+// review (candidate A; B/C kept in that session's comparison mockup). A
+// reskin swaps this module's values only.
 
 export const PALETTE = {
   mint: "#CFE8D6",
@@ -17,7 +19,7 @@ export const PALETTE = {
   stop: "#C03A3A",
   phos: "#7BE38B",
   paper: "#FFFFFF",
-  /** graph-paper canvas background (one step deeper than mint) */
+  /** mint well: doc-raw + matrix diagonal (the graph window has its own GRAPH.bg) */
   canvas: "#DCEDDF",
   /** warn-colored mini-stamp (darker amber for legibility on paper) */
   warnStamp: "#A66E14",
@@ -46,19 +48,30 @@ export const TERMINAL = {
   flashRing: "rgba(123,227,139,.55)",
 } as const;
 
-/** Canvas (sigma.js) palette — same-source with the CSS variables above. */
+export const FONTS = {
+  display: "'Archivo', 'Noto Sans SC', sans-serif",
+  body: "'Hanken Grotesk', 'Noto Sans SC', sans-serif",
+  mono: "'Space Mono', 'Roboto Mono', ui-monospace, Menlo, monospace",
+} as const;
+
+/** Canvas (sigma.js) palette — Deep Field skin, the owner pick (2026-11-04)
+ *  from the three-candidate style review (runner-ups Paper Atlas / Blueprint
+ *  live in that session's mockup only). The graph is the app's second dark
+ *  material — like the terminal command block it sits inside the light Mint
+ *  Audit desk as an inset observation window. Same-source with the CSS
+ *  variables below; the DOM chrome around the window stays Mint Audit. */
 export const GRAPH = {
-  bg: PALETTE.canvas,
-  ink: PALETTE.ink,
-  green: PALETTE.ok,
-  amber: PALETTE.warn,
+  /** observation-window background */
+  bg: "#10151C",
+  /** legend swatch: pages carrying pending proposals */
   red: PALETTE.stop,
-  /** normal edge */
-  edge: "rgba(18,18,16,.18)",
-  edgeWidth: 1,
-  /** dream-new edge (amber, dashed) */
-  edgeNew: PALETTE.warn,
-  edgeNewWidth: 1.8,
+  /** luminous page-type roles (deterministic rotation by type hash) */
+  typeRoles: ["#FFB454", "#6FD9A8", "#8FB8F2", "#C792EA", "#F2779A"] as readonly string[],
+  /** untyped pages: dim slate */
+  ghost: "#5C6672",
+  /** canvas labels */
+  labelColor: "#C9D4DE",
+  labelFont: FONTS.body,
   /**
    * Per-relation-type edge colors (semantic: color = what the relation IS;
    * the amber dash stays reserved for the pending/un-adjudicated STATE).
@@ -66,17 +79,41 @@ export const GRAPH = {
    * surface new types — unknown types fall back to `edgeUnknown`.
    */
   edgeTypes: {
-    mentions: "#43524B", // graphite — A 提到 B (most common, neutral weight)
-    cited: "#2E8C42", // green — A 引用 B
-    advises: "#9C5F1B", // dark rust — A 建议 B (kept apart from amber=new)
-    founded: "#4A5FB5", // indigo — A 创立 B
+    mentions: "#9FB4A8", // sage — A 提到 B (most common, neutral weight)
+    cited: "#5FD98A", // luminous green — A 引用 B
+    advises: "#E0A25E", // amber-ochre — A 建议 B (kept apart from dash=pending)
+    founded: "#8FA3E8", // periwinkle — A 创立 B
   } as Record<string, string>,
   /** untyped / unknown relations */
-  edgeUnknown: "rgba(18,18,16,.35)",
+  edgeUnknown: "rgba(200,210,205,.32)",
+  /** typed-edge opacity on the dark window */
+  edgeAlpha: 0.45,
+  edgeWidth: 1.2,
+  /** dream-new edge (amber, dashed) */
+  edgeNew: PALETTE.warn,
+  edgeNewWidth: 1.8,
+  /** hover / selection ring */
+  hoverRing: "rgba(255,255,255,.78)",
+  /** focus-view hop rings + their captions */
+  orbitRing: "rgba(154,170,182,.6)",
+  /** pending-page ring (steady — the size pulse stays the motion cue) */
+  pendingRing: PALETTE.warn,
+  /** neighborhood-focus factor: nodes/edges/labels outside the hovered
+   *  page's 1-hop set fade to this alpha until the pointer leaves */
+  dim: 0.12,
+  /** glow sprite: radius as a multiple of node size */
+  glowRadius: 2.6,
+  /** corner vignette wash */
+  vignette: "rgba(0,0,0,.32)",
+  vignetteClear: "rgba(0,0,0,0)",
+  /** tooltip chrome — dark readout, terminal family */
+  tipBg: "#1A222D",
+  tipText: "#DCE5EC",
+  tipBorder: "rgba(255,255,255,.16)",
   /**
    * sigma factory-look preset for the 原版 (stock) comparison tab. These are
-   * deliberately NOT Mint Audit brand values — the tab exists to show the
-   * graph exactly as the library renders it, unskinned.
+   * deliberately NOT skin values — the tab exists to show the graph exactly
+   * as the library renders it, unskinned.
    */
   stock: {
     node: "#999999",
@@ -84,20 +121,6 @@ export const GRAPH = {
     label: "#000000",
     bg: "#FFFFFF",
   },
-  /** community hull stroke */
-  hull: "rgba(18,18,16,.55)",
-  /** ghost node fill (low-trust / unknown type) */
-  ghost: "rgba(18,18,16,.35)",
-  /** grid paper on canvas */
-  gridLine: "rgba(18,18,16,.06)",
-  labelFont: "Space Mono",
-  regionFont: "Archivo",
-} as const;
-
-export const FONTS = {
-  display: "'Archivo', 'Noto Sans SC', sans-serif",
-  body: "'Hanken Grotesk', 'Noto Sans SC', sans-serif",
-  mono: "'Space Mono', 'Roboto Mono', ui-monospace, Menlo, monospace",
 } as const;
 
 export const EASINGS = {
@@ -135,13 +158,17 @@ const CSS_VARS: Record<string, string> = {
   "--cmd-code-border": TERMINAL.codeBorder,
   // derived ink alphas (rules, grids, dimmed text) — same-source as the rest
   "--line-faint": "rgba(18,18,16,.05)", // grid paper on white
-  "--line-grid": "rgba(18,18,16,.06)", // grid paper on canvas
   "--line-track": "rgba(18,18,16,.15)", // gauge track
   "--line-soft": "rgba(18,18,16,.16)", // selection + soft row rules
   "--line": "rgba(18,18,16,.18)", // row rules
   "--line-dashed": "rgba(18,18,16,.2)", // checklist dashed rules
   "--ink-dim": "rgba(18,18,16,.62)", // meta strip text
   "--white-dim": "rgba(255,255,255,.5)", // audit caption
+  // Deep Field graph window (same-source with GRAPH)
+  "--graph-bg": GRAPH.bg,
+  "--graph-tip-bg": GRAPH.tipBg,
+  "--graph-tip-text": GRAPH.tipText,
+  "--graph-tip-border": GRAPH.tipBorder,
 };
 
 export function applyDesignTokens(
