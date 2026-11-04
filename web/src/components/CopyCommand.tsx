@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { commandHash, copyCommandText } from "../lib/clipboard";
 import { useI18n } from "../lib/i18n";
 
 // The phosphor command block — the signature component of the action
@@ -22,18 +23,7 @@ export function CopyCommand({
   const [flash, setFlash] = useState(false);
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(command);
-    } catch {
-      // clipboard API unavailable (non-secure context): select for manual copy
-      const range = document.createRange();
-      const node = document.getElementById("cmd-" + hash(command));
-      if (node) {
-        range.selectNodeContents(node);
-        getSelection()?.removeAllRanges();
-        getSelection()?.addRange(range);
-      }
-    }
+    await copyCommandText(command);
     setCopied(true);
     setFlash(true);
     setTimeout(() => {
@@ -48,7 +38,7 @@ export function CopyCommand({
         <span>{t("cmd.badge")}</span>
         <span className="zh">{t("cmd.terminal")}</span>
       </p>
-      <code id={"cmd-" + hash(command)}>{command}</code>
+      <code id={"cmd-" + commandHash(command)}>{command}</code>
       {hint ? (
         <p className="steps">
           <b>{hint}</b>
@@ -64,10 +54,4 @@ export function CopyCommand({
       <p className="nobatch">{t("cmd.nobatch")}</p>
     </div>
   );
-}
-
-function hash(s: string): string {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return String(Math.abs(h));
 }

@@ -6,7 +6,7 @@ import type {
   PagesFacets,
   WriteReceipt,
 } from "@gbrain-cockpit/shared";
-import { appendAudit } from "../lib/auditLog";
+import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
@@ -101,7 +101,7 @@ export function Pages({
           `/api/write-request?request_id=${encodeURIComponent(receipt.request_id)}`,
         );
         if (next.status !== receipt.status) {
-          appendAudit(`page.write ${receipt.request_id} -> ${next.status}`);
+          appendAudit(`page.write ${receipt.request_id} -> ${next.status}`, metaFor(next));
         }
         setEditor({ mode: "receipt", receipt: next });
       } catch {
@@ -110,6 +110,36 @@ export function Pages({
     }, 2500);
     return () => clearInterval(timer);
   }, [editor]);
+
+  /** structured meta for the Recent-Verdicts table (page writes) */
+  function metaFor(receipt: WriteReceipt): AuditMeta {
+    const slug = bundle?.page.slug ?? "?";
+    if (receipt.status === "committed") {
+      return {
+        ref: slug,
+        label: bundle?.page.title ?? slug,
+        verdict: "ok",
+        verdictText: t("verdict.written"),
+        receipt: receipt.request_id.slice(0, 8),
+      };
+    }
+    if (receipt.status === "conflict" || receipt.status === "failed" || receipt.status === "cancelled") {
+      return {
+        ref: slug,
+        label: bundle?.page.title ?? slug,
+        verdict: "warn",
+        verdictText: t("verdict.failed"),
+        receipt: receipt.request_id.slice(0, 8),
+      };
+    }
+    return {
+      ref: slug,
+      label: bundle?.page.title ?? slug,
+      verdict: "warn",
+      verdictText: receipt.status,
+      receipt: receipt.request_id.slice(0, 8),
+    };
+  }
 
   async function save() {
     if (editor.mode !== "editing" || !bundle) return;
@@ -124,7 +154,7 @@ export function Pages({
         request_id: requestId,
       });
       setEditor({ mode: "receipt", receipt });
-      appendAudit(`page.write ${requestId} -> ${receipt.status}`);
+      appendAudit(`page.write ${requestId} -> ${receipt.status}`, metaFor(receipt));
       if (receipt.status === "committed") {
         // refresh the detail view behind the receipt slot
         const fresh = await apiGet<PageBundle>(

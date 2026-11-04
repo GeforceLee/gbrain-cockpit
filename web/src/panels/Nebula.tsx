@@ -173,6 +173,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
   const tipRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const mouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  // hovered node (overlay draws the mockup's 2.5px ink ring at r+3.5 for it)
+  const hoveredRef = useRef<string | null>(null);
   // selection changes rebuild the graph instance (orbit filtering); keeping
   // the last camera state across remounts avoids snapping back to overview
   const cameraRef = useRef<{ x: number; y: number; ratio: number; angle: number } | null>(null);
@@ -304,18 +306,26 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         labelColor: GRAPH.ink,
       });
     }
+    // dream-new edges do NOT enter the sigma graph: sigma's edge program
+    // cannot dash, so the overlay canvas draws them dashed amber (mockup
+    // recipe). Their endpoints still pulse, and the same data lives in the
+    // Inbox edge queue. Trade-off: no hover tooltip on these overlay edges.
+    const newEdges: { source: string; target: string }[] = [];
     for (const e of baseData.edges) {
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
-      if (graph.hasEdge(e.source, e.target)) continue;
       const key = e.source < e.target ? `${e.source}||${e.target}` : `${e.target}||${e.source}`;
+      if (newEdgeSet.has(key)) {
+        newEdges.push({ source: e.source, target: e.target });
+        continue;
+      }
+      if (graph.hasEdge(e.source, e.target)) continue;
       graph.addEdge(e.source, e.target, {
-        isNew: newEdgeSet.has(key),
         link_type: e.link_type,
-        color: newEdgeSet.has(key) ? GRAPH.edgeNew : GRAPH.edge,
-        size: newEdgeSet.has(key) ? GRAPH.edgeNewWidth : GRAPH.edgeWidth,
+        color: GRAPH.edge,
+        size: GRAPH.edgeWidth,
       });
     }
-    return { graph, pending, newEdgeSet, fingerprint };
+    return { graph, pending, newEdges, fingerprint };
   }, [baseData, view, noise, selected]);
 
   // --- sigma lifecycle -----------------------------------------------------------
@@ -355,6 +365,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     });
     sigma.on("clickStage", () => setSelected(null));
     sigma.on("enterNode", ({ node }) => {
+      hoveredRef.current = node;
       const attrs = graph.getNodeAttributes(node);
       showTip(
         pending.has(node)
@@ -362,14 +373,14 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
           : `${node} · deg ${attrs.degree}`,
       );
     });
-    sigma.on("leaveNode", hideTip);
+    sigma.on("leaveNode", () => {
+      hoveredRef.current = null;
+      hideTip();
+    });
     sigma.on("enterEdge", ({ edge }) => {
       const attrs = graph.getEdgeAttributes(edge);
       const [a, b] = graph.extremities(edge);
-      showTip(
-        `${attrs.link_type ?? "?"} · ${a} → ${b}` +
-          (attrs.isNew ? ` · ${t("nebula.legend.newEdge")}` : ""),
-      );
+      showTip(`${attrs.link_type ?? "?"} · ${a} → ${b}`);
     });
     sigma.on("leaveEdge", hideTip);
 
@@ -419,15 +430,18 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     return () => clearInterval(timer);
   }, [viewGraph, view, selected]);
 
-  // --- overlay canvas: community hulls + region labels + orbit rings ------------
+  // --- overlay canvas: hulls + node ink strokes + dashed new edges + rings ------
+  // sigma 4 has no dashed-edge or node-stroke primitives, so the overlay draws
+  // them each frame, camera-synced through sigma.graphToViewport/scaleSize.
 
   useEffect(() => {
     if (!viewGraph || view === "matrix") return;
-    const { graph } = viewGraph;
+    const { graph, newEdges } = viewGraph;
 
-    // hulls in GRAPH coordinates (community → vertices + member counts)
+    // hulls in GRAPH coordinates + per-community dominant type (region name)
     const byCommunity = new Map<number, [number, number][]>();
     const counts = new Map<number, number>();
+    const typeHist = new Map<number, Map<string, number>>();
     graph.forEachNode((node, attrs) => {
       if (attrs.hidden) return;
       const c = typeof attrs.community === "number" ? attrs.community : -1;
@@ -435,11 +449,38 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       if (list) list.push([attrs.x, attrs.y]);
       else byCommunity.set(c, [[attrs.x, attrs.y]]);
       counts.set(c, (counts.get(c) ?? 0) + 1);
+      const type = typeof attrs.type === "string" && attrs.type ? attrs.type : null;
+      if (type) {
+        const hist = typeHist.get(c) ?? new Map<string, number>();
+        hist.set(type, (hist.get(type) ?? 0) + 1);
+        typeHist.set(c, hist);
+      }
     });
     const hulls = new Map<number, [number, number][]>();
     for (const [c, points] of byCommunity) {
       if (points.length >= 3) hulls.set(c, convexHull(points));
     }
+    // semantic region name (mockup: 项目群 · 12): the community's dominant
+    // page type + member count; communities without typed members fall back
+    // to the numeric id
+    const regionName = (c: number): string => {
+      const hist = typeHist.get(c);
+      let dominant: string | null = null;
+      let best = 0;
+      if (hist) {
+        for (const [type, n] of hist) {
+          if (n > best) {
+            best = n;
+            dominant = type;
+          }
+        }
+      }
+      const count = counts.get(c) ?? 0;
+      return dominant ? `${dominant} · ${count}` : `·${c} ${count}`;
+    };
+
+    // NOTE: node strokes read attributes LIVE each frame (not a setup-time
+    // snapshot) because the pulse and selection effects mutate `size`.
 
     let raf = 0;
     let running = true;
@@ -486,10 +527,55 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         ctx.setLineDash([]);
         ctx.font = `700 11px ${GRAPH.regionFont}, "Noto Sans SC", sans-serif`;
         ctx.fillStyle = GRAPH.hull;
-        ctx.fillText(`·${c} ${counts.get(c) ?? 0}`, anchor.x + 6, anchor.y - 6);
+        ctx.fillText(regionName(c), anchor.x + 6, anchor.y - 6);
         ctx.setLineDash([5, 4]);
       }
       ctx.setLineDash([]);
+
+      // dream-new edges: amber dashed [6,3], lw 1.8 (mockup recipe) — drawn
+      // here because sigma's edge program cannot dash
+      ctx.setLineDash([6, 3]);
+      ctx.strokeStyle = GRAPH.edgeNew;
+      ctx.lineWidth = GRAPH.edgeNewWidth;
+      for (const e of newEdges) {
+        if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
+        const a = graph.getNodeAttributes(e.source);
+        const b = graph.getNodeAttributes(e.target);
+        if (a.hidden || b.hidden) continue;
+        const va = sigma.graphToViewport({ x: a.x, y: a.y });
+        const vb = sigma.graphToViewport({ x: b.x, y: b.y });
+        ctx.beginPath();
+        ctx.moveTo(va.x, va.y);
+        ctx.lineTo(vb.x, vb.y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // node ink strokes (mockup: solid/hollow nodes carry a 1.5px ink stroke;
+      // ghost nodes are fill-only) — radius via sigma.scaleSize so zoom,
+      // pulse oscillation and selection bumps all track the rendered size
+      ctx.strokeStyle = GRAPH.ink;
+      ctx.lineWidth = 1.5;
+      graph.forEachNode((node, attrs) => {
+        if (attrs.hidden || attrs.color === GRAPH.ghost) return;
+        const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size), 0, Math.PI * 2);
+        ctx.stroke();
+      });
+
+      // hover/selected emphasis ring: ink, lw 2.5, at radius + 3.5 (mockup)
+      const focus = hoveredRef.current ?? selected;
+      if (focus && graph.hasNode(focus)) {
+        const attrs = graph.getNodeAttributes(focus);
+        if (!attrs.hidden) {
+          const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size) + 3.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
 
       // orbit rings (1/2 hop) around the selected node
       if (view === "orbit" && selected && graph.hasNode(selected)) {

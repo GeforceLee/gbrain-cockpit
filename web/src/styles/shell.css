@@ -166,6 +166,84 @@
   margin-top: auto;
 }
 
+/* dream yield card (mockup .side-dream): slots fill from healthz once dream
+ * telemetry lands; until then the card self-describes as pending */
+.side-dream {
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--paper);
+  padding: 12px 13px;
+  margin-bottom: 10px;
+}
+
+.side-dream .cap {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  opacity: 0.6;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.side-dream .big {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 3px 0 8px;
+}
+
+.side-dream .big .n {
+  font-family: var(--f-mono);
+  font-weight: 700;
+  font-size: 26px;
+  color: var(--ok);
+}
+
+.side-dream .big .n.pending {
+  color: var(--ink);
+  opacity: 0.45;
+}
+
+.side-dream .big .d {
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.bar3 {
+  height: 12px;
+  border: 2px solid var(--ink);
+  display: flex;
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.bar3 i {
+  display: block;
+  height: 100%;
+}
+
+.bar3 .g {
+  background: var(--ok);
+}
+
+.bar3 .a {
+  background: var(--warn);
+}
+
+.bar3 .r {
+  background: var(--stop);
+}
+
+.bar3 .b {
+  background: var(--ink);
+}
+
+.side-dream .legend {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-top: 6px;
+  font-family: var(--f-mono);
+}
+
 .owner {
   display: flex;
   align-items: center;

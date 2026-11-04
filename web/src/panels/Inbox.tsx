@@ -13,7 +13,9 @@ import { CopyCommand } from "../components/CopyCommand";
 import { StampButton } from "../components/StampButton";
 import { Tag, type TagVariant } from "../components/Tag";
 import { TrustChain } from "../components/TrustChain";
-import { appendAudit } from "../lib/auditLog";
+import { VerdictHistory } from "../components/VerdictHistory";
+import { appendAudit, type AuditMeta } from "../lib/auditLog";
+import { copyCommandText } from "../lib/clipboard";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
@@ -38,6 +40,8 @@ interface Entry {
   refClass: "" | "held" | "term";
   title: string;
   sub?: string;
+  /** TARGET block in the document head (page slug / edge endpoint) */
+  target?: string;
   tags: { variant: TagVariant; text: string }[];
   srcLines: string[];
   item: TrustReviewItem | EdgeProposal | TakeProposal;
@@ -186,6 +190,11 @@ export function Inbox({
       refClass: queueId === "held" ? "held" : queueId === "facts" ? "term" : "",
       title: itemSummary(item) || ref,
       sub: stringField(item, "kind"),
+      target:
+        stringField(item, "target") ??
+        stringField(item, "page") ??
+        stringField(item, "page_slug") ??
+        stringField(item, "path"),
       tags: [
         { variant: "soft", text: t(`inbox.queue.${queueId}` as MessageKey) },
         ...(stringField(item, "kind")
@@ -211,6 +220,7 @@ export function Inbox({
       refClass: "",
       title: `${from} → ${to}`,
       sub: rel,
+      target: to,
       tags: [
         { variant: "soft", text: t("inbox.queue.edges") },
         ...(rel ? [{ variant: "plain" as TagVariant, text: rel }] : []),
@@ -228,6 +238,7 @@ export function Inbox({
       refClass: "",
       title: take.claim_text,
       sub: take.kind,
+      target: take.page_slug,
       tags: [
         { variant: "soft", text: t("inbox.queue.takes") },
         ...(take.kind ? [{ variant: "plain" as TagVariant, text: take.kind }] : []),
@@ -256,11 +267,12 @@ export function Inbox({
     body: unknown,
     auditText: string,
     stampState?: StampState,
+    meta?: AuditMeta,
   ): Promise<boolean> {
     setActionError(null);
     try {
       await apiSend(path, "POST", body);
-      appendAudit(`${auditText} -> OK`);
+      appendAudit(`${auditText} -> OK`, meta);
       if (stampState) setStamp(stampState);
       await refresh();
       return true;
@@ -402,6 +414,7 @@ export function Inbox({
                   />
                 </div>
                 <AuditBlock />
+                <VerdictHistory />
               </>
             ) : (
               <div className="doc-layout">
@@ -437,6 +450,10 @@ function DocumentCard({
             <h2>{entry.title}</h2>
             <p className="refline mono">{entry.ref} · {t("inbox.queue.edges")}</p>
           </div>
+          <div className="to">
+            <div className="mono to-cap">TARGET</div>
+            <b>{entry.target ?? "—"}</b>
+          </div>
         </div>
         <p className="cap">{t("inbox.doc.raw")}</p>
         <pre className="doc-raw">{JSON.stringify(item, null, 2)}</pre>
@@ -453,19 +470,21 @@ function DocumentCard({
             <h2>{take.claim_text}</h2>
             <p className="refline mono">take #{take.id} · {t("inbox.queue.takes")}</p>
           </div>
-          {onOpenPage ? (
-            <div className="to">
-              <b>{t("inbox.doc.sourcePage")}</b>
-              <br />
+          <div className="to">
+            <div className="mono to-cap">{t("inbox.doc.sourcePage")}</div>
+            {onOpenPage ? (
               <button
                 type="button"
-                className="linkish"
+                className="linkish to-link"
                 onClick={() => onOpenPage(take.page_slug)}
               >
                 {take.page_slug}
               </button>
-            </div>
-          ) : null}
+            ) : (
+              <b>{take.page_slug}</b>
+            )}
+            <div className="mono to-cap">take #{take.id}</div>
+          </div>
         </div>
         <div className="meta3">
           <div>
@@ -496,6 +515,8 @@ function DocumentCard({
 
   // trust queues (proposals / held / facts / others)
   const trust = item as TrustReviewItem;
+  const revision =
+    stringField(trust, "expected_revision") ?? stringField(trust, "revision");
   return (
     <>
       <div className="doc-head">
@@ -504,6 +525,11 @@ function DocumentCard({
           <p className="refline mono">
             {trust.ref} · {t(`inbox.queue.${entry.queueId}` as MessageKey)}
           </p>
+        </div>
+        <div className="to">
+          <div className="mono to-cap">TARGET</div>
+          <b>{entry.target ?? t("inbox.doc.unknownTarget")}</b>
+          {revision ? <div className="mono to-cap">rev {revision}</div> : null}
         </div>
       </div>
       <div className="meta3">
@@ -564,21 +590,37 @@ function DecisionRail({
     body: unknown,
     auditText: string,
     stampState?: StampState,
+    meta?: AuditMeta,
   ) => Promise<boolean>;
 }) {
   const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
 
   // The single runtime source of truth for which channel an action travels
   // (shared/ADJUDICATION_CHANNELS) — the check card renders FROM the matrix,
   // so it can never disagree with the code that runs the action.
   const ch = (action: AdjudicationAction): string => ADJUDICATION_CHANNELS[action];
 
-  const stampDrop = (run: () => Promise<boolean>) => (
+  const label = entry.title.slice(0, 80);
+  const metaFor = (
+    verdict: "stop" | "ok",
+    verdictText: string,
+    ref: string,
+  ): AuditMeta => ({ ref, label, verdict, verdictText });
+
+  let rail: ReactNode = null;
+  let rows: ChannelRow[] = [];
+  /** set for terminal-confirmation items: ⌘↵ copies it */
+  let acceptCmd: string | null = null;
+  /** set when the CLI one-key drop is live: ⌘⌫ runs it */
+  let dropRun: (() => Promise<boolean>) | null = null;
+
+  const stampDrop = (how: string, run: () => Promise<boolean>) => (
     <StampButton
       variant="drop"
       zh={t("inbox.drop")}
       en="DROP"
-      how={t("inbox.via.cli")}
+      how={how}
       onClick={() => void run()}
     />
   );
@@ -586,19 +628,35 @@ function DecisionRail({
   const stampOk = (
     zhKey: MessageKey,
     en: string,
+    how: string,
     run: () => Promise<boolean>,
   ) => (
     <StampButton
       variant="ok"
       zh={t(zhKey)}
       en={en}
-      how={t("inbox.via.cli")}
+      how={how}
       onClick={() => void run()}
     />
   );
 
-  let rail: ReactNode = null;
-  let rows: ChannelRow[] = [];
+  // the green "accept" stamp (mockup .stamp-btn.copy): a copy shortcut for
+  // the terminal-confirmation command — the verdict itself still only ever
+  // happens at the owner's terminal (ENG-15), never through this click
+  const copyStamp = (command: string) => (
+    <StampButton
+      variant="copy"
+      zh={t("inbox.edgeAccept")}
+      en="ACCEPT"
+      how={copied ? t("cmd.copied") : t("inbox.via.copy")}
+      onClick={() => {
+        void copyCommandText(command).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      }}
+    />
+  );
 
   const rejectedStamp: StampState = { variant: "drop", zh: t("stamp.rejected"), en: "REJECTED" };
   const acceptedStamp: StampState = { variant: "ok", zh: t("stamp.accepted"), en: "ACCEPTED" };
@@ -608,17 +666,28 @@ function DecisionRail({
     case "proposals":
     case "held": {
       const trust = entry.item as TrustReviewItem;
-      const acceptCmd =
+      acceptCmd =
         entry.queueId === "proposals"
           ? itemCommand(trust, ["trust confirm"]) ?? `gbrain trust confirm ${trust.ref}`
           : itemCommand(trust, ["trust release"]) ?? `gbrain trust release ${trust.ref}`;
+      dropRun = cliAvailable
+        ? () =>
+            act(
+              "/api/inbox/trust/drop",
+              { ref: trust.ref },
+              `trust.drop ${trust.ref}`,
+              rejectedStamp,
+              metaFor("stop", t("verdict.rejected"), trust.ref ?? "?"),
+            )
+        : null;
       rail = (
         <>
-          {cliAvailable
-            ? stampDrop(() =>
-                act("/api/inbox/trust/drop", { ref: trust.ref }, `trust.drop ${trust.ref}`, rejectedStamp),
-              )
-            : null}
+          {dropRun ? stampDrop(t("inbox.via.cliDrop"), dropRun) : null}
+          {!cliAvailable ? (
+            // degrade: one-key drop becomes a copy-command block too
+            <CopyCommand command={`gbrain trust drop ${trust.ref}`} />
+          ) : null}
+          {copyStamp(acceptCmd)}
           <CopyCommand command={acceptCmd} />
         </>
       );
@@ -644,12 +713,26 @@ function DecisionRail({
       const trust = entry.item as TrustReviewItem;
       rail = (
         <>
-          {stampOk("inbox.factConfirm", "CONFIRM", () =>
-            act("/api/inbox/confirm", { ref: trust.ref }, `memory.confirm ${trust.ref}`, confirmedStamp),
+          {stampOk("inbox.factConfirm", "CONFIRM", t("inbox.via.mcp"), () =>
+            act(
+              "/api/inbox/confirm",
+              { ref: trust.ref },
+              `memory.confirm ${trust.ref}`,
+              confirmedStamp,
+              metaFor("ok", t("verdict.confirmed"), trust.ref ?? "?"),
+            ),
           )}
           {cliAvailable ? (
-            stampDrop(() =>
-              act("/api/inbox/trust/drop", { ref: trust.ref }, `trust.drop ${trust.ref}`, rejectedStamp),
+            stampDrop(
+              t("inbox.via.cliDrop"),
+              (dropRun = () =>
+                act(
+                  "/api/inbox/trust/drop",
+                  { ref: trust.ref },
+                  `trust.drop ${trust.ref}`,
+                  rejectedStamp,
+                  metaFor("stop", t("verdict.rejected"), trust.ref ?? "?"),
+                )),
             )
           ) : (
             <CopyCommand command={`gbrain trust drop ${trust.ref}`} />
@@ -677,11 +760,25 @@ function DecisionRail({
       const id = String((entry.item as EdgeProposal).id ?? "");
       rail = cliAvailable && id ? (
         <>
-          {stampOk("inbox.edgeAccept", "ACCEPT", () =>
-            act("/api/inbox/edge", { op: "accept", id }, `edge.accept ${id}`, acceptedStamp),
+          {stampOk("inbox.edgeAccept", "ACCEPT", t("inbox.via.cliEdge"), () =>
+            act(
+              "/api/inbox/edge",
+              { op: "accept", id },
+              `edge.accept ${id}`,
+              acceptedStamp,
+              metaFor("ok", t("verdict.accepted"), `edge #${id}`),
+            ),
           )}
-          {stampDrop(() =>
-            act("/api/inbox/edge", { op: "reject", id }, `edge.reject ${id}`, rejectedStamp),
+          {stampDrop(
+            t("inbox.via.cliEdge"),
+            (dropRun = () =>
+              act(
+                "/api/inbox/edge",
+                { op: "reject", id },
+                `edge.reject ${id}`,
+                rejectedStamp,
+                metaFor("stop", t("verdict.rejected"), `edge #${id}`),
+              )),
           )}
         </>
       ) : (
@@ -712,21 +809,25 @@ function DecisionRail({
       const id = String(take.id);
       rail = cliAvailable ? (
         <>
-          {stampOk("inbox.edgeAccept", "ACCEPT", () =>
+          {stampOk("inbox.edgeAccept", "ACCEPT", t("inbox.via.cliTake"), () =>
             act(
               "/api/inbox/takes/propose",
               { op: "accept", id },
               `takes.propose.accept ${id}`,
               acceptedStamp,
+              metaFor("ok", t("verdict.accepted"), `take #${id}`),
             ),
           )}
-          {stampDrop(() =>
-            act(
-              "/api/inbox/takes/propose",
-              { op: "reject", id },
-              `takes.propose.reject ${id}`,
-              rejectedStamp,
-            ),
+          {stampDrop(
+            t("inbox.via.cliTake"),
+            (dropRun = () =>
+              act(
+                "/api/inbox/takes/propose",
+                { op: "reject", id },
+                `takes.propose.reject ${id}`,
+                rejectedStamp,
+                metaFor("stop", t("verdict.rejected"), `take #${id}`),
+              )),
           )}
         </>
       ) : (
@@ -762,6 +863,32 @@ function DecisionRail({
       ];
     }
   }
+
+  // mockup keyboard affordances: ⌘⌫ = one-key drop (when the CLI channel is
+  // live), ⌘↵ = copy the terminal-confirmation command. Both stay inert while
+  // typing in inputs so they never eat editing keys.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target !== null &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing) return;
+      if (e.key === "Enter" && acceptCmd) {
+        e.preventDefault();
+        void copyCommandText(acceptCmd).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        });
+      } else if (e.key === "Backspace" && dropRun) {
+        e.preventDefault();
+        void dropRun();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   return (
     <div className="rail">

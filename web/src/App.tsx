@@ -89,7 +89,7 @@ function App() {
             <span className="mark">GB</span>
             <div>
               <div className="name">gbrain-cockpit</div>
-              <div className="sub mono">mint audit</div>
+              <div className="sub mono">v{COCKPIT_VERSION} · MINT AUDIT</div>
             </div>
           </div>
           <p className="nav-label">{t("shell.navLabel")}</p>
@@ -114,10 +114,25 @@ function App() {
             </button>
           ))}
           <div className="side-foot">
+            <div className="side-dream">
+              <p className="cap">{t("side.dream.cap")}</p>
+              <div className="big">
+                <span className="n pending">—</span>
+                <span className="d">{t("side.dream.pending")}</span>
+              </div>
+              <div className="bar3">
+                <i className="g" style={{ width: 0 }} />
+                <i className="a" style={{ width: 0 }} />
+                <i className="r" style={{ width: 0 }} />
+                <i className="b" style={{ width: 0 }} />
+              </div>
+              <div className="legend">{t("side.dream.legend")}</div>
+            </div>
             <div className="owner">
               <span className="dot" />
-              <span>{t("shell.owner")}</span>
-              <span className="mono">COCKPIT_TOKEN</span>
+              <span>
+                {t("shell.owner")} <span className="mono">· Principal</span>
+              </span>
             </div>
           </div>
         </aside>
@@ -128,6 +143,11 @@ function App() {
               <h1>
                 {t(`nav.${panelId}.zh` as MessageKey)}
                 <span className="en">{t(`nav.${panelId}.en` as MessageKey)}</span>
+                {panelId === "inbox" && inboxTotal !== null && inboxTotal > 0 ? (
+                  <span className="tag">
+                    {inboxTotal} {t("topbar.pending")}
+                  </span>
+                ) : null}
               </h1>
               <p className="self">{t(`panel.${panelId}.desc` as MessageKey)}</p>
             </div>

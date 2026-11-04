@@ -1,9 +1,10 @@
 import type { ButtonHTMLAttributes } from "react";
 
-// The verdict stamp button — one-key channel ONLY. Press = translate into the
-// offset shadow (stamps down). Terminal-confirmation actions never render as
-// this component: they are copy-command blocks by structural constraint
-// (action trichotomy; same component never recolors to mean another channel).
+// The verdict stamp button. variant "drop"/"ok" = one-key channel (press =
+// translate into the offset shadow). variant "copy" is the mockup's green
+// "accept" stamp: it is a COPY affordance for the terminal-confirmation
+// command (⌘↵) — the action itself still only happens at the owner's terminal
+// (ENG-15). A one-key action and a copy shortcut never share a channel.
 
 export function StampButton({
   variant,
@@ -12,7 +13,7 @@ export function StampButton({
   how,
   ...rest
 }: {
-  variant: "drop" | "ok";
+  variant: "drop" | "ok" | "copy";
   zh: string;
   en: string;
   how?: string;
