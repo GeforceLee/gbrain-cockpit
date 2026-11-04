@@ -9,17 +9,20 @@ import { ApiError, apiGet } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
 // Nebula — the whole-brain map on the read-only bypass (ARCHITECTURE §3.3/§6).
-// Paradigms (frozen decision): 星域 starfield (default) / 轨道 orbit (click a
-// node) / 矩阵 matrix (neighborhood widget). FA2 layout coordinates are frozen
-// per graph fingerprint (localStorage) so dream diffs stay comparable; labels
-// render on sigma's canvas (native canvas text — immune to HTML injection);
-// node colors map page type, node size maps degree; dream-new edges (the SAME
-// data as the Inbox edge-proposals queue) paint amber; nodes with pending
-// proposals pulse. All colors come from the same-source GRAPH palette.
+// Human vocabulary (owner decision 2026-11-04): a node IS a page, an edge IS
+// a relation between two pages. Views: 全景 overview (default) / 聚焦 focus
+// (a page's ≤2-step neighborhood) / 关系矩阵 relation matrix (neighborhood
+// grid). FA2 layout coordinates are frozen per graph fingerprint (localStorage)
+// so dream diffs stay comparable; labels render on sigma's canvas (native
+// canvas text — immune to HTML injection); node colors map page type, node
+// size maps relation count; dream-new relations (the SAME data as the Inbox
+// edge-proposals queue) paint dashed amber; pages with pending proposals
+// pulse. All colors come from the same-source GRAPH palette.
 //
-// Structure: `baseData` (full graph + frozen layout + communities + pending
-// sets) never depends on selection, so picking nodes does NOT rebuild sigma;
-// `viewGraph` is the per-paradigm graphology instance sigma mounts.
+// Performance contract: sigma mounts ONCE per data change — paradigm and
+// selection switches filter through nodeReducer (no graph rebuild, no WebGL
+// remount), and the overlay canvas only repaints when the camera, the pulse
+// tick, the filters or the selection actually changed (dirty check).
 
 type ViewKind = "field" | "orbit" | "matrix";
 
@@ -28,6 +31,8 @@ const NOISE_KEY = "cockpit.nebula.noise";
 const LAYOUT_PREFIX = "cockpit.nebula.layout.";
 const NOISE_DEGREE = 3;
 const MATRIX_MAX = 24;
+/** communities smaller than this draw no hull (sliver hulls read as bugs) */
+const HULL_MIN_POINTS = 4;
 
 /** deterministic role rotation by page type (cluster colors of the mockup) */
 const TYPE_ROLES = [
@@ -45,8 +50,8 @@ function typeColor(type: string | undefined): string {
   return TYPE_ROLES[Math.abs(h) % TYPE_ROLES.length]!;
 }
 
-function nodeRadius(degree: number, orbit: boolean): number {
-  return (2.5 + Math.sqrt(degree) * 1.9) * (orbit ? 1.15 : 1);
+function nodeRadius(degree: number, focus: boolean): number {
+  return (2.5 + Math.sqrt(degree) * 1.9) * (focus ? 1.15 : 1);
 }
 
 /** Andrew monotone chain convex hull, ported from the frozen mockup */
@@ -163,7 +168,12 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     const v = localStorage.getItem(VIEW_KEY);
     return v === "orbit" || v === "matrix" ? v : "field";
   });
-  const [noise, setNoise] = useState(() => localStorage.getItem(NOISE_KEY) === "1");
+  // noise filter defaults ON: a young brain is mostly isolated pages, and the
+  // overview reads as meaningless dust until relations accumulate
+  const [noise, setNoise] = useState(() => {
+    const v = localStorage.getItem(NOISE_KEY);
+    return v === null ? true : v === "1";
+  });
   const [selected, setSelected] = useState<string | null>(null);
   const [locate, setLocate] = useState("");
 
@@ -173,11 +183,15 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
   const tipRef = useRef<HTMLDivElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const mouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  // hovered node (overlay draws the mockup's 2.5px ink ring at r+3.5 for it)
+  // hovered page (overlay draws the mockup's 2.5px ink ring at r+3.5 for it)
   const hoveredRef = useRef<string | null>(null);
-  // selection changes rebuild the graph instance (orbit filtering); keeping
-  // the last camera state across remounts avoids snapping back to overview
-  const cameraRef = useRef<{ x: number; y: number; ratio: number; angle: number } | null>(null);
+  // bump to force one overlay repaint (pulse tick / hover / selection / filter)
+  const overlayDirty = useRef(0);
+  // live closure refs for sigma's nodeReducer and the overlay loop
+  const tRef = useRef(t);
+  tRef.current = t;
+  const fieldCameraRef = useRef<{ x: number; y: number; ratio: number; angle: number } | null>(null);
+  const prevViewRef = useRef(view);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -196,7 +210,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     void refresh();
   }, [refresh]);
 
-  // dream-new edges share the Inbox queue's data (same data, two surfaces)
+  // dream-new relations share the Inbox queue's data (same data, two surfaces)
   const [proposalEdges, setProposalEdges] = useState<[string, string][]>([]);
   useEffect(() => {
     apiGet<{ edgeProposals?: { items?: EdgeProposal[] } }>("/api/inbox")
@@ -269,21 +283,41 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     return { nodes, edges, fingerprint, full, degree, pending, newEdgeSet };
   }, [report, proposalEdges]);
 
-  // --- per-paradigm graph sigma mounts ------------------------------------------
+  // --- view filtering (nodeReducer — no graph rebuild, no sigma remount) -------
+
+  /** focus view membership: the selected page's ≤2-step neighborhood */
+  const members = useMemo(() => {
+    if (!baseData || view !== "orbit" || !selected) return null;
+    if (!baseData.full.hasNode(selected)) return null;
+    return new Set(hops(baseData.full, selected, 2).keys());
+  }, [baseData, view, selected]);
+
+  const filterRef = useRef<{
+    view: ViewKind;
+    noise: boolean;
+    members: Set<string> | null;
+    pending: Set<string>;
+  }>({ view, noise, members, pending: new Set() });
+  filterRef.current = { view, noise, members, pending: baseData?.pending ?? new Set() };
+
+  /** the single visibility predicate — sigma's nodeReducer AND the overlay
+   *  both call it, so DOM and canvas can never disagree */
+  const isHidden = useCallback((node: string, degree: number): boolean => {
+    const f = filterRef.current;
+    if (f.view === "orbit") return f.members !== null && !f.members.has(node);
+    if (f.view === "matrix") return false;
+    return f.noise && degree < NOISE_DEGREE && !f.pending.has(node);
+  }, []);
+
+  // --- the one graphology instance sigma mounts (data-only deps) ----------------
 
   const viewGraph = useMemo(() => {
     if (!baseData) return null;
-    const { nodes, full, degree, pending, newEdgeSet, fingerprint } = baseData;
-
-    let members: Set<string> | null = null;
-    if (view === "orbit" && selected && full.hasNode(selected)) {
-      members = new Set(hops(full, selected, 2).keys());
-    }
+    const { nodes, full, degree, pending, newEdgeSet, edges, fingerprint } = baseData;
 
     const graph = new Graph({ multi: false, type: "undirected" });
     for (const n of nodes) {
       const slug = n.slug;
-      if (members && !members.has(slug)) continue;
       const deg = degree.get(slug) ?? n.degree ?? 0;
       const pos = full.getNodeAttributes(slug);
       graph.addNode(slug, {
@@ -298,20 +332,18 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         x: pos.x,
         y: pos.y,
         forceLabel: pending.has(slug),
-        hidden:
-          view === "field" && noise && deg < NOISE_DEGREE && !pending.has(slug),
         // sigma 4 label styling (per-node): Space Mono, ink, tabular culling
         labelFont: GRAPH.labelFont,
         labelSize: 11,
         labelColor: GRAPH.ink,
       });
     }
-    // dream-new edges do NOT enter the sigma graph: sigma's edge program
+    // dream-new relations do NOT enter the sigma graph: sigma's edge program
     // cannot dash, so the overlay canvas draws them dashed amber (mockup
     // recipe). Their endpoints still pulse, and the same data lives in the
     // Inbox edge queue. Trade-off: no hover tooltip on these overlay edges.
     const newEdges: { source: string; target: string }[] = [];
-    for (const e of baseData.edges) {
+    for (const e of edges) {
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
       const key = e.source < e.target ? `${e.source}||${e.target}` : `${e.target}||${e.source}`;
       if (newEdgeSet.has(key)) {
@@ -326,19 +358,25 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       });
     }
     return { graph, pending, newEdges, fingerprint };
-  }, [baseData, view, noise, selected]);
+    // view intentionally NOT a dep: node size bumps for focus view are
+    // applied by the selection effect below; filtering is reducer-side
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseData]);
 
-  // --- sigma lifecycle -----------------------------------------------------------
+  // --- sigma lifecycle: mount once per data, unmount only for the matrix -------
 
+  const isMatrix = view === "matrix";
   useEffect(() => {
-    if (!viewGraph || view === "matrix" || !mountRef.current) return;
+    if (!viewGraph || isMatrix || !mountRef.current) return;
     const { graph, pending } = viewGraph;
 
-    // sigma 4: label font/color/size are per-node attributes; global settings
-    // keep the density/grid culling and the size threshold below which nodes
-    // render without labels (only visible labels — ARCHITECTURE §6).
     const sigma = new Sigma(graph, mountRef.current, {
+      nodeReducer: (node, data) =>
+        isHidden(node, graph.getNodeAttribute(node, "degree") ?? 0)
+          ? { ...data, hidden: true }
+          : data,
       settings: {
+        hideEdgesOnMove: true, // smooth pan/zoom on large graphs
         labelDensity: 0.6,
         labelGridCellSize: 100,
         labelRenderedSizeThreshold: 6,
@@ -348,33 +386,23 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     });
     sigmaRef.current = sigma;
 
-    // orbit mount: center on the selected node; otherwise restore the camera
-    if (view === "orbit" && selected && graph.hasNode(selected)) {
-      const attrs = graph.getNodeAttributes(selected);
-      sigma.getCamera().setState({ x: attrs.x, y: attrs.y, ratio: 0.4 });
-    } else if (cameraRef.current) {
-      sigma.getCamera().setState(cameraRef.current);
-    }
-
-    sigma.on("clickNode", ({ node }) => {
-      setSelected(node);
-      if (view !== "orbit") {
-        setView("orbit");
-        localStorage.setItem(VIEW_KEY, "orbit");
-      }
-    });
+    // click SELECTS (drawer opens in place); the focus view is entered
+    // explicitly via the tab or the drawer button — no surprise teleports
+    sigma.on("clickNode", ({ node }) => setSelected(node));
     sigma.on("clickStage", () => setSelected(null));
     sigma.on("enterNode", ({ node }) => {
       hoveredRef.current = node;
+      overlayDirty.current++;
       const attrs = graph.getNodeAttributes(node);
       showTip(
         pending.has(node)
-          ? `${node} · deg ${attrs.degree} · ${t("nebula.tipPending")}`
-          : `${node} · deg ${attrs.degree}`,
+          ? `${node} · ${attrs.degree} · ${tRef.current("nebula.tipPending")}`
+          : `${node} · ${attrs.degree}`,
       );
     });
     sigma.on("leaveNode", () => {
       hoveredRef.current = null;
+      overlayDirty.current++;
       hideTip();
     });
     sigma.on("enterEdge", ({ edge }) => {
@@ -385,14 +413,44 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     sigma.on("leaveEdge", hideTip);
 
     return () => {
-      cameraRef.current = sigma.getCamera().getState();
       sigma.kill();
       sigmaRef.current = null;
       hideTip();
     };
-  }, [viewGraph, view, selected, t]);
+  }, [viewGraph, isMatrix, isHidden]);
 
-  // selection emphasis: forceLabel + bigger size (no rebuild — attrs only)
+  // view transitions: entering focus saves the overview camera and centers on
+  // the selected page; returning to overview restores it
+  useEffect(() => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    const camera = sigma.getCamera();
+    const reduced = document.documentElement.classList.contains("rm");
+    if (view === "orbit" && prevViewRef.current !== "orbit") {
+      fieldCameraRef.current = camera.getState();
+    }
+    if (
+      view === "orbit" &&
+      prevViewRef.current === "orbit" &&
+      fieldCameraRef.current === null
+    ) {
+      fieldCameraRef.current = camera.getState();
+    }
+    if (view === "orbit" && selected && viewGraph?.graph.hasNode(selected)) {
+      const attrs = viewGraph.graph.getNodeAttributes(selected);
+      if (reduced) camera.setState({ x: attrs.x, y: attrs.y, ratio: 0.4 });
+      else camera.animate({ x: attrs.x, y: attrs.y, ratio: 0.4 }, { duration: 500 });
+    } else if (view === "field" && prevViewRef.current === "orbit" && fieldCameraRef.current) {
+      const saved = fieldCameraRef.current;
+      if (reduced) camera.setState(saved);
+      else camera.animate(saved, { duration: 400 });
+    }
+    prevViewRef.current = view;
+    overlayDirty.current++;
+  }, [view, selected, viewGraph]);
+
+  // selection emphasis + filter changes: attribute bumps + one refresh (the
+  // reducer re-evaluates visibility on every refresh — no remount)
   useEffect(() => {
     const sigma = sigmaRef.current;
     if (!sigma || !viewGraph) return;
@@ -407,9 +465,10 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       );
     });
     sigma.refresh();
-  }, [selected, viewGraph, view]);
+    overlayDirty.current++;
+  }, [selected, viewGraph, view, noise, members]);
 
-  // pending-node pulse: slow size oscillation (reduced-motion shows steady)
+  // pending-page pulse: slow size oscillation (reduced-motion shows steady)
   useEffect(() => {
     if (!viewGraph || viewGraph.pending.size === 0 || view === "matrix") return;
     if (document.documentElement.classList.contains("rm")) return;
@@ -426,13 +485,16 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         graph.setNodeAttribute(node, "size", up ? base + 1.5 : base);
       }
       sigma.refresh();
+      overlayDirty.current++;
     }, 700);
     return () => clearInterval(timer);
   }, [viewGraph, view, selected]);
 
   // --- overlay canvas: hulls + node ink strokes + dashed new edges + rings ------
   // sigma 4 has no dashed-edge or node-stroke primitives, so the overlay draws
-  // them each frame, camera-synced through sigma.graphToViewport/scaleSize.
+  // them camera-synced through sigma.graphToViewport/scaleSize. The rAF loop
+  // stays cheap when idle: it skips the whole draw unless the camera state,
+  // the dirty counter, or the canvas size changed since last frame.
 
   useEffect(() => {
     if (!viewGraph || view === "matrix") return;
@@ -443,7 +505,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     const counts = new Map<number, number>();
     const typeHist = new Map<number, Map<string, number>>();
     graph.forEachNode((node, attrs) => {
-      if (attrs.hidden) return;
+      if (isHidden(node, attrs.degree)) return;
       const c = typeof attrs.community === "number" ? attrs.community : -1;
       const list = byCommunity.get(c);
       if (list) list.push([attrs.x, attrs.y]);
@@ -457,8 +519,10 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       }
     });
     const hulls = new Map<number, [number, number][]>();
-    for (const [c, points] of byCommunity) {
-      if (points.length >= 3) hulls.set(c, convexHull(points));
+    if (view === "field") {
+      for (const [c, points] of byCommunity) {
+        if (points.length >= HULL_MIN_POINTS) hulls.set(c, convexHull(points));
+      }
     }
     // semantic region name (mockup: 项目群 · 12): the community's dominant
     // page type + member count; communities without typed members fall back
@@ -484,6 +548,10 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
 
     let raf = 0;
     let running = true;
+    let lastCamKey = "";
+    let lastDirty = -1;
+    let lastW = 0;
+    let lastH = 0;
     const onVisibility = () => {
       running = !document.hidden;
       if (running) loop();
@@ -500,6 +568,20 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       const dpr = window.devicePixelRatio || 1;
       const w = wrap.clientWidth;
       const h = wrap.clientHeight;
+      const cam = sigma.getCamera().getState();
+      const camKey = `${cam.x}|${cam.y}|${cam.ratio}|${cam.angle}`;
+      if (
+        camKey === lastCamKey &&
+        overlayDirty.current === lastDirty &&
+        w === lastW &&
+        h === lastH
+      ) {
+        return; // idle frame — nothing moved, nothing pulsed, no repaint
+      }
+      lastCamKey = camKey;
+      lastDirty = overlayDirty.current;
+      lastW = w;
+      lastH = h;
       if (overlay.width !== Math.round(w * dpr) || overlay.height !== Math.round(h * dpr)) {
         overlay.width = Math.round(w * dpr);
         overlay.height = Math.round(h * dpr);
@@ -509,7 +591,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
 
-      // community hulls (dashed ink) + region labels
+      // community hulls (dashed ink) + region labels — overview only; a
+      // focus view of ≤2 hops renders slivers, not regions
       ctx.setLineDash([5, 4]);
       ctx.strokeStyle = GRAPH.hull;
       ctx.lineWidth = 1.5;
@@ -532,8 +615,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       }
       ctx.setLineDash([]);
 
-      // dream-new edges: amber dashed [6,3], lw 1.8 (mockup recipe) — drawn
-      // here because sigma's edge program cannot dash
+      // dream-new relations: amber dashed [6,3], lw 1.8 (mockup recipe) —
+      // drawn here because sigma's edge program cannot dash
       ctx.setLineDash([6, 3]);
       ctx.strokeStyle = GRAPH.edgeNew;
       ctx.lineWidth = GRAPH.edgeNewWidth;
@@ -541,7 +624,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
         const a = graph.getNodeAttributes(e.source);
         const b = graph.getNodeAttributes(e.target);
-        if (a.hidden || b.hidden) continue;
+        if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
         const va = sigma.graphToViewport({ x: a.x, y: a.y });
         const vb = sigma.graphToViewport({ x: b.x, y: b.y });
         ctx.beginPath();
@@ -557,7 +640,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       ctx.strokeStyle = GRAPH.ink;
       ctx.lineWidth = 1.5;
       graph.forEachNode((node, attrs) => {
-        if (attrs.hidden || attrs.color === GRAPH.ghost) return;
+        if (isHidden(node, attrs.degree) || attrs.color === GRAPH.ghost) return;
         const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size), 0, Math.PI * 2);
@@ -568,7 +651,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       const focus = hoveredRef.current ?? selected;
       if (focus && graph.hasNode(focus)) {
         const attrs = graph.getNodeAttributes(focus);
-        if (!attrs.hidden) {
+        if (!isHidden(focus, attrs.degree)) {
           const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
           ctx.lineWidth = 2.5;
           ctx.beginPath();
@@ -577,7 +660,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         }
       }
 
-      // orbit rings (1/2 hop) around the selected node
+      // focus rings (1/2 steps) around the selected page
       if (view === "orbit" && selected && graph.hasNode(selected)) {
         const attrs = graph.getNodeAttributes(selected);
         const center = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
@@ -591,7 +674,11 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
           ctx.stroke();
           ctx.font = `400 10px ${GRAPH.labelFont}`;
           ctx.fillStyle = GRAPH.hull;
-          ctx.fillText(frac < 0.3 ? "1 hop" : "2 hop", center.x + r * 0.7, center.y - r * 0.7);
+          ctx.fillText(
+            frac < 0.3 ? tRef.current("nebula.hop1") : tRef.current("nebula.hop2"),
+            center.x + r * 0.7,
+            center.y - r * 0.7,
+          );
         }
         ctx.setLineDash([]);
       }
@@ -602,7 +689,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       cancelAnimationFrame(raf);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [viewGraph, view, selected]);
+  }, [viewGraph, view, selected, noise, isHidden]);
 
   // --- tooltip helpers -------------------------------------------------------------
 
@@ -621,34 +708,23 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     tipRef.current?.classList.remove("show");
   }
 
-  // --- locate (graph search → orbit + drawer) ---------------------------------------
+  // --- locate (search → select + focus) ---------------------------------------------
 
   function runLocate() {
     const q = locate.trim().toLowerCase();
     if (!q || !baseData) return;
-    const hit = baseData.full
-      .nodes()
-      .find((n) => n.toLowerCase().includes(q));
+    const hit = baseData.full.nodes().find((n) => n.toLowerCase().includes(q));
     if (!hit) return;
     setSelected(hit);
+    // search is an explicit "find this page" action — going straight to the
+    // focus view is expected here (unlike clicking a node)
     setView("orbit");
     localStorage.setItem(VIEW_KEY, "orbit");
-    const sigma = sigmaRef.current;
-    if (sigma) {
-      const attrs = baseData.full.getNodeAttributes(hit);
-      const camera = sigma.getCamera();
-      if (document.documentElement.classList.contains("rm")) {
-        camera.setState({ x: attrs.x, y: attrs.y, ratio: 0.35 });
-      } else {
-        camera.animate({ x: attrs.x, y: attrs.y, ratio: 0.35 }, { duration: 500 });
-      }
-    }
   }
 
   function switchView(next: ViewKind) {
     setView(next);
     localStorage.setItem(VIEW_KEY, next);
-    if (next !== "orbit") setSelected(null);
   }
 
   function toggleNoise() {
@@ -662,8 +738,12 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
 
   const matrix = useMemo(() => {
     if (!baseData || view !== "matrix") return null;
-    const { full, newEdgeSet, pending } = baseData;
-    const center = selected && full.hasNode(selected) ? selected : (full.nodes()[0] ?? null);
+    const { full, newEdgeSet, pending, degree } = baseData;
+    // matrix without a selection falls back to the most-connected page
+    const center =
+      selected && full.hasNode(selected)
+        ? selected
+        : ([...full.nodes()].sort((a, b) => degree.get(b)! - degree.get(a)!)[0] ?? null);
     if (!center) return null;
     const dist = hops(full, center, 2);
     const members = [...dist.keys()]
@@ -789,7 +869,13 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
                 ✕
               </button>
               <p className="cap">{t("nebula.drawer.caption")}</p>
-              <h5>{selected}</h5>
+              <h5>{String(selectedAttrs.title ?? selected)}</h5>
+              {String(selectedAttrs.title ?? "") !== selected && (
+                <div className="kv">
+                  <span>slug</span>
+                  <span className="mono">{selected}</span>
+                </div>
+              )}
               <div className="kv">
                 <span>{t("nebula.drawer.type")}</span>
                 <span className="mono">{String(selectedAttrs.type ?? "?")}</span>
@@ -809,15 +895,25 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
                   <span className="tag warn">{t("nebula.drawer.pending")}</span>
                 </p>
               )}
-              {onOpenPage && (
-                <button
-                  type="button"
-                  className="linkish drawer-open"
-                  onClick={() => onOpenPage(selected)}
-                >
-                  {t("nebula.drawer.openPage")}
-                </button>
+              {Number(selectedAttrs.degree ?? 0) === 0 && (
+                <p className="muted small drawer-note">{t("nebula.drawer.noRelations")}</p>
               )}
+              <div className="drawer-actions">
+                {view !== "orbit" && (
+                  <button type="button" onClick={() => switchView("orbit")}>
+                    {t("nebula.drawer.focus")}
+                  </button>
+                )}
+                {onOpenPage && (
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => onOpenPage(selected)}
+                  >
+                    {t("nebula.drawer.openPage")}
+                  </button>
+                )}
+              </div>
             </div>
           ) : null}
         </div>
@@ -826,7 +922,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       {matrix && (
         <div className="graph-wrap matrix-wrap">
           <p className="graph-caption">
-            {t("nebula.matrix.caption")} · {matrix.members.length} × {matrix.members.length}
+            {t("nebula.matrix.caption")} · {matrix.center}
+            {!selected && ` (${t("nebula.matrix.fallback")})`}
           </p>
           <div
             className="matrix-grid"

@@ -31,6 +31,10 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 type QueueId = "proposals" | "held" | "facts" | "edges" | "takes" | "others";
 type TabId = "all" | Exclude<QueueId, "others">;
 
+/** queue cards per page — the takes queue alone can hold 500+ items per
+ *  dream run, and rendering every brut card at once janks the panel */
+const PAGE_SIZE = 50;
+
 interface Entry {
   key: string;
   queueId: QueueId;
@@ -102,8 +106,12 @@ export function Inbox({
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>("all");
+  const [page, setPage] = useState(0);
   const [detail, setDetail] = useState<Entry | null>(null);
   const [stamp, setStamp] = useState<StampState | null>(null);
+  // two-step confirm for the page-level batch reject (takes, CLI channel)
+  const [batchArmed, setBatchArmed] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setBusy(true);
@@ -260,6 +268,17 @@ export function Inbox({
   const visibleEntries =
     tab === "all" ? allEntries : allEntries.filter((e) => e.queueId === tab);
 
+  const totalPages = Math.max(1, Math.ceil(visibleEntries.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pagedEntries = visibleEntries.slice(
+    safePage * PAGE_SIZE,
+    (safePage + 1) * PAGE_SIZE,
+  );
+  // tab switches and refreshed-shorter lists fall back to the last page
+  useEffect(() => {
+    setPage((p) => Math.min(p, totalPages - 1));
+  }, [totalPages, tab]);
+
   // --- actions ----------------------------------------------------------------
 
   async function act(
@@ -289,6 +308,41 @@ export function Inbox({
     setStamp(null);
   }
 
+  // Page-level batch reject (takes tab, CLI one-key channel ONLY — terminal-
+  // confirmation actions are never batched, style-review hard constraint).
+  // Sequential sends with per-item audit lines; stops at the first failure so
+  // the audit trail always tells the truth about how far it got.
+  async function batchRejectPage(items: Entry[]) {
+    if (batchBusy) return;
+    setBatchBusy(true);
+    setBatchArmed(false);
+    setActionError(null);
+    let done = 0;
+    for (const entry of items) {
+      const take = entry.item as TakeProposal;
+      try {
+        await apiSend("/api/inbox/takes/propose", "POST", {
+          op: "reject",
+          id: String(take.id),
+        });
+        appendAudit(`takes.propose.reject ${take.id} -> OK`, {
+          ref: String(take.id),
+          label: take.claim_text.slice(0, 80),
+          verdict: "stop",
+          verdictText: t("verdict.rejected"),
+        });
+        done++;
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : String(err);
+        appendAudit(`takes.propose.reject ${take.id} -> ERR ${firstLine(msg)}`);
+        setActionError(msg);
+        break;
+      }
+    }
+    setBatchBusy(false);
+    if (done > 0) await refresh();
+  }
+
   const tabs: { id: TabId; label: string; n: number }[] = [
     { id: "all", label: t("inbox.tab.all"), n: allEntries.length },
     { id: "proposals", label: t("inbox.queue.proposals"), n: queueCounts.proposals },
@@ -307,7 +361,11 @@ export function Inbox({
             type="button"
             className={`tab ${tab === tb.id ? "on" : ""}`}
             aria-pressed={tab === tb.id}
-            onClick={() => setTab(tb.id)}
+            onClick={() => {
+              setTab(tb.id);
+              setPage(0);
+              setBatchArmed(false);
+            }}
           >
             {tb.label}{" "}
             <span className="n">
@@ -344,6 +402,50 @@ export function Inbox({
               <span className="muted">
                 {t("inbox.listCaption")} · {visibleEntries.length}
               </span>
+              {tab === "takes" && cliAvailable && pagedEntries.length > 0 && (
+                <button
+                  type="button"
+                  className={batchArmed ? "batch-arm" : ""}
+                  disabled={batchBusy}
+                  onClick={() => {
+                    if (batchArmed) {
+                      void batchRejectPage(pagedEntries);
+                      return;
+                    }
+                    setBatchArmed(true);
+                    setTimeout(() => setBatchArmed(false), 4000);
+                  }}
+                >
+                  {batchBusy
+                    ? t("common.loading")
+                    : batchArmed
+                      ? `${t("inbox.batch.confirm")} · ${pagedEntries.length}`
+                      : `${t("inbox.batch.reject")} · ${pagedEntries.length}`}
+                </button>
+              )}
+              {totalPages > 1 && (
+                <span className="pager">
+                  <button
+                    type="button"
+                    disabled={safePage === 0}
+                    onClick={() => setPage(safePage - 1)}
+                    aria-label={t("inbox.page.prev")}
+                  >
+                    ←
+                  </button>
+                  <span className="mono">
+                    {safePage + 1}/{totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safePage >= totalPages - 1}
+                    onClick={() => setPage(safePage + 1)}
+                    aria-label={t("inbox.page.next")}
+                  >
+                    →
+                  </button>
+                </span>
+              )}
             </div>
             {downNotices(tab).map((err, i) => (
               <p key={i} className="muted empty-note">
@@ -353,7 +455,7 @@ export function Inbox({
             {visibleEntries.length === 0 && downNotices(tab).length === 0 && (
               <p className="muted empty-note">{t("inbox.empty")}</p>
             )}
-            {visibleEntries.map((entry) => (
+            {pagedEntries.map((entry) => (
               <button
                 key={entry.key}
                 type="button"
