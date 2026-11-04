@@ -59,6 +59,31 @@ export const GRAPH = {
   /** dream-new edge (amber, dashed) */
   edgeNew: PALETTE.warn,
   edgeNewWidth: 1.8,
+  /**
+   * Per-relation-type edge colors (semantic: color = what the relation IS;
+   * the amber dash stays reserved for the pending/un-adjudicated STATE).
+   * Keyed by gbrain link_type; live-probed 2026-11-04. Extend when probes
+   * surface new types — unknown types fall back to `edgeUnknown`.
+   */
+  edgeTypes: {
+    mentions: "#43524B", // graphite — A 提到 B (most common, neutral weight)
+    cited: "#2E8C42", // green — A 引用 B
+    advises: "#9C5F1B", // dark rust — A 建议 B (kept apart from amber=new)
+    founded: "#4A5FB5", // indigo — A 创立 B
+  } as Record<string, string>,
+  /** untyped / unknown relations */
+  edgeUnknown: "rgba(18,18,16,.35)",
+  /**
+   * sigma factory-look preset for the 原版 (stock) comparison tab. These are
+   * deliberately NOT Mint Audit brand values — the tab exists to show the
+   * graph exactly as the library renders it, unskinned.
+   */
+  stock: {
+    node: "#999999",
+    edge: "#CCCCCC",
+    label: "#000000",
+    bg: "#FFFFFF",
+  },
   /** community hull stroke */
   hull: "rgba(18,18,16,.55)",
   /** ghost node fill (low-trust / unknown type) */

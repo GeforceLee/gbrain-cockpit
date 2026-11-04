@@ -12,11 +12,13 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // Human vocabulary (owner decision 2026-11-04): a node IS a page, an edge IS
 // a relation between two pages. Views: 全景 overview (default) / 聚焦 focus
 // (a page's ≤2-step neighborhood) / 关系矩阵 relation matrix (neighborhood
-// grid). FA2 layout coordinates are frozen per graph fingerprint (localStorage)
-// so dream diffs stay comparable; labels render on sigma's canvas (native
-// canvas text — immune to HTML injection); node colors map page type, node
-// size maps relation count; dream-new relations (the SAME data as the Inbox
-// edge-proposals queue) paint dashed amber; pages with pending proposals
+// grid) / 原版 stock (the same graph rendered with sigma's factory look, no
+// Mint Audit skin — an owner comparison affordance). FA2 layout coordinates
+// are frozen per graph fingerprint (localStorage) so dream diffs stay
+// comparable; labels render on sigma's canvas (native canvas text — immune
+// to HTML injection); node colors map page type, node size maps relation
+// count; relation color maps link_type, the amber dash stays reserved for
+// pending (un-adjudicated) dream relations; pages with pending proposals
 // pulse. All colors come from the same-source GRAPH palette.
 //
 // Performance contract: sigma mounts ONCE per data change — paradigm and
@@ -24,7 +26,7 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // remount), and the overlay canvas only repaints when the camera, the pulse
 // tick, the filters or the selection actually changed (dirty check).
 
-type ViewKind = "field" | "orbit" | "matrix";
+type ViewKind = "field" | "orbit" | "matrix" | "plain";
 
 const VIEW_KEY = "cockpit.nebula.view";
 const NOISE_KEY = "cockpit.nebula.noise";
@@ -48,6 +50,11 @@ function typeColor(type: string | undefined): string {
   let h = 0;
   for (let i = 0; i < type.length; i++) h = ((h << 5) - h + type.charCodeAt(i)) | 0;
   return TYPE_ROLES[Math.abs(h) % TYPE_ROLES.length]!;
+}
+
+/** relation color = link_type (semantic); unknown types stay neutral grey */
+function edgeTypeColor(type: string | undefined): string {
+  return (type && GRAPH.edgeTypes[type]) || GRAPH.edgeUnknown;
 }
 
 function nodeRadius(degree: number, focus: boolean): number {
@@ -74,6 +81,23 @@ function convexHull(points: [number, number][]): [number, number][] {
   upper.pop();
   lower.pop();
   return lower.concat(upper);
+}
+
+/** distance from a pointer to a segment — overlay-edge proximity hover */
+function pointSegmentDistance(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
 function hops(graph: Graph, start: string, maxHops: number): Map<string, number> {
@@ -166,7 +190,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<ViewKind>(() => {
     const v = localStorage.getItem(VIEW_KEY);
-    return v === "orbit" || v === "matrix" ? v : "field";
+    return v === "orbit" || v === "matrix" || v === "plain" ? v : "field";
   });
   // noise filter defaults ON: a young brain is mostly isolated pages, and the
   // overview reads as meaningless dust until relations accumulate
@@ -174,6 +198,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     const v = localStorage.getItem(NOISE_KEY);
     return v === null ? true : v === "1";
   });
+  /** relation types the owner toggled off in the legend (themed views) */
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [locate, setLocate] = useState("");
 
@@ -338,45 +364,76 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         labelColor: GRAPH.ink,
       });
     }
-    // dream-new relations do NOT enter the sigma graph: sigma's edge program
-    // cannot dash, so the overlay canvas draws them dashed amber (mockup
-    // recipe). Their endpoints still pulse, and the same data lives in the
-    // Inbox edge queue. Trade-off: no hover tooltip on these overlay edges.
-    const newEdges: { source: string; target: string }[] = [];
+    // ALL relations enter the sigma graph (the 原版 stock view renders them
+    // with sigma's own edge program; themed views hide them via edgeReducer
+    // and the overlay draws them typed/dashed instead — sigma cannot dash).
+    // allEdges mirrors them for the overlay + proximity hover.
+    const allEdges: { source: string; target: string; link_type?: string; isNew: boolean }[] = [];
     for (const e of edges) {
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
-      const key = e.source < e.target ? `${e.source}||${e.target}` : `${e.target}||${e.source}`;
-      if (newEdgeSet.has(key)) {
-        newEdges.push({ source: e.source, target: e.target });
-        continue;
-      }
       if (graph.hasEdge(e.source, e.target)) continue;
+      const key = e.source < e.target ? `${e.source}||${e.target}` : `${e.target}||${e.source}`;
+      const isNew = newEdgeSet.has(key);
       graph.addEdge(e.source, e.target, {
         link_type: e.link_type,
+        isNew,
         color: GRAPH.edge,
         size: GRAPH.edgeWidth,
       });
+      allEdges.push({ source: e.source, target: e.target, link_type: e.link_type, isNew });
     }
-    return { graph, pending, newEdges, fingerprint };
+    return { graph, pending, allEdges, fingerprint };
     // view intentionally NOT a dep: node size bumps for focus view are
     // applied by the selection effect below; filtering is reducer-side
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseData]);
 
   // --- sigma lifecycle: mount once per data, unmount only for the matrix -------
+  // sigma needs a laid-out container (it reads offsetWidth at construction and
+  // throws on 0). Embedded webviews can lay out at ZERO width for a few frames
+  // right after navigation, so when that happens the mount arms a
+  // ResizeObserver on the container and retries (observe reports the current
+  // size immediately, so the normal case still mounts on the first pass).
 
   const isMatrix = view === "matrix";
+  const [mountTick, setMountTick] = useState(0);
+
   useEffect(() => {
-    if (!viewGraph || isMatrix || !mountRef.current) return;
+    if (!viewGraph || isMatrix) return;
+    const el = mountRef.current;
+    if (!el) return;
+    if (el.offsetWidth === 0) {
+      const ro = new ResizeObserver(() => {
+        if (el.offsetWidth > 0) {
+          ro.disconnect();
+          setMountTick((x) => x + 1);
+        }
+      });
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
     const { graph, pending } = viewGraph;
 
     const sigma = new Sigma(graph, mountRef.current, {
-      nodeReducer: (node, data) =>
-        isHidden(node, graph.getNodeAttribute(node, "degree") ?? 0)
+      nodeReducer: (node, data) => {
+        const shown = isHidden(node, graph.getNodeAttribute(node, "degree") ?? 0)
           ? { ...data, hidden: true }
-          : data,
+          : data;
+        // 原版 stock view: strip the Mint Audit node skin (factory colors,
+        // default label font) while keeping data-driven size/position
+        if (filterRef.current.view === "plain") {
+          return { ...shown, color: GRAPH.stock.node, labelColor: GRAPH.stock.label, labelFont: "sans-serif" };
+        }
+        return shown;
+      },
+      // themed views draw relations on the overlay canvas (typed colors +
+      // amber dashes, which sigma's edge program cannot do); only the 原版
+      // view lets sigma's own edge program render them, in factory grey
+      edgeReducer: (_edge, data) =>
+        filterRef.current.view === "plain"
+          ? { ...data, color: GRAPH.stock.edge }
+          : { ...data, hidden: true },
       settings: {
-        hideEdgesOnMove: true, // smooth pan/zoom on large graphs
         labelDensity: 0.6,
         labelGridCellSize: 100,
         labelRenderedSizeThreshold: 6,
@@ -385,6 +442,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       },
     });
     sigmaRef.current = sigma;
+    overlayDirty.current++; // the overlay's first frame needs sigma in place
 
     // click SELECTS (drawer opens in place); the focus view is entered
     // explicitly via the tab or the drawer button — no surprise teleports
@@ -417,7 +475,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       sigmaRef.current = null;
       hideTip();
     };
-  }, [viewGraph, isMatrix, isHidden]);
+    // mountTick: retried after a zero-width webview frame grew a real size
+  }, [viewGraph, isMatrix, mountTick, isHidden]);
 
   // view transitions: entering focus saves the overview camera and centers on
   // the selected page; returning to overview restores it
@@ -497,8 +556,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
   // the dirty counter, or the canvas size changed since last frame.
 
   useEffect(() => {
-    if (!viewGraph || view === "matrix") return;
-    const { graph, newEdges } = viewGraph;
+    if (!viewGraph || view === "matrix" || view === "plain") return;
+    const { graph, allEdges } = viewGraph;
 
     // hulls in GRAPH coordinates + per-community dominant type (region name)
     const byCommunity = new Map<number, [number, number][]>();
@@ -552,9 +611,13 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     let lastDirty = -1;
     let lastW = 0;
     let lastH = 0;
+    let lastPaint = 0;
     const onVisibility = () => {
       running = !document.hidden;
-      if (running) loop();
+      if (running) {
+        overlayDirty.current++; // frames were throttled away — force one
+        loop();
+      }
     };
     document.addEventListener("visibilitychange", onVisibility);
 
@@ -570,11 +633,15 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       const h = wrap.clientHeight;
       const cam = sigma.getCamera().getState();
       const camKey = `${cam.x}|${cam.y}|${cam.ratio}|${cam.angle}`;
+      // idle frames skip the whole draw; the 1s backstop guarantees recovery
+      // from throttled/occluded tabs whose rAF stops mid-check (their first
+      // frame back would otherwise look "unchanged" and skip forever)
       if (
         camKey === lastCamKey &&
         overlayDirty.current === lastDirty &&
         w === lastW &&
-        h === lastH
+        h === lastH &&
+        performance.now() - lastPaint < 1000
       ) {
         return; // idle frame — nothing moved, nothing pulsed, no repaint
       }
@@ -582,6 +649,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       lastDirty = overlayDirty.current;
       lastW = w;
       lastH = h;
+      lastPaint = performance.now();
       if (overlay.width !== Math.round(w * dpr) || overlay.height !== Math.round(h * dpr)) {
         overlay.width = Math.round(w * dpr);
         overlay.height = Math.round(h * dpr);
@@ -615,23 +683,35 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       }
       ctx.setLineDash([]);
 
-      // dream-new relations: amber dashed [6,3], lw 1.8 (mockup recipe) —
-      // drawn here because sigma's edge program cannot dash
-      ctx.setLineDash([6, 3]);
-      ctx.strokeStyle = GRAPH.edgeNew;
-      ctx.lineWidth = GRAPH.edgeNewWidth;
-      for (const e of newEdges) {
+      // relations — semantic: color = link_type, the amber dash is reserved
+      // for the pending (un-adjudicated) STATE. Drawn on the overlay because
+      // sigma's edge program can neither dash nor cheaply per-type color.
+      // Pending relations draw last so they sit on top.
+      const solid: typeof allEdges = [];
+      const pendingEdges: typeof allEdges = [];
+      for (const e of allEdges) {
+        if (hiddenTypes.has(e.link_type ?? "?")) continue;
         if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
         const a = graph.getNodeAttributes(e.source);
         const b = graph.getNodeAttributes(e.target);
         if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+        (e.isNew ? pendingEdges : solid).push(e);
+      }
+      const drawEdge = (e: (typeof allEdges)[number], color: string, width: number, dash: number[]) => {
+        const a = graph.getNodeAttributes(e.source);
+        const b = graph.getNodeAttributes(e.target);
         const va = sigma.graphToViewport({ x: a.x, y: a.y });
         const vb = sigma.graphToViewport({ x: b.x, y: b.y });
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.setLineDash(dash);
         ctx.beginPath();
         ctx.moveTo(va.x, va.y);
         ctx.lineTo(vb.x, vb.y);
         ctx.stroke();
-      }
+      };
+      for (const e of solid) drawEdge(e, edgeTypeColor(e.link_type), 1.4, []);
+      for (const e of pendingEdges) drawEdge(e, GRAPH.edgeNew, GRAPH.edgeNewWidth, [6, 3]);
       ctx.setLineDash([]);
 
       // node ink strokes (mockup: solid/hollow nodes carry a 1.5px ink stroke;
@@ -689,7 +769,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       cancelAnimationFrame(raf);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [viewGraph, view, selected, noise, isHidden]);
+  }, [viewGraph, view, selected, noise, hiddenTypes, isHidden]);
 
   // --- tooltip helpers -------------------------------------------------------------
 
@@ -706,6 +786,47 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
 
   function hideTip() {
     tipRef.current?.classList.remove("show");
+  }
+
+  // --- overlay-edge proximity hover ------------------------------------------------
+  // sigma's enterEdge can't see overlay-drawn relations, so themed views
+  // hit-test by pointer distance (point→segment, ≤5px). Node hover wins.
+
+  const hoveredEdgeRef = useRef<string | null>(null);
+
+  function hoverEdgeAtPointer(): void {
+    const sigma = sigmaRef.current;
+    if (!sigma || !viewGraph) return;
+    if (hoveredRef.current) return; // a node is under the pointer — it wins
+    const m = mouseRef.current;
+    let best: { key: string; text: string; dist: number } | null = null;
+    for (const e of viewGraph.allEdges.slice(0, 3000)) {
+      if (hiddenTypes.has(e.link_type ?? "?")) continue;
+      const { graph } = viewGraph;
+      if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
+      const a = graph.getNodeAttributes(e.source);
+      const b = graph.getNodeAttributes(e.target);
+      if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+      const va = sigma.graphToViewport({ x: a.x, y: a.y });
+      const vb = sigma.graphToViewport({ x: b.x, y: b.y });
+      const dist = pointSegmentDistance(m.x, m.y, va.x, va.y, vb.x, vb.y);
+      if (dist <= 5 && (!best || dist < best.dist)) {
+        best = {
+          key: `${e.source}||${e.target}`,
+          dist,
+          text:
+            `${e.link_type ?? "?"} · ${e.source} → ${e.target}` +
+            (e.isNew ? ` · ${t("nebula.tipPending")}` : ""),
+        };
+      }
+    }
+    const key = best?.key ?? null;
+    if (key !== hoveredEdgeRef.current) {
+      hoveredEdgeRef.current = key;
+      overlayDirty.current++;
+    }
+    if (best) showTip(best.text);
+    else if (!hoveredRef.current) hideTip();
   }
 
   // --- locate (search → select + focus) ---------------------------------------------
@@ -778,6 +899,15 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     return [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
   }, [report]);
 
+  const relationLegend = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const e of report?.edges ?? []) {
+      const key = e.link_type ?? "?";
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    return [...seen.entries()].sort((a, b) => b[1] - a[1]);
+  }, [report]);
+
   return (
     <section className="panel nebula">
       <div className="nebula-head">
@@ -787,7 +917,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         </div>
         <div className="nebula-tools">
           <div className="vtabs" role="group" aria-label={t("nebula.view.label")}>
-            {(["field", "orbit", "matrix"] as const).map((v) => (
+            {(["field", "orbit", "matrix", "plain"] as const).map((v) => (
               <button
                 key={v}
                 type="button"
@@ -847,11 +977,14 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
 
       {viewGraph && view !== "matrix" && (
         <div
-          className="graph-wrap"
+          className={`graph-wrap ${view === "plain" ? "graph-plain" : ""}`}
           ref={wrapRef}
           onMouseMove={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             mouseRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            // overlay-drawn relations need manual proximity hover (sigma
+            // cannot see them); the 原版 view uses sigma's own edge events
+            if (view === "field" || view === "orbit") hoverEdgeAtPointer();
           }}
           onMouseLeave={hideTip}
         >
@@ -942,16 +1075,38 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         </div>
       )}
 
-      {viewGraph && view !== "matrix" && (
+      {viewGraph && view !== "matrix" && view !== "plain" && (
         <div className="legend">
+          <span className="lg-cap">{t("nebula.legend.pages")}</span>
           {typeLegend.map(([type, count]) => (
             <span key={type} className="li">
               <span className="sw" style={{ background: typeColor(type) }} />
               {type} · {count}
             </span>
           ))}
+          <span className="lg-cap">{t("nebula.legend.relations")}</span>
+          {relationLegend.map(([type, count]) => (
+            <button
+              key={type}
+              type="button"
+              className={`li chip-li ${hiddenTypes.has(type) ? "off" : ""}`}
+              aria-pressed={!hiddenTypes.has(type)}
+              title={t("nebula.legend.toggle")}
+              onClick={() =>
+                setHiddenTypes((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(type)) next.delete(type);
+                  else next.add(type);
+                  return next;
+                })
+              }
+            >
+              <span className="sw-line" style={{ borderColor: edgeTypeColor(type) }} />
+              {type} · {count}
+            </button>
+          ))}
           <span className="li">
-            <span className="sw" style={{ background: GRAPH.edgeNew }} />
+            <span className="sw-line dashed" style={{ borderColor: GRAPH.edgeNew }} />
             {t("nebula.legend.newEdge")}
           </span>
           <span className="li">

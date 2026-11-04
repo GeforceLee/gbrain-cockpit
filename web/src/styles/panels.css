@@ -990,6 +990,52 @@ button.batch-arm {
   display: inline-block;
 }
 
+/* legend group captions (页面类型 / 关系类型) */
+.legend .lg-cap {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  opacity: 0.55;
+  align-self: center;
+  margin-left: 6px;
+}
+
+.legend .lg-cap:first-child {
+  margin-left: 0;
+}
+
+/* relation-type chips: clickable legend items toggling type visibility */
+.legend button.li {
+  cursor: pointer;
+  font-family: var(--f-mono);
+  box-shadow: none;
+}
+
+.legend button.li:active {
+  transform: none;
+  box-shadow: none;
+}
+
+.legend button.li.off {
+  opacity: 0.3;
+}
+
+/* line swatch for relation types (edges are lines, not dots) */
+.legend .sw-line {
+  width: 16px;
+  height: 0;
+  border-top: 3px solid var(--ink);
+  display: inline-block;
+}
+
+.legend .sw-line.dashed {
+  border-top-style: dashed;
+}
+
+/* 原版 stock view: plain white stage, no mint grid paper */
+.graph-wrap.graph-plain {
+  background: var(--paper);
+}
+
 .graph-caption {
   font-family: var(--f-mono);
   font-size: 10.5px;
