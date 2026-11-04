@@ -40,6 +40,8 @@ const SQL_COLUMNS =
 const PAGES_WANT = ["id", "slug", "title", "type", "updated_at"] as const;
 /** candidate endpoint column pairs for links, most likely first */
 const LINK_ENDPOINT_PAIRS: readonly (readonly [string, string])[] = [
+  // live-probed gbrain 0.60.558 shape (integer FKs into pages.id)
+  ["from_page_id", "to_page_id"],
   ["from", "to"],
   ["from_slug", "to_slug"],
   ["source", "target"],

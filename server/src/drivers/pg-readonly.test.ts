@@ -138,6 +138,50 @@ describe("PgReadonlyDriver", () => {
     expect(second.snapshot.nodes).toHaveLength(1);
   });
 
+  test("reads the live-probed 0.60.558 schema (from_page_id/to_page_id integer FKs)", async () => {
+    const columns: Script = {
+      text: COLUMNS.text,
+      rows: [
+        { table_name: "pages", column_name: "id" },
+        { table_name: "pages", column_name: "slug" },
+        { table_name: "pages", column_name: "title" },
+        { table_name: "pages", column_name: "type" },
+        { table_name: "pages", column_name: "updated_at" },
+        { table_name: "links", column_name: "from_page_id" },
+        { table_name: "links", column_name: "to_page_id" },
+        { table_name: "links", column_name: "link_type" },
+        { table_name: "links", column_name: "link_source" },
+      ],
+    };
+    const pages = [
+      { id: 1, slug: "alpha", type: "note", updated_at: new Date("2026-11-04T08:00:00Z") },
+      { id: 2, slug: "beta", type: "person", updated_at: new Date("2026-11-04T09:00:00Z") },
+    ];
+    const links = [
+      { from_page_id: 1, to_page_id: 2, link_type: "mentions", link_source: "manual" },
+      { from_page_id: 2, to_page_id: 999, link_type: "cites" }, // dangling → dropped
+    ];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery([
+        columns,
+        { text: "SELECT id, slug, title, type, updated_at FROM pages", rows: pages },
+        {
+          text: 'SELECT "from_page_id", "to_page_id", "link_type", "link_source" FROM links',
+          rows: links,
+        },
+        { text: SQL_PROBE_PAGES, rows: [{ n: 2, m: 1793750400 }] },
+        { text: SQL_PROBE_LINKS, rows: [{ n: 1 }] },
+      ]),
+    });
+
+    const { snapshot } = await driver.getGraph();
+    expect(snapshot.edges).toEqual([
+      { source: "alpha", target: "beta", link_type: "mentions", link_source: "manual" },
+    ]);
+    expect(snapshot.nodes).toHaveLength(2);
+  });
+
   test("fails closed when pages has no slug column", async () => {
     const noSlug = {
       text: COLUMNS.text,
