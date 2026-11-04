@@ -65,7 +65,6 @@ export const zhCN = {
   "inbox.factDiscard": "丢弃",
   "inbox.edgeAccept": "接受",
   "inbox.edgeReject": "驳回",
-  "inbox.noRef": "此条缺 ref,无法执行动作(协议勘误候选)",
   "inbox.queue.proposals": "信任提案",
   "inbox.queue.proposalsDesc":
     "dream 或代理想写入、被信任规则拦下等你裁决的提案。接受需你本人在 brain 主机终端确认(gbrain 安全设计),永不在此代劳。",
@@ -77,13 +76,9 @@ export const zhCN = {
   "inbox.queue.edges": "关系提案",
   "inbox.queue.edgesDesc": "dream 发现的页面间关系修正:接受或驳回。",
   "inbox.queue.takes": "观点待判定",
-  "inbox.queue.takesDesc": "已入库、标记待你判定对错的 take:选一个判定,决议人会盖章为 cockpit(mcp)。",
+  "inbox.queue.takesDesc": "dream 的 LLM 提案观点(propose_takes 队列):接受即写入该页的 takes,驳回即丢弃;点击页面 slug 可回看源文依据。",
   "inbox.queue.others": "其他待办",
   "inbox.queue.othersDesc": "信任规则/allow 条目等,用 explain 查看详情。",
-  "inbox.take.correct": "正确",
-  "inbox.take.incorrect": "错误",
-  "inbox.take.partial": "部分正确",
-  "inbox.take.unresolvable": "无法判定",
 
   "cmd.badge": "gbrain 安全设计 · owner 终端动作",
   "cmd.copy": "复制",

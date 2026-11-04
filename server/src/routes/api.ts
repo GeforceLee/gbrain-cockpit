@@ -8,8 +8,7 @@ import type {
   PageVersion,
   PagesFacets,
   SearchHit,
-  TakeItem,
-  TakeQuality,
+  TakeProposal,
   TrustReviewEnvelope,
   TrustReviewItem,
   WriteReceipt,
@@ -36,12 +35,6 @@ const REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REQUEST_ID_RE = /^[0-9a-fA-F-]{8,64}$/;
-const QUALITIES: readonly TakeQuality[] = [
-  "correct",
-  "incorrect",
-  "partial",
-  "unresolvable",
-];
 
 function param(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name) ?? undefined;
@@ -190,14 +183,22 @@ async function edgeQueue(
   }
 }
 
-async function takesQueue(ctx: ApiContext): Promise<InboxQueue<TakeItem>> {
+async function takesQueue(
+  ctx: ApiContext,
+): Promise<InboxQueue<TakeProposal>> {
+  // The pending-takes queue lives in gbrain's hidden CLI family
+  // (`takes propose`), not behind an MCP tool — so this queue is CLI-only
+  // by design and degrades to copy-command off the brain host.
+  if (!ctx.cli) {
+    return {
+      status: "down",
+      error: "CLI channel unavailable on this host — actions degrade to copy-command",
+    };
+  }
   try {
-    const items = await ctx.mcp.takesList();
+    const items = await ctx.cli.takesProposeList();
     return { status: "ok", items };
   } catch (err) {
-    if (err instanceof McpError) {
-      return { status: "degraded", error: err.message };
-    }
     return {
       status: "down",
       error: err instanceof Error ? err.message : String(err),
@@ -290,35 +291,37 @@ export async function handleEdgeAction(
   return Response.json({ ok: true, output: result.output });
 }
 
-export async function handleTakeResolve(
+export async function handleTakePropose(
   ctx: ApiContext,
   req: Request,
 ): Promise<Response> {
   const body = await readJsonBody(req);
-  const ref = requirePattern(
-    typeof body.ref === "string" ? body.ref : undefined,
-    "ref",
-    REF_RE,
-  );
-  const quality = body.quality;
-  if (typeof quality !== "string" || !QUALITIES.includes(quality as TakeQuality)) {
-    throw new BadRequestError("quality must be correct|incorrect|partial|unresolvable");
+  const op = body.op;
+  if (op !== "accept" && op !== "reject") {
+    throw new BadRequestError("op must be accept|reject");
   }
-  const evidence =
-    typeof body.evidence === "string" && body.evidence.trim()
-      ? body.evidence.trim().slice(0, 2000)
-      : undefined;
-  const result = await ctx.mcp.resolveTake({
-    ref,
-    quality: quality as TakeQuality,
-    evidence,
-  });
+  const id = requirePattern(
+    typeof body.id === "string" ? body.id : String(body.id ?? ""),
+    "id",
+    ID_RE,
+  );
+  if (!ctx.cli) {
+    return envelope(
+      503,
+      "E_UPSTREAM",
+      "CLI channel unavailable on this host — use the copy-command instead",
+    );
+  }
+  const result =
+    op === "accept"
+      ? await ctx.cli.takesProposeAccept(id)
+      : await ctx.cli.takesProposeReject(id);
   ctx.mcp.invalidateAll();
   await auditWrite("owner", {
-    action: "takes.resolve",
-    detail: { ref, quality },
+    action: `takes.propose.${op}`,
+    detail: { id },
   });
-  return Response.json({ ok: true, result });
+  return Response.json({ ok: true, output: result.output });
 }
 
 export async function handleConfirm(

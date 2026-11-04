@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import type {
   CliChannelStatus,
   EdgeProposal,
+  TakeProposal,
   TrustReviewEnvelope,
 } from "@gbrain-cockpit/shared";
 
@@ -47,7 +48,15 @@ interface FlagSpec {
   literal: string;
 }
 
-type ArgSpec = PositionalSpec | FlagSpec;
+interface ValueFlagSpec {
+  kind: "value";
+  /** exact literal, e.g. "--accept" */
+  literal: string;
+  name: string;
+  regex: RegExp;
+}
+
+type ArgSpec = PositionalSpec | FlagSpec | ValueFlagSpec;
 
 interface SubcommandSpec {
   /** subcommand words, e.g. ["edge-proposals", "accept"] */
@@ -60,6 +69,7 @@ interface SubcommandSpec {
 const REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const LIMIT_RE = /^\d{1,4}$/;
 
 // The live list — GBRAIN-CAPABILITIES.md §2 is the source of truth; keep both
 // in sync when probes correct it.
@@ -110,6 +120,28 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
     args: [{ kind: "positional", name: "id", regex: ID_RE }],
     json: false,
   },
+  // takes propose family (verified 2026-11-04 on 0.60.558): the pending
+  // LLM-proposed takes queue — the REAL source of the Inbox takes queue.
+  // Note the CLI shape: accept/reject are value flags on `takes propose`,
+  // not subcommand positionals.
+  "takes propose list": {
+    words: ["takes", "propose"],
+    args: [
+      { kind: "value", literal: "--limit", name: "limit", regex: LIMIT_RE },
+      { kind: "flag", literal: "--json" },
+    ],
+    json: true,
+  },
+  "takes propose accept": {
+    words: ["takes", "propose"],
+    args: [{ kind: "value", literal: "--accept", name: "id", regex: ID_RE }],
+    json: false,
+  },
+  "takes propose reject": {
+    words: ["takes", "propose"],
+    args: [{ kind: "value", literal: "--reject", name: "id", regex: ID_RE }],
+    json: false,
+  },
 };
 
 export function getSpec(key: string): SubcommandSpec {
@@ -120,39 +152,48 @@ export function getSpec(key: string): SubcommandSpec {
   return spec;
 }
 
-/** Validate positionals against the spec and build the execFile argv. */
+/**
+ * Validate named values against the spec and build the execFile argv.
+ * Every value (flag value or positional) must pass its regex — anything
+ * else throws before a process is ever spawned.
+ */
 export function buildArgv(
   key: string,
-  positionals: Array<{ name: string; value: string }>,
+  values: Record<string, string>,
 ): string[] {
   const spec = getSpec(key);
-  const expected = spec.args.filter(
-    (a): a is PositionalSpec => a.kind === "positional",
-  );
-  if (positionals.length !== expected.length) {
-    throw new CliValidationError(
-      `${key}: expected ${expected.length} positional(s), got ${positionals.length}`,
-    );
-  }
   const argv = [...spec.words];
+  const positionals: string[] = [];
   for (const arg of spec.args) {
-    if (arg.kind === "flag") {
-      argv.push(arg.literal);
+    switch (arg.kind) {
+      case "flag":
+        argv.push(arg.literal);
+        break;
+      case "value": {
+        const provided = values[arg.name];
+        if (provided === undefined || !arg.regex.test(provided)) {
+          throw new CliValidationError(
+            `${key}: invalid ${arg.name} ${JSON.stringify(provided)}`,
+          );
+        }
+        argv.push(arg.literal, provided);
+        break;
+      }
+      case "positional": {
+        const provided = values[arg.name];
+        if (provided === undefined || !arg.regex.test(provided)) {
+          throw new CliValidationError(
+            `${key}: invalid ${arg.name} ${JSON.stringify(provided)}`,
+          );
+        }
+        positionals.push(provided);
+        break;
+      }
     }
   }
   // `--` guard: positionals can never be interpreted as flags even if a
   // future gbrain starts parsing dash-prefixed refs.
-  const values: string[] = [];
-  expected.forEach((specArg, i) => {
-    const provided = positionals[i]!;
-    if (provided.name !== specArg.name || !specArg.regex.test(provided.value)) {
-      throw new CliValidationError(
-        `${key}: invalid ${specArg.name} ${JSON.stringify(provided.value)}`,
-      );
-    }
-    values.push(provided.value);
-  });
-  return values.length > 0 ? [...argv, "--", ...values] : argv;
+  return positionals.length > 0 ? [...argv, "--", ...positionals] : argv;
 }
 
 const CONCURRENCY = 2;
@@ -217,41 +258,48 @@ export class CliDriver {
   }
 
   async trustReview(): Promise<TrustReviewEnvelope> {
-    return this.#runJson("trust review", []);
+    return this.#runJson("trust review", {});
   }
 
   async trustDrop(ref: string): Promise<{ output: string }> {
-    return this.#runText("trust drop", [{ name: "ref", value: ref }]);
+    return this.#runText("trust drop", { ref });
   }
 
   async edgeList(): Promise<EdgeProposal[]> {
-    return this.#runJson("edge-proposals list", []);
+    return this.#runJson("edge-proposals list", {});
   }
 
   async edgeAccept(id: string): Promise<{ output: string }> {
-    return this.#runText("edge-proposals accept", [{ name: "id", value: id }]);
+    return this.#runText("edge-proposals accept", { id });
   }
 
   async edgeReject(id: string): Promise<{ output: string }> {
-    return this.#runText("edge-proposals reject", [{ name: "id", value: id }]);
+    return this.#runText("edge-proposals reject", { id });
   }
 
-  async edgeDate(
-    id: string,
-    date: string,
-  ): Promise<{ output: string }> {
-    return this.#runText("edge-proposals date", [
-      { name: "id", value: id },
-      { name: "date", value: date },
-    ]);
+  async edgeDate(id: string, date: string): Promise<{ output: string }> {
+    return this.#runText("edge-proposals date", { id, date });
   }
 
   async edgeUndo(id: string): Promise<{ output: string }> {
-    return this.#runText("edge-proposals undo", [{ name: "id", value: id }]);
+    return this.#runText("edge-proposals undo", { id });
   }
 
-  async #runJson<T>(key: string, positionals: Array<{ name: string; value: string }>): Promise<T> {
-    const { stdout } = await this.#runRaw(key, positionals);
+  /** Pending LLM-proposed takes queue (the Inbox takes queue's real source). */
+  async takesProposeList(limit = 500): Promise<TakeProposal[]> {
+    return this.#runJson("takes propose list", { limit: String(limit) });
+  }
+
+  async takesProposeAccept(id: string): Promise<{ output: string }> {
+    return this.#runText("takes propose accept", { id });
+  }
+
+  async takesProposeReject(id: string): Promise<{ output: string }> {
+    return this.#runText("takes propose reject", { id });
+  }
+
+  async #runJson<T>(key: string, values: Record<string, string>): Promise<T> {
+    const { stdout } = await this.#runRaw(key, values);
     try {
       return JSON.parse(stdout) as T;
     } catch {
@@ -263,20 +311,20 @@ export class CliDriver {
 
   async #runText(
     key: string,
-    positionals: Array<{ name: string; value: string }>,
+    values: Record<string, string>,
   ): Promise<{ output: string }> {
-    const { stdout } = await this.#runRaw(key, positionals);
+    const { stdout } = await this.#runRaw(key, values);
     return { output: stdout.trim().slice(0, 2000) };
   }
 
   async #runRaw(
     key: string,
-    positionals: Array<{ name: string; value: string }>,
+    values: Record<string, string>,
   ): Promise<RawResult> {
     // Layer 1 + layer 2 validation happens inside buildArgv: whitelist key,
     // per-argument regex, and the `--` separator. Nothing untrusted reaches
     // the child process.
-    const argv = buildArgv(key, positionals);
+    const argv = buildArgv(key, values);
     await this.#acquire();
     try {
       const started = performance.now();

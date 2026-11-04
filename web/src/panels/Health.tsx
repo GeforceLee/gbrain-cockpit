@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CheckStatus, HealthReport } from "@gbrain-cockpit/shared";
-import { ApiError, apiGet, getToken, setToken } from "../lib/api";
+import { ApiError, apiGet, setToken } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
-// The Health panel is the skeleton's end-to-end verification surface: it
-// exercises auth, the API client, the server's health route, the MCP driver,
-// and (through it) gbrain serve on the brain host.
+// The Health panel exercises the whole stack live: auth, the API client, the
+// server's health route, the MCP driver, and gbrain serve on the brain host.
+// Token entry itself is app-level (TokenGate) — this panel only renders once
+// a token is already stored.
 
 export function Health() {
   const { t } = useI18n();
-  const [hasToken, setHasToken] = useState<boolean>(() => !!getToken());
-  const [draft, setDraft] = useState("");
   const [report, setReport] = useState<HealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -35,41 +34,8 @@ export function Health() {
   }, []);
 
   useEffect(() => {
-    if (getToken()) void probe();
+    void probe();
   }, [probe]);
-
-  if (!hasToken) {
-    return (
-      <section className="panel">
-        <h2>{t("panel.health.title")}</h2>
-        <p className="panel-desc">{t("panel.health.desc")}</p>
-        <form
-          className="token-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const value = draft.trim();
-            if (!value) return;
-            setToken(value);
-            setHasToken(true);
-            setDraft("");
-            void probe();
-          }}
-        >
-          <label htmlFor="cockpit-token">{t("health.token.label")}</label>
-          <input
-            id="cockpit-token"
-            type="password"
-            autoComplete="off"
-            placeholder={t("health.token.placeholder")}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <button type="submit">{t("health.connect")}</button>
-          <p className="hint">{t("health.token.hint")}</p>
-        </form>
-      </section>
-    );
-  }
 
   return (
     <section className="panel">
@@ -82,10 +48,9 @@ export function Health() {
           <button
             type="button"
             onClick={() => {
+              // back to the app-level token gate (fresh reload re-checks it)
               setToken(null);
-              setHasToken(false);
-              setReport(null);
-              setError(null);
+              window.location.reload();
             }}
           >
             {t("health.changeToken")}

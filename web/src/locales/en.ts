@@ -67,7 +67,6 @@ export const en = {
   "inbox.factDiscard": "Discard",
   "inbox.edgeAccept": "Accept",
   "inbox.edgeReject": "Reject",
-  "inbox.noRef": "No ref on this item; action unavailable (protocol erratum candidate)",
   "inbox.queue.proposals": "Trust proposals",
   "inbox.queue.proposalsDesc":
     "Writes dream or an agent proposed that trust rules held for your adjudication. Accepting requires you, in person, at the brain host terminal (gbrain safety design) — never here.",
@@ -79,13 +78,9 @@ export const en = {
   "inbox.queue.edges": "Edge proposals",
   "inbox.queue.edgesDesc": "Relation fixes dream found between pages: accept or reject.",
   "inbox.queue.takes": "Takes to resolve",
-  "inbox.queue.takesDesc": "Takes stored but marked for your verdict; resolutions are stamped as cockpit (mcp).",
+  "inbox.queue.takesDesc": "dream's LLM-proposed takes (propose_takes queue): accept writes it into the page's takes, reject dismisses it; click the page slug to inspect the source.",
   "inbox.queue.others": "Other pending",
   "inbox.queue.othersDesc": "Trust rules / allow entries etc. — use explain for detail.",
-  "inbox.take.correct": "correct",
-  "inbox.take.incorrect": "incorrect",
-  "inbox.take.partial": "partial",
-  "inbox.take.unresolvable": "unresolvable",
 
   "cmd.badge": "gbrain safety design · owner terminal action",
   "cmd.copy": "Copy",

@@ -8,8 +8,8 @@ import {
 
 describe("buildArgv (whitelist discipline)", () => {
   test("flag-only subcommand", () => {
-    expect(buildArgv("trust review", [])).toEqual(["trust", "review", "--json"]);
-    expect(buildArgv("edge-proposals list", [])).toEqual([
+    expect(buildArgv("trust review", {})).toEqual(["trust", "review", "--json"]);
+    expect(buildArgv("edge-proposals list", {})).toEqual([
       "edge-proposals",
       "list",
       "--json",
@@ -17,60 +17,87 @@ describe("buildArgv (whitelist discipline)", () => {
   });
 
   test("positionals land after the -- separator", () => {
-    expect(buildArgv("trust drop", [{ name: "ref", value: "tp42" }])).toEqual([
+    expect(buildArgv("trust drop", { ref: "tp42" })).toEqual([
       "trust",
       "drop",
       "--",
       "tp42",
     ]);
     expect(
-      buildArgv("edge-proposals date", [
-        { name: "id", value: "7" },
-        { name: "date", value: "2026-01-02" },
-      ]),
+      buildArgv("edge-proposals date", { id: "7", date: "2026-01-02" }),
     ).toEqual(["edge-proposals", "date", "--", "7", "2026-01-02"]);
   });
 
-  test("flag injection through a positional is impossible", () => {
+  test("value flags carry their validated value inline", () => {
+    expect(buildArgv("takes propose list", { limit: "500" })).toEqual([
+      "takes",
+      "propose",
+      "--limit",
+      "500",
+      "--json",
+    ]);
+    expect(buildArgv("takes propose accept", { id: "606" })).toEqual([
+      "takes",
+      "propose",
+      "--accept",
+      "606",
+    ]);
+    expect(buildArgv("takes propose reject", { id: "606" })).toEqual([
+      "takes",
+      "propose",
+      "--reject",
+      "606",
+    ]);
+  });
+
+  test("flag injection through any value is impossible", () => {
+    expect(() => buildArgv("trust drop", { ref: "--json" })).toThrow(
+      CliValidationError,
+    );
+    expect(() => buildArgv("trust drop", { ref: "-rf" })).toThrow(
+      CliValidationError,
+    );
+    expect(() => buildArgv("trust drop", { ref: "tp1;rm -rf /" })).toThrow(
+      CliValidationError,
+    );
     expect(() =>
-      buildArgv("trust drop", [{ name: "ref", value: "--json" }]),
+      buildArgv("takes propose accept", { id: "1 --evil" }),
     ).toThrow(CliValidationError);
-    expect(() =>
-      buildArgv("trust drop", [{ name: "ref", value: "-rf" }]),
-    ).toThrow(CliValidationError);
-    expect(() =>
-      buildArgv("trust drop", [{ name: "ref", value: "tp1;rm -rf /" }]),
-    ).toThrow(CliValidationError);
+    expect(() => buildArgv("takes propose list", { limit: "1;evil" })).toThrow(
+      CliValidationError,
+    );
   });
 
   test("whitelist refs only, by prefix", () => {
     for (const good of ["tp1", "h123", "f1", "a99", "t42"]) {
-      expect(() =>
-        buildArgv("trust drop", [{ name: "ref", value: good }]),
-      ).not.toThrow();
+      expect(() => buildArgv("trust drop", { ref: good })).not.toThrow();
     }
     for (const bad of ["x1", "TP1", "tp", "tp" + "9".repeat(19), ""]) {
-      expect(() =>
-        buildArgv("trust drop", [{ name: "ref", value: bad }]),
-      ).toThrow(CliValidationError);
+      expect(() => buildArgv("trust drop", { ref: bad })).toThrow(
+        CliValidationError,
+      );
     }
   });
 
-  test("argument count must match the spec exactly", () => {
-    expect(() => buildArgv("trust drop", [])).toThrow(CliValidationError);
+  test("missing required values are rejected", () => {
+    expect(() => buildArgv("trust drop", {})).toThrow(CliValidationError);
     expect(() =>
-      buildArgv("edge-proposals date", [{ name: "id", value: "7" }]),
+      buildArgv("edge-proposals date", { id: "7" }),
     ).toThrow(CliValidationError);
+    expect(() => buildArgv("takes propose list", {})).toThrow(
+      CliValidationError,
+    );
   });
 
   test("unknown subcommands are rejected before any exec", () => {
-    expect(() => buildArgv("trust confirm", [{ name: "ref", value: "tp1" }])).toThrow(
+    expect(() => buildArgv("trust confirm", { ref: "tp1" })).toThrow(
       CliValidationError,
     );
-    expect(() => buildArgv("rm -rf", [])).toThrow(CliValidationError);
-    expect(() =>
-      buildArgv("edge-proposals retry", [{ name: "id", value: "1" }]),
-    ).toThrow(CliValidationError);
+    expect(() => buildArgv("rm -rf", {})).toThrow(CliValidationError);
+    expect(() => buildArgv("edge-proposals retry", { id: "1" })).toThrow(
+      CliValidationError,
+    );
+    expect(() => buildArgv("takes add", {})).toThrow(CliValidationError);
   });
 });
 
@@ -174,6 +201,29 @@ describe("CliDriver", () => {
       driver.edgeList(),
     ]);
     expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  test("takes propose list/accept/reject build whitelisted argv", async () => {
+    const { driver, calls } = makeDriver(async (_bin, argv) => ({
+      stdout: argv.includes("--json")
+        ? JSON.stringify([{ id: 606, page_slug: "x", claim_text: "y" }])
+        : "promoted",
+      stderr: "",
+    }));
+    const items = await driver.takesProposeList(500);
+    expect(items[0]?.id).toBe(606);
+    expect(calls[0]?.argv).toEqual([
+      "takes",
+      "propose",
+      "--limit",
+      "500",
+      "--json",
+    ]);
+    const accepted = await driver.takesProposeAccept("606");
+    expect(accepted.output).toBe("promoted");
+    expect(calls[1]?.argv).toEqual(["takes", "propose", "--accept", "606"]);
+    expect((await driver.takesProposeReject("606")).output).toBe("promoted");
+    expect(calls[2]?.argv).toEqual(["takes", "propose", "--reject", "606"]);
   });
 
   test("status() reflects probe success and caches it", async () => {

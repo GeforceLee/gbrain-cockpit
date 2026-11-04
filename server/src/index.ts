@@ -1,11 +1,13 @@
 import type { ErrorCode } from "@gbrain-cockpit/shared";
 import { COCKPIT_VERSION } from "@gbrain-cockpit/shared";
+import { existsSync } from "node:fs";
 import { TokenVerifier } from "./auth";
 import { loadConfig, ConfigError, type Config } from "./config";
 import { locateGbrainBin, CliDriver } from "./drivers/cli";
 import { McpDriver } from "./drivers/mcp";
 import { loadRootEnv } from "./env";
 import { envelope, guardRequest } from "./http";
+import { serveStatic } from "./static";
 import {
   handleConfirm,
   handleEdgeAction,
@@ -15,7 +17,7 @@ import {
   handlePageWrite,
   handlePages,
   handleSearch,
-  handleTakeResolve,
+  handleTakePropose,
   handleTrustDrop,
   handleWriteRequest,
   mapError,
@@ -39,6 +41,17 @@ try {
 
 const verifier = new TokenVerifier(cfg.cockpitToken);
 const mcp = new McpDriver({ url: cfg.gbrainMcpUrl, token: cfg.gbrainMcpToken });
+
+// Static web root: explicit env wins (compiled-binary deployments), then the
+// repo checkout layout; absent both (dev loop via vite) static stays off.
+function resolveDistRoot(): string | null {
+  const explicit = process.env.COCKPIT_DIST_DIR?.trim();
+  if (explicit) return explicit;
+  const repoLayout = new URL("../../web/dist", import.meta.url).pathname;
+  if (existsSync(repoLayout)) return repoLayout;
+  return null;
+}
+const distRoot = resolveDistRoot();
 
 const gbrainBin = await locateGbrainBin(cfg.gbrainBin);
 const cli = gbrainBin ? new CliDriver(gbrainBin) : null;
@@ -90,8 +103,8 @@ const server = Bun.serve({
             return await handleTrustDrop(api, req);
           case "POST /api/inbox/edge":
             return await handleEdgeAction(api, req);
-          case "POST /api/inbox/takes/resolve":
-            return await handleTakeResolve(api, req);
+          case "POST /api/inbox/takes/propose":
+            return await handleTakePropose(api, req);
           case "POST /api/inbox/confirm":
             return await handleConfirm(api, req);
           case "PUT /api/page":
@@ -104,6 +117,11 @@ const server = Bun.serve({
       } catch (err) {
         return mapError(err);
       }
+    }
+
+    // Static web app (production form): the built SPA from web/dist.
+    if (req.method === "GET" && distRoot) {
+      return await serveStatic(distRoot, url.pathname);
     }
 
     return envelope(404, "E_NOT_FOUND", "unknown route");

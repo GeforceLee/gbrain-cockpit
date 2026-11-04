@@ -8,7 +8,6 @@ import {
   type PagesFacets,
   type SearchHit,
   type TakeItem,
-  type TakeQuality,
   type WriteReceipt,
   type WriteStatus,
 } from "@gbrain-cockpit/shared";
@@ -213,18 +212,6 @@ export class McpDriver {
       { request_id: requestId },
     );
     return normalizeReceipt(result, requestId);
-  }
-
-  async resolveTake(params: {
-    ref: string;
-    quality: TakeQuality;
-    evidence?: string;
-  }): Promise<unknown> {
-    return this.callTool("takes_resolve", {
-      ref: params.ref,
-      quality: params.quality,
-      ...(params.evidence ? { evidence: params.evidence } : {}),
-    });
   }
 
   async confirmMemory(params: { ref: string }): Promise<unknown> {

@@ -20,7 +20,10 @@ export type AdjudicationAction =
   | "edge-proposals.date"
   | "edge-proposals.undo"
   | "memory.confirm" // MCP confirm_memory (needs memory_confirm scope)
-  | "takes.resolve" // MCP takes_resolve
+  | "takes.propose.list" // `gbrain takes propose --json` (hidden family)
+  | "takes.propose.accept" // `gbrain takes propose --accept <id>`
+  | "takes.propose.reject" // `gbrain takes propose --reject <id>`
+  | "takes.resolve" // MCP takes_resolve on ACTIVE takes (slug+row, future)
   | "page.write"; // MCP put_page / edit_page (receipt protocol)
 
 /** The one and only channel an action may travel through. */
@@ -46,6 +49,9 @@ export const ADJUDICATION_CHANNELS: Readonly<
   "edge-proposals.date": "cli-whitelist",
   "edge-proposals.undo": "cli-whitelist",
   "memory.confirm": "mcp",
+  "takes.propose.list": "cli-whitelist",
+  "takes.propose.accept": "cli-whitelist",
+  "takes.propose.reject": "cli-whitelist",
   "takes.resolve": "mcp",
   "page.write": "mcp",
 };
@@ -235,6 +241,27 @@ export interface TakeItem {
   [k: string]: unknown;
 }
 
+/**
+ * One pending LLM-proposed take (`gbrain takes propose --json`, verified on
+ * 0.60.558). This — NOT MCP takes_list (active takes only) — is the real
+ * source of the Inbox "takes to resolve" queue.
+ */
+export interface TakeProposal {
+  id: number;
+  source_id?: string;
+  page_slug: string;
+  claim_text: string;
+  kind?: string; // take | hunch | fact | bet
+  holder?: string;
+  weight?: number;
+  domain?: string;
+  status?: string;
+  proposed_at?: string;
+  model_id?: string;
+  promoted_row_num?: number | null;
+  [k: string]: unknown;
+}
+
 export interface InboxQueue<T> {
   status: CheckStatus;
   items?: T[];
@@ -245,7 +272,7 @@ export interface InboxQueue<T> {
 export interface InboxReport {
   trust: InboxQueue<TrustReviewItem>;
   edgeProposals: InboxQueue<EdgeProposal>;
-  takes: InboxQueue<TakeItem>;
+  takes: InboxQueue<TakeProposal>;
   cliChannel: CliChannelStatus;
 }
 

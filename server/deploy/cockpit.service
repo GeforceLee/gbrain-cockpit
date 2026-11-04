@@ -1,0 +1,22 @@
+[Unit]
+Description=gbrain-cockpit — adjudication inbox for gbrain (dream outputs)
+Documentation=https://github.com/GeforceLee/gbrain-cockpit
+# Same-host full-featured form: after gbrain serve (MCP endpoint + cli-socket)
+Wants=gbrain-serve.service
+After=network-online.target gbrain-serve.service
+
+[Service]
+Type=simple
+User=dev
+# EnvironmentFile holds COCKPIT_BIND/PORT/TOKEN, GBRAIN_MCP_URL/TOKEN,
+# GBRAIN_BIN, COCKPIT_DIST_DIR — never commit real values. It lives at a
+# stable path OUTSIDE the release dirs so redeploys never lose it.
+EnvironmentFile=/home/dev/cockpit/cockpit.env
+WorkingDirectory=/home/dev/cockpit/current
+ExecStart=/home/dev/cockpit/current/cockpit
+Restart=always
+RestartSec=3
+# The audit trail lives under ~/.cockpit-audit (outside the program dir).
+
+[Install]
+WantedBy=multi-user.target

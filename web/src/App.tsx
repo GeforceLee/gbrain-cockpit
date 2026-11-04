@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { TokenGate } from "./components/TokenGate";
+import { getToken } from "./lib/api";
 import { useI18n, type MessageKey } from "./lib/i18n";
 import { Health } from "./panels/Health";
 import { Inbox } from "./panels/Inbox";
@@ -25,6 +27,7 @@ function App() {
   const { locale, setLocale, t } = useI18n();
   const [panelId, setPanelId] = useState<PanelId>(DEFAULT_PANEL);
   const [focusSlug, setFocusSlug] = useState<string | null>(null);
+  const [tokenReady, setTokenReady] = useState(() => !!getToken());
 
   useEffect(() => {
     document.title = t("app.title");
@@ -76,15 +79,19 @@ function App() {
       </nav>
 
       <main className="panel-stage">
-        <ErrorBoundary key={panelId}>
-          {panelId === "inbox" ? <Inbox /> : null}
-          {panelId === "nebula" ? <Placeholder panelId="nebula" /> : null}
-          {panelId === "pages" ? (
-            <Pages focusSlug={focusSlug} onConsumeFocus={consumeFocus} />
-          ) : null}
-          {panelId === "search" ? <Search onOpenPage={openPage} /> : null}
-          {panelId === "health" ? <Health /> : null}
-        </ErrorBoundary>
+        {!tokenReady ? (
+          <TokenGate onAuthed={() => setTokenReady(true)} />
+        ) : (
+          <ErrorBoundary key={panelId}>
+            {panelId === "inbox" ? <Inbox onOpenPage={openPage} /> : null}
+            {panelId === "nebula" ? <Placeholder panelId="nebula" /> : null}
+            {panelId === "pages" ? (
+              <Pages focusSlug={focusSlug} onConsumeFocus={consumeFocus} />
+            ) : null}
+            {panelId === "search" ? <Search onOpenPage={openPage} /> : null}
+            {panelId === "health" ? <Health /> : null}
+          </ErrorBoundary>
+        )}
       </main>
 
       <footer className="app-footer">

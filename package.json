@@ -8,7 +8,9 @@
   ],
   "scripts": {
     "dev": "cd server && bun dev & cd web && bun dev",
-    "build": "bun run --filter '@gbrain-cockpit/web' build",
+    "build": "cd web && bun run build",
+    "compile:darwin": "bun build --compile server/src/index.ts --outfile dist-bin/cockpit-darwin-arm64",
+    "compile:linux": "bun build --compile --target=bun-linux-x64 server/src/index.ts --outfile dist-bin/cockpit-linux-x64",
     "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web",
     "test": "bun test",
     "check:locales": "bun scripts/check-locales.ts",

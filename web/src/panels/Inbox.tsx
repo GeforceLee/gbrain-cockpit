@@ -2,8 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type {
   EdgeProposal,
   InboxReport,
-  TakeItem,
-  TakeQuality,
+  TakeProposal,
   TrustReviewItem,
 } from "@gbrain-cockpit/shared";
 import { CopyCommand } from "../components/CopyCommand";
@@ -15,13 +14,8 @@ import { useI18n } from "../lib/i18n";
 // confirmation actions are ALWAYS copy-command blocks (owner-presence, gbrain
 // ENG-15 — never batched, never a button), and when the CLI channel is
 // unavailable on this host, CLI one-key actions degrade to copy-command too.
-
-const TAKE_QUALITIES: readonly TakeQuality[] = [
-  "correct",
-  "incorrect",
-  "partial",
-  "unresolvable",
-];
+// The takes queue is the propose_takes queue (CLI-only in gbrain 0.60.x):
+// LLM-proposed claims waiting for the owner's accept/reject.
 
 /** gbrain review items carry their exact commands when available — prefer them. */
 function itemCommand(item: TrustReviewItem, match: string[]): string | null {
@@ -53,7 +47,7 @@ function firstLine(error?: string): string {
   return (error.split("\n").find((l) => l.trim()) ?? "").slice(0, 220);
 }
 
-export function Inbox() {
+export function Inbox({ onOpenPage }: { onOpenPage?: (slug: string) => void }) {
   const { t } = useI18n();
   const [report, setReport] = useState<InboxReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -253,37 +247,57 @@ export function Inbox() {
               (report.takes.items ?? []).length === 0 && (
                 <p className="muted">{t("inbox.empty")}</p>
               )}
-            {(report.takes.items ?? []).map((take: TakeItem, i) => {
-              const ref = take.ref ?? (take.id !== undefined ? `t${take.id}` : null);
-              return (
-                <div key={ref ?? i} className="queue-item">
-                  <p className="queue-summary">
-                    {take.claim ?? (itemSummary(take as unknown as TrustReviewItem) || ref)}
-                  </p>
-                  <p className="page-meta mono">
-                    {take.holder ?? "?"} · {take.kind ?? "?"}
-                    {take.active === false ? " · inactive" : ""}
-                  </p>
-                  {ref ? (
-                    <div className="queue-actions">
-                      {TAKE_QUALITIES.map((q) => (
-                        <button
-                          key={q}
-                          type="button"
-                          onClick={() =>
-                            void act("/api/inbox/takes/resolve", { ref, quality: q })
-                          }
-                        >
-                          {t(`inbox.take.${q}`)}
-                        </button>
-                      ))}
-                    </div>
+            {(report.takes.items ?? []).map((take: TakeProposal) => (
+              <div key={take.id} className="queue-item">
+                <p className="queue-summary">{take.claim_text}</p>
+                <p className="page-meta mono">
+                  {take.kind ?? "?"} · {take.holder ?? "?"} ·{" "}
+                  {take.weight ?? "?"} · {take.domain ?? "?"}
+                  {take.model_id ? ` · ${take.model_id}` : ""}
+                </p>
+                {onOpenPage && (
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => onOpenPage(take.page_slug)}
+                  >
+                    {take.page_slug}
+                  </button>
+                )}
+                <div className="queue-actions">
+                  {cliAvailable ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void act("/api/inbox/takes/propose", {
+                            op: "accept",
+                            id: String(take.id),
+                          })
+                        }
+                      >
+                        {t("inbox.edgeAccept")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void act("/api/inbox/takes/propose", {
+                            op: "reject",
+                            id: String(take.id),
+                          })
+                        }
+                      >
+                        {t("inbox.edgeReject")}
+                      </button>
+                    </>
                   ) : (
-                    <p className="muted small">{t("inbox.noRef")}</p>
+                    <CopyCommand
+                      command={`gbrain takes propose --accept ${take.id}   # 或 --reject ${take.id}`}
+                    />
                   )}
                 </div>
-              );
-            })}
+              </div>
+            ))}
           </div>
 
           {others.length > 0 && (
