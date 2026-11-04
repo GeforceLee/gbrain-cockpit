@@ -6,7 +6,7 @@ Guidance for AI coding agents (and humans in a hurry) working on gbrain-cockpit.
 
 gbrain-cockpit is a web UI for self-hosted [gbrain](https://github.com/garrytan/gbrain) (`gbrain serve`): an adjudication inbox for nightly `dream` outputs, a whole-brain graph view, plus pages / search / health panels. Community project, not affiliated with gbrain upstream. Status: design phase, no code yet.
 
-Full design context lives in the maintainer's internal notes (`internal/` in the working copy — gitignored, never published). If those files exist locally, read `internal/ARCHITECTURE.md` and `internal/FEATURES.md` before any implementation work.
+Full design context lives in the maintainer's internal notes (`internal/` in the working copy — gitignored, never published). If those files exist locally, read them before any implementation work: `internal/ARCHITECTURE.md` (technical design), `internal/FEATURES.md` (product design), `internal/GBRAIN-CAPABILITIES.md` (the gbrain capability inventory every feature maps against — its mapping tables are the single source of truth for which gbrain tools/commands cockpit consumes), and `internal/ENVIRONMENT.md` (the test host).
 
 ## Non-negotiables
 
@@ -26,3 +26,4 @@ These constraints define the project. Violating any of them is a design break, n
 - **Commits:** English, conventional style (`docs:` / `feat:` / `fix:` …).
 - **Planned stack:** Bun workspaces — `server` (Bun + TypeScript, zero runtime npm deps), `web` (React + Vite + sigma.js), `shared` (channel-matrix types + error codes). CI and release pipeline land with the first code.
 - **Planned panels:** Inbox · Nebula · Pages · Search · Health.
+- **UI copy:** bilingual `zh-CN` + `en` from the first release; every panel / action / empty state / error carries a one-line self-description. Locale keys ship in the same PR as the feature; CI fails on zh/en key-set drift.

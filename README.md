@@ -34,7 +34,7 @@ The official and community interfaces each cover a slice of the problem — nobo
 
 **Design phase — docs first, no code yet.** The feature and architecture docs are being finalized and will be published here in English and Chinese once stable; development starts after the design freezes.
 
-Planned panels: **Inbox** (adjudication) · **Nebula** (graph) · **Pages** · **Search** · **Health**.
+Planned panels: **Inbox** (adjudication) · **Nebula** (graph) · **Pages** · **Search** · **Health**. The UI ships bilingually (English / 简体中文) from the first release.
 
 ## Not affiliated
 
