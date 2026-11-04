@@ -9,6 +9,7 @@ import type {
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
+import { Pager, usePageSize } from "../components/Pager";
 
 // Pages panel: list with type facets (enum from gbrain's schema_stats — never
 // hardcoded), detail view, and in-place editing on the full receipt protocol
@@ -16,6 +17,12 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // lost reply is never re-sent with a new id). Page bodies are persistent
 // untrusted input: rendered as plain text only in this milestone — the
 // marked → DOMPurify pipeline arrives with rich rendering (V1.1).
+//
+// The list paginates through gbrain's OWN keyset cursor (documented by
+// list_pages itself): sort=updated_desc + `updated_after` /
+// `updated_after_slug` taken from the last row — so every page of a brain is
+// reachable, not just the first server-limit window. "Next" past the
+// accumulated rows fetches the next chunk; "prev" walks back locally.
 
 interface PageBundle {
   page: PageDetail;
@@ -28,6 +35,11 @@ type EditorState =
   | { mode: "saving" }
   | { mode: "receipt"; receipt: WriteReceipt };
 
+interface Cursor {
+  after: string;
+  slug: string;
+}
+
 export function Pages({
   focusSlug,
   onConsumeFocus,
@@ -38,7 +50,13 @@ export function Pages({
   const { t } = useI18n();
   const [facets, setFacets] = useState<PagesFacets | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
-  const [pages, setPages] = useState<PageSummary[] | null>(null);
+  /** rows accumulated so far (keyset only pages forward through the brain) */
+  const [rows, setRows] = useState<PageSummary[] | null>(null);
+  /** set while more rows are known to exist past the accumulated window */
+  const [moreCursor, setMoreCursor] = useState<Cursor | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = usePageSize("cockpit.pagesize.pages");
   const [listError, setListError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [bundle, setBundle] = useState<PageBundle | null>(null);
@@ -51,21 +69,57 @@ export function Pages({
       .catch(() => setFacets(null));
   }, []);
 
-  const loadList = useCallback(async () => {
-    setListError(null);
-    try {
-      const query = new URLSearchParams({ limit: "50" });
-      if (typeFilter) query.set("type", typeFilter);
-      setPages(await apiGet<PageSummary[]>(`/api/pages?${query}`));
-    } catch (err) {
-      setPages(null);
-      setListError(err instanceof ApiError ? err.message : String(err));
-    }
-  }, [typeFilter]);
+  const fetchRows = useCallback(
+    async (cursor: Cursor | null, replace: boolean) => {
+      setFetching(true);
+      setListError(null);
+      try {
+        const query = new URLSearchParams({ limit: String(pageSize) });
+        if (typeFilter) query.set("type", typeFilter);
+        if (cursor) {
+          query.set("updated_after", cursor.after);
+          query.set("updated_after_slug", cursor.slug);
+        }
+        const batch = await apiGet<PageSummary[]>(`/api/pages?${query}`);
+        setRows((prev) => {
+          if (replace) return batch;
+          // keyset ties can overlap one row; dedupe by slug on append
+          const seen = new Set((prev ?? []).map((p) => p.slug));
+          return [...(prev ?? []), ...batch.filter((p) => !seen.has(p.slug))];
+        });
+        const last = batch[batch.length - 1];
+        setMoreCursor(
+          batch.length === pageSize && last?.updated_at
+            ? { after: last.updated_at, slug: last.slug }
+            : null,
+        );
+      } catch (err) {
+        if (replace) setRows(null);
+        setListError(err instanceof ApiError ? err.message : String(err));
+      } finally {
+        setFetching(false);
+      }
+    },
+    [typeFilter, pageSize],
+  );
 
+  // filter / page-size changes restart from the first page
   useEffect(() => {
-    void loadList();
-  }, [loadList]);
+    setPage(0);
+    void fetchRows(null, true);
+  }, [fetchRows]);
+
+  function goToPage(next: number) {
+    if (fetching) return;
+    const accumulatedPages = Math.max(1, Math.ceil((rows?.length ?? 0) / pageSize));
+    if (next >= accumulatedPages) {
+      if (!moreCursor) return;
+      setPage(next);
+      void fetchRows(moreCursor, false);
+      return;
+    }
+    setPage(Math.max(0, next));
+  }
 
   const openPage = useCallback(async (slug: string) => {
     setSelected(slug);
@@ -177,6 +231,24 @@ export function Pages({
 
   const inDetail = selected !== null;
 
+  // pager math: the true total comes from facets (per-type when filtered);
+  // without facets it grows as keyset chunks accumulate
+  const filterTotal = typeFilter
+    ? facets?.by_type.find((f) => f.type === typeFilter)?.count
+    : facets?.total_pages;
+  const rowsCount = rows?.length ?? 0;
+  const accumulatedPages = Math.max(1, Math.ceil((rowsCount || 1) / pageSize));
+  const totalPages = filterTotal
+    ? Math.max(Math.ceil(filterTotal / pageSize), page + 1)
+    : moreCursor
+      ? accumulatedPages + 1
+      : accumulatedPages;
+  const safePage = Math.min(page, totalPages - 1);
+  const currentRows = (rows ?? []).slice(
+    safePage * pageSize,
+    (safePage + 1) * pageSize,
+  );
+
   return (
     <section className="panel pages">
       {!inDetail ? (
@@ -204,13 +276,30 @@ export function Pages({
               ))}
             </div>
           )}
+          <div className="list-tools">
+            <span className="muted">
+              {t("pages.listCaption")} · {filterTotal ?? rowsCount}
+            </span>
+            {rowsCount > 0 && totalPages > 1 && (
+              <Pager
+                page={safePage}
+                totalPages={totalPages}
+                size={pageSize}
+                onPage={goToPage}
+                onSize={(next) => setPageSize(next)}
+              />
+            )}
+          </div>
           {listError && <p className="error">{listError}</p>}
-          {!pages && !listError && <p className="muted">{t("common.loading")}</p>}
-          {pages && pages.length === 0 && (
+          {!rows && !listError && <p className="muted">{t("common.loading")}</p>}
+          {rows && rowsCount === 0 && !listError && (
             <p className="muted">{t("pages.empty")}</p>
           )}
+          {fetching && currentRows.length === 0 && (
+            <p className="muted">{t("common.loading")}</p>
+          )}
           <ul className="page-list">
-            {(pages ?? []).map((p) => (
+            {currentRows.map((p) => (
               <li key={p.slug}>
                 <button type="button" className="page-row" onClick={() => void openPage(p.slug)}>
                   <span className="page-title">{p.title ?? p.slug}</span>

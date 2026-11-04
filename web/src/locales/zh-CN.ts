@@ -46,6 +46,7 @@ export const zhCN = {
 
   "pages.filterByType": "按类型筛选",
   "pages.allTypes": "全部",
+  "pages.listCaption": "页面",
   "pages.empty": "没有符合条件的页面。",
   "pages.back": "返回列表",
   "pages.edit": "编辑",
@@ -86,8 +87,6 @@ export const zhCN = {
   "inbox.edgeReject": "驳回",
   "inbox.tab.all": "全部",
   "inbox.listCaption": "待裁决项",
-  "inbox.page.prev": "上一页",
-  "inbox.page.next": "下一页",
   "inbox.batch.reject": "驳回本页全部",
   "inbox.batch.confirm": "再点一次,确认驳回",
   "inbox.noSelection": "从左侧选择一条待裁决项——右侧文档卡与裁决操作轨会在此展开。",
@@ -251,6 +250,9 @@ export const zhCN = {
   "nebula.empty": "图数据为空。",
 
   "common.loading": "加载中…",
+  "pager.prev": "上一页",
+  "pager.next": "下一页",
+  "pager.size": "每页条数",
   "common.close": "关闭",
   "common.retry": "重试",
   "common.panelError": "面板渲染出错",

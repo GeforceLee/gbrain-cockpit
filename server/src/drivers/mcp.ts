@@ -148,11 +148,19 @@ export class McpDriver {
     type?: string;
     limit?: number;
     sort?: string;
+    /** keyset cursor, documented by list_pages itself: continue after this
+     *  row (its updated_at + slug) — the upstream-native way to page deeper */
+    updatedAfter?: string;
+    updatedAfterSlug?: string;
   }): Promise<PageSummary[]> {
     return this.#cached<PageSummary[]>(30_000, "list_pages", {
       ...(params.type ? { type: params.type } : {}),
       ...(params.limit ? { limit: params.limit } : {}),
       ...(params.sort ? { sort: params.sort } : {}),
+      ...(params.updatedAfter ? { updated_after: params.updatedAfter } : {}),
+      ...(params.updatedAfterSlug
+        ? { updated_after_slug: params.updatedAfterSlug }
+        : {}),
     });
   }
 

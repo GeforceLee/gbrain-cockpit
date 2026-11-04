@@ -38,6 +38,8 @@ const REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REQUEST_ID_RE = /^[0-9a-fA-F-]{8,64}$/;
+/** updated_at echoes (list_pages keyset cursor values) — ISO-ish, bounded */
+const TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}(T[\d:.]{1,15}(Z|[+-]\d{2}:?\d{2})?)?$/;
 
 function param(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name) ?? undefined;
@@ -126,10 +128,22 @@ export async function handlePages(
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new BadRequestError("invalid limit (1..100)");
   }
+  // keyset cursor (gbrain's own list_pages paging): both values come from a
+  // previous response's last row and are regex-whitelisted before reuse
+  const updatedAfter = param(url, "updated_after");
+  if (updatedAfter !== undefined) {
+    requirePattern(updatedAfter, "updated_after", TIMESTAMP_RE);
+  }
+  const updatedAfterSlug = param(url, "updated_after_slug");
+  if (updatedAfterSlug !== undefined) {
+    requirePattern(updatedAfterSlug, "updated_after_slug", SLUG_RE);
+  }
   const pages = await ctx.mcp.listPages({
     ...(type ? { type } : {}),
     limit,
     sort: "updated_desc",
+    ...(updatedAfter ? { updatedAfter } : {}),
+    ...(updatedAfterSlug ? { updatedAfterSlug } : {}),
   });
   return Response.json(pages satisfies PageSummary[]);
 }

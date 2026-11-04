@@ -107,6 +107,19 @@
   box-shadow: 0 0 0 var(--ink);
 }
 
+.pager .pager-size {
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.pages .list-tools {
+  margin: 12px 0 0;
+}
+
 /* two-step armed state for the page-level batch reject */
 button.batch-arm {
   background: var(--stop);

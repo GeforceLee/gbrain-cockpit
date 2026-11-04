@@ -47,6 +47,7 @@ export const en = {
 
   "pages.filterByType": "Filter by type",
   "pages.allTypes": "all",
+  "pages.listCaption": "pages",
   "pages.empty": "No pages match.",
   "pages.back": "Back to list",
   "pages.edit": "Edit",
@@ -87,8 +88,6 @@ export const en = {
   "inbox.edgeReject": "Reject",
   "inbox.tab.all": "All",
   "inbox.listCaption": "pending items",
-  "inbox.page.prev": "previous page",
-  "inbox.page.next": "next page",
   "inbox.batch.reject": "reject this page",
   "inbox.batch.confirm": "click again to confirm rejecting",
   "inbox.noSelection": "Pick an item on the left — the document and the decision rail unfold here.",
@@ -252,6 +251,9 @@ export const en = {
   "nebula.empty": "the graph is empty.",
 
   "common.loading": "Loading…",
+  "pager.prev": "previous page",
+  "pager.next": "next page",
+  "pager.size": "rows per page",
   "common.close": "Close",
   "common.retry": "Retry",
   "common.panelError": "Panel render error",

@@ -10,6 +10,7 @@ import type {
 import { AuditBlock } from "../components/AuditBlock";
 import { ChannelMatrixCard, type ChannelRow } from "../components/ChannelMatrixCard";
 import { CopyCommand } from "../components/CopyCommand";
+import { Pager, usePageSize } from "../components/Pager";
 import { StampButton } from "../components/StampButton";
 import { Tag, type TagVariant } from "../components/Tag";
 import { TrustChain } from "../components/TrustChain";
@@ -31,9 +32,8 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 type QueueId = "proposals" | "held" | "facts" | "edges" | "takes" | "others";
 type TabId = "all" | Exclude<QueueId, "others">;
 
-/** queue cards per page — the takes queue alone can hold 500+ items per
- *  dream run, and rendering every brut card at once janks the panel */
-const PAGE_SIZE = 50;
+// Queue cards are paginated (the takes queue alone can hold 500+ items per
+// dream run); the page size is user-selectable and persists per browser.
 
 interface Entry {
   key: string;
@@ -107,6 +107,7 @@ export function Inbox({
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>("all");
   const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = usePageSize("cockpit.pagesize.inbox");
   const [detail, setDetail] = useState<Entry | null>(null);
   const [stamp, setStamp] = useState<StampState | null>(null);
   // two-step confirm for the page-level batch reject (takes, CLI channel)
@@ -268,11 +269,11 @@ export function Inbox({
   const visibleEntries =
     tab === "all" ? allEntries : allEntries.filter((e) => e.queueId === tab);
 
-  const totalPages = Math.max(1, Math.ceil(visibleEntries.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(visibleEntries.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
   const pagedEntries = visibleEntries.slice(
-    safePage * PAGE_SIZE,
-    (safePage + 1) * PAGE_SIZE,
+    safePage * pageSize,
+    (safePage + 1) * pageSize,
   );
   // tab switches and refreshed-shorter lists fall back to the last page
   useEffect(() => {
@@ -424,27 +425,16 @@ export function Inbox({
                 </button>
               )}
               {totalPages > 1 && (
-                <span className="pager">
-                  <button
-                    type="button"
-                    disabled={safePage === 0}
-                    onClick={() => setPage(safePage - 1)}
-                    aria-label={t("inbox.page.prev")}
-                  >
-                    ←
-                  </button>
-                  <span className="mono">
-                    {safePage + 1}/{totalPages}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={safePage >= totalPages - 1}
-                    onClick={() => setPage(safePage + 1)}
-                    aria-label={t("inbox.page.next")}
-                  >
-                    →
-                  </button>
-                </span>
+                <Pager
+                  page={safePage}
+                  totalPages={totalPages}
+                  size={pageSize}
+                  onPage={setPage}
+                  onSize={(next) => {
+                    setPageSize(next);
+                    setPage(0);
+                  }}
+                />
               )}
             </div>
             {downNotices(tab).map((err, i) => (
