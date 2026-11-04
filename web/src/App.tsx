@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useI18n, type MessageKey } from "./lib/i18n";
 import { Health } from "./panels/Health";
+import { Inbox } from "./panels/Inbox";
+import { Pages } from "./panels/Pages";
 import { Placeholder } from "./panels/Placeholder";
+import { Search } from "./panels/Search";
 
 export type PanelId = "inbox" | "nebula" | "pages" | "search" | "health";
 
@@ -13,18 +17,24 @@ const PANELS: readonly PanelId[] = [
   "health",
 ];
 
-// M0 defaults to the Health panel: it is the one live panel of the skeleton
-// and doubles as the end-to-end verification surface (server → gbrain MCP).
-// The product default (Inbox) takes over in V1.0.
-const DEFAULT_PANEL: PanelId = "health";
+// Product default panel is Inbox (the adjudication story starts here); the
+// M0 skeleton defaulted to Health as its live verification surface.
+const DEFAULT_PANEL: PanelId = "inbox";
 
 function App() {
   const { locale, setLocale, t } = useI18n();
   const [panelId, setPanelId] = useState<PanelId>(DEFAULT_PANEL);
+  const [focusSlug, setFocusSlug] = useState<string | null>(null);
 
   useEffect(() => {
     document.title = t("app.title");
   }, [t]);
+
+  const openPage = useCallback((slug: string) => {
+    setFocusSlug(slug);
+    setPanelId("pages");
+  }, []);
+  const consumeFocus = useCallback(() => setFocusSlug(null), []);
 
   return (
     <div className="app">
@@ -66,7 +76,15 @@ function App() {
       </nav>
 
       <main className="panel-stage">
-        {panelId === "health" ? <Health /> : <Placeholder panelId={panelId} />}
+        <ErrorBoundary key={panelId}>
+          {panelId === "inbox" ? <Inbox /> : null}
+          {panelId === "nebula" ? <Placeholder panelId="nebula" /> : null}
+          {panelId === "pages" ? (
+            <Pages focusSlug={focusSlug} onConsumeFocus={consumeFocus} />
+          ) : null}
+          {panelId === "search" ? <Search onOpenPage={openPage} /> : null}
+          {panelId === "health" ? <Health /> : null}
+        </ErrorBoundary>
       </main>
 
       <footer className="app-footer">

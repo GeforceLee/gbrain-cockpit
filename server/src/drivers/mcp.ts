@@ -2,6 +2,15 @@ import {
   COCKPIT_VERSION,
   type BrainIdentity,
   type McpWhoami,
+  type PageDetail,
+  type PageSummary,
+  type PageVersion,
+  type PagesFacets,
+  type SearchHit,
+  type TakeItem,
+  type TakeQuality,
+  type WriteReceipt,
+  type WriteStatus,
 } from "@gbrain-cockpit/shared";
 
 // Minimal MCP driver for the M0 skeleton: initialize handshake + tools/call
@@ -72,12 +81,13 @@ export class McpDriver {
   async callTool<T = unknown>(
     name: string,
     args: Record<string, unknown> = {},
+    opts: { timeoutMs?: number } = {},
   ): Promise<T> {
-    await this.#ensureInitialized();
+    await this.#ensureInitialized(opts.timeoutMs);
     const payload = (await this.#rpc("tools/call", {
       name,
       arguments: args,
-    })) as ToolCallPayload | null;
+    }, opts)) as ToolCallPayload | null;
     if (!payload) {
       throw new McpError("protocol", `tools/call ${name} returned no payload`);
     }
@@ -109,21 +119,140 @@ export class McpDriver {
     return this.callTool<BrainIdentity>("get_brain_identity");
   }
 
-  async #ensureInitialized(): Promise<void> {
+  // --- cached reads ---------------------------------------------------------
+  // Process-local TTL cache (ARCHITECTURE §3.1): search 30s, page 10s, list
+  // 30s, facets 60s. Keeps cockpit's polite 30 req/min budget alive against
+  // UI churn; single-flight merge happens at the route layer via the same
+  // cache key, so concurrent identical calls also collapse to one fetch.
+
+  #cache = new Map<string, { at: number; value: unknown }>();
+
+  /** Drop all cached reads — after any successful write or adjudication. */
+  invalidateAll(): void {
+    this.#cache.clear();
+  }
+
+  async #cached<T>(
+    ttlMs: number,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    const key = `${name}:${JSON.stringify(args)}`;
+    const hit = this.#cache.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
+    const value = await this.callTool<T>(name, args);
+    this.#cache.set(key, { at: Date.now(), value });
+    return value;
+  }
+
+  listPages(params: {
+    type?: string;
+    limit?: number;
+    sort?: string;
+  }): Promise<PageSummary[]> {
+    return this.#cached<PageSummary[]>(30_000, "list_pages", {
+      ...(params.type ? { type: params.type } : {}),
+      ...(params.limit ? { limit: params.limit } : {}),
+      ...(params.sort ? { sort: params.sort } : {}),
+    });
+  }
+
+  schemaStats(): Promise<PagesFacets> {
+    return this.#cached<PagesFacets>(60_000, "schema_stats", {});
+  }
+
+  getPage(slug: string): Promise<PageDetail> {
+    return this.#cached<PageDetail>(10_000, "get_page", {
+      slug,
+      include_content: true,
+    });
+  }
+
+  versions(slug: string): Promise<PageVersion[]> {
+    return this.#cached<PageVersion[]>(10_000, "get_versions", { slug });
+  }
+
+  search(query: string): Promise<SearchHit[]> {
+    return this.#cached<SearchHit[]>(30_000, "search", { query });
+  }
+
+  takesList(params: { active?: boolean } = {}): Promise<TakeItem[]> {
+    return this.#cached<TakeItem[]>(10_000, "takes_list", { ...params });
+  }
+
+  // --- writes (receipt protocol) ---------------------------------------------
+  // expected_revision optimistic lock + request_id idempotency; wait_ms 15s
+  // (protocol cap 30s). On timeout the write is NOT re-sent — the receipt is
+  // polled via getWriteRequest with the same request_id.
+
+  async putPage(params: {
+    slug: string;
+    content: string;
+    expectedRevision: number | string;
+    requestId: string;
+  }): Promise<WriteReceipt> {
+    const result = await this.callTool<Record<string, unknown>>(
+      "put_page",
+      {
+        slug: params.slug,
+        content: params.content,
+        expected_revision: params.expectedRevision,
+        request_id: params.requestId,
+        wait_ms: 15_000,
+      },
+      // wait_ms + RPC overhead headroom, so the fetch timeout never fires
+      // before gbrain has had its full wait window.
+      { timeoutMs: 20_000 },
+    );
+    return normalizeReceipt(result, params.requestId);
+  }
+
+  async getWriteRequest(requestId: string): Promise<WriteReceipt> {
+    const result = await this.callTool<Record<string, unknown>>(
+      "get_write_request",
+      { request_id: requestId },
+    );
+    return normalizeReceipt(result, requestId);
+  }
+
+  async resolveTake(params: {
+    ref: string;
+    quality: TakeQuality;
+    evidence?: string;
+  }): Promise<unknown> {
+    return this.callTool("takes_resolve", {
+      ref: params.ref,
+      quality: params.quality,
+      ...(params.evidence ? { evidence: params.evidence } : {}),
+    });
+  }
+
+  async confirmMemory(params: { ref: string }): Promise<unknown> {
+    return this.callTool("confirm_memory", { ref: params.ref });
+  }
+
+  async #ensureInitialized(timeoutMs?: number): Promise<void> {
     // Lazily initialize once per session; a failed handshake resets so the
     // next call retries (gbrain restarts shouldn't wedge the driver until
     // process restart).
     this.#initPromise ??= (async () => {
-      await this.#rpc("initialize", {
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: { name: "gbrain-cockpit", version: COCKPIT_VERSION },
-      });
+      await this.#rpc(
+        "initialize",
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: "gbrain-cockpit", version: COCKPIT_VERSION },
+        },
+        { timeoutMs },
+      );
       // Notification per spec — no id, no response body expected.
-      await this.#post({
-        jsonrpc: "2.0",
-        method: "notifications/initialized",
-      }).catch(() => {
+      await this.#post(
+        {
+          jsonrpc: "2.0",
+          method: "notifications/initialized",
+        },
+        timeoutMs,
+      ).catch(() => {
         // Some servers fold this into the session already; a failed
         // notification is not fatal for our single-shot call pattern.
       });
@@ -139,14 +268,21 @@ export class McpDriver {
     }
   }
 
-  async #rpc(method: string, params?: object): Promise<unknown> {
+  async #rpc(
+    method: string,
+    params?: object,
+    opts: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
     const id = ++this.#nextId;
-    const { json } = await this.#post({
-      jsonrpc: "2.0",
-      id,
-      method,
-      ...(params ? { params } : {}),
-    });
+    const { json } = await this.#post(
+      {
+        jsonrpc: "2.0",
+        id,
+        method,
+        ...(params ? { params } : {}),
+      },
+      opts.timeoutMs,
+    );
     if (!json) {
       throw new McpError(
         "protocol",
@@ -162,7 +298,7 @@ export class McpDriver {
     return json.result;
   }
 
-  async #post(body: object): Promise<{ json: RpcResponse | null }> {
+  async #post(body: object, timeoutMs?: number): Promise<{ json: RpcResponse | null }> {
     const headers: Record<string, string> = {
       "content-type": "application/json",
       // Streamable HTTP servers may answer JSON or SSE per request.
@@ -172,19 +308,20 @@ export class McpDriver {
     if (this.#sessionId) headers["mcp-session-id"] = this.#sessionId;
 
     let res: Response;
+    const effectiveTimeout = timeoutMs ?? this.#timeoutMs;
     try {
       res = await this.#fetch(this.#url, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.#timeoutMs),
+        signal: AbortSignal.timeout(effectiveTimeout),
       });
     } catch (err) {
       const name = (err as Error)?.name;
       if (name === "TimeoutError" || name === "AbortError") {
         throw new McpError(
           "timeout",
-          `MCP request timed out after ${this.#timeoutMs}ms (gbrain dreaming? see ARCHITECTURE §3.4)`,
+          `MCP request timed out after ${effectiveTimeout}ms (gbrain dreaming? see ARCHITECTURE §3.4)`,
         );
       }
       throw new McpError(
@@ -251,4 +388,56 @@ function parseSsePayload(text: string): RpcResponse | null {
     }
   }
   return last;
+}
+
+const KNOWN_WRITE_STATES: readonly WriteStatus[] = [
+  "queued",
+  "running",
+  "pending",
+  "committed",
+  "conflict",
+  "failed",
+  "cancelled",
+];
+
+/**
+ * Fold whatever a write tool answered into our receipt shape. gbrain's
+ * receipt states are queued/running/committed/conflict/failed/cancelled;
+ * anything unrecognized becomes "unknown" with the raw payload kept in
+ * detail, and a receiptless success reads as committed.
+ */
+export function normalizeReceipt(
+  result: Record<string, unknown> | null | undefined,
+  requestId: string,
+): WriteReceipt {
+  if (result === null || result === undefined) {
+    return { request_id: requestId, status: "unknown", detail: "no payload" };
+  }
+  const raw = (result.write_request ?? result.receipt ?? result) as Record<
+    string,
+    unknown
+  >;
+  const status = raw.status;
+  const receipt: WriteReceipt = {
+    request_id: requestId,
+    status:
+      typeof status === "string" &&
+      (KNOWN_WRITE_STATES as readonly string[]).includes(status)
+        ? (status as WriteStatus)
+        : "unknown",
+  };
+  if (receipt.status === "unknown") {
+    // A write that returned without a state and without an error: gbrain
+    // answered synchronously — treat as committed unless a state arrives.
+    const looksImmediate =
+      raw.status === undefined &&
+      (result.ok === true || result.committed === true || raw.content !== undefined);
+    if (looksImmediate) receipt.status = "committed";
+    else receipt.detail = JSON.stringify(result).slice(0, 500);
+  }
+  if (typeof raw.detail === "string") receipt.detail = raw.detail;
+  if (typeof raw.retry_after_ms === "number") {
+    receipt.retry_after_ms = raw.retry_after_ms;
+  }
+  return receipt;
 }

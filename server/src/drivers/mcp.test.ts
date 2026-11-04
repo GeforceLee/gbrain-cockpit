@@ -162,3 +162,29 @@ describe("McpDriver", () => {
     await expect(driver.whoami()).resolves.toEqual({});
   });
 });
+
+describe("normalizeReceipt", () => {
+  test("passes through known states", async () => {
+    const { normalizeReceipt } = await import("./mcp");
+    expect(normalizeReceipt({ status: "committed" }, "r1")).toMatchObject({
+      request_id: "r1",
+      status: "committed",
+    });
+    expect(normalizeReceipt({ status: "conflict" }, "r1").status).toBe("conflict");
+    expect(
+      normalizeReceipt({ write_request: { status: "queued" } }, "r1").status,
+    ).toBe("queued");
+  });
+
+  test("immediate success without a state reads as committed", async () => {
+    const { normalizeReceipt } = await import("./mcp");
+    expect(normalizeReceipt({ ok: true }, "r1").status).toBe("committed");
+  });
+
+  test("unrecognized payloads stay unknown with detail", async () => {
+    const { normalizeReceipt } = await import("./mcp");
+    const receipt = normalizeReceipt({ weird: true }, "r1");
+    expect(receipt.status).toBe("unknown");
+    expect(receipt.detail).toContain("weird");
+  });
+});

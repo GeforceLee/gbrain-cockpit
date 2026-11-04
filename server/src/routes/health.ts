@@ -36,7 +36,7 @@ export async function getHealthReport(
     mcpCheck.status === "down"
       ? { status: "down", error: mcpCheck.error }
       : await checkBrain(mcp);
-  const cliCheck: CliCheck = await inspectCli(cfg);
+  const cliCheck: CliCheck = await inspectCli(cfg.gbrainBin);
 
   const report: HealthReport = {
     status: worstStatus(mcpCheck.status, brainCheck.status, cliCheck.status),

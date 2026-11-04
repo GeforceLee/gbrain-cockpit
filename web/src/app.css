@@ -272,3 +272,269 @@ button:disabled {
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+
+/* type filter chips */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.chip-btn {
+  border-radius: 999px;
+  padding: 2px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.chip-btn.active {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+/* page list rows */
+.page-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.page-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.page-title {
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.page-meta {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.page-snippet {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin-top: 4px;
+  border-top: 1px dashed var(--border);
+  padding-top: 4px;
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 5.2em;
+  overflow: hidden;
+}
+
+.page-title-lg {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 12px 0 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.page-content {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 12px 0 0;
+}
+
+.linkish {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  padding: 0 0 4px;
+}
+
+.linkish:hover {
+  opacity: 0.8;
+}
+
+/* search */
+.search-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.search-form input {
+  flex: 1;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+/* editor */
+.editor textarea {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.editor .hint {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* receipt slot — fixed placement, never a disappearing toast */
+.receipt {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--text-muted);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.receipt-committed {
+  border-left-color: var(--ok);
+}
+
+.receipt-conflict,
+.receipt-failed {
+  border-left-color: var(--down);
+}
+
+.receipt-queued,
+.receipt-running,
+.receipt-pending {
+  border-left-color: var(--warn);
+}
+
+/* inbox queues */
+.queue {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.queue h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.queue-desc {
+  margin: 4px 0 10px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.queue-item {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.queue-summary {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.queue-raw {
+  margin: 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 10em;
+  overflow: hidden;
+}
+
+/* phosphor command block — signature component (ENG-15 front half) */
+.cmd-block {
+  background: #0a0f0b;
+  border: 1px solid #1d2b20;
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-width: min(420px, 100%);
+}
+
+.cmd-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.cmd-badge {
+  color: #58e389;
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  border: 1px solid #2a4632;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.cmd-copy {
+  background: #0f1a12;
+  border-color: #2a4632;
+  color: #58e389;
+}
+
+.cmd-block code {
+  display: block;
+  color: #7cf5a4;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 8px 0 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cmd-steps {
+  color: #4e8a63;
+  font-size: 12px;
+  margin: 0;
+}

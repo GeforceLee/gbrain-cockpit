@@ -1,0 +1,403 @@
+import { randomUUID } from "node:crypto";
+import type {
+  EdgeProposal,
+  InboxReport,
+  InboxQueue,
+  PageDetail,
+  PageSummary,
+  PageVersion,
+  PagesFacets,
+  SearchHit,
+  TakeItem,
+  TakeQuality,
+  TrustReviewEnvelope,
+  TrustReviewItem,
+  WriteReceipt,
+} from "@gbrain-cockpit/shared";
+import { auditWrite } from "../audit";
+import { BadRequestError, envelope, readJsonBody } from "../http";
+import { CliDriver, CliValidationError } from "../drivers/cli";
+import { McpError, McpDriver } from "../drivers/mcp";
+
+// API surface (core-loop milestone). Every handler receives an already
+// authenticated request; param validation is regex-whitelisted before it
+// reaches any driver (AGENTS.md #6), and errors map to the envelope.
+
+export interface ApiContext {
+  mcp: McpDriver;
+  cli: CliDriver | null;
+}
+
+// --- validation patterns (single place, no scattered regexes) --------------
+
+const SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,200}$/;
+const TYPE_RE = /^[a-z][a-z0-9-]{0,40}$/;
+const REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
+const ID_RE = /^\d{1,18}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const REQUEST_ID_RE = /^[0-9a-fA-F-]{8,64}$/;
+const QUALITIES: readonly TakeQuality[] = [
+  "correct",
+  "incorrect",
+  "partial",
+  "unresolvable",
+];
+
+function param(url: URL, name: string): string | undefined {
+  const value = url.searchParams.get(name) ?? undefined;
+  return value === "" ? undefined : value;
+}
+
+function requirePattern(value: string | undefined, name: string, re: RegExp): string {
+  if (value === undefined || !re.test(value)) {
+    throw new BadRequestError(`invalid ${name}`);
+  }
+  return value;
+}
+
+// --- error mapping ----------------------------------------------------------
+
+export function mapError(err: unknown): Response {
+  if (err instanceof BadRequestError || err instanceof CliValidationError) {
+    return envelope(400, "E_BAD_REQUEST", err.message);
+  }
+  if (err instanceof McpError) {
+    switch (err.kind) {
+      case "auth":
+        return envelope(502, "E_UPSTREAM_AUTH", err.message);
+      case "rate-limit":
+        return envelope(429, "E_RATE_LIMITED", err.message, {
+          ...(err.retryAfterMs
+            ? { "retry-after": String(Math.ceil(err.retryAfterMs / 1000)) }
+            : {}),
+        });
+      case "timeout":
+        return envelope(504, "E_UPSTREAM", err.message);
+      default:
+        return envelope(502, "E_UPSTREAM", err.message);
+    }
+  }
+  console.error("[api] unexpected error:", err);
+  return envelope(500, "E_INTERNAL", "unexpected server error");
+}
+
+// --- read routes ------------------------------------------------------------
+
+export async function handlePages(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const type = param(url, "type");
+  if (type !== undefined) requirePattern(type, "type", TYPE_RE);
+  const limitRaw = param(url, "limit") ?? "50";
+  const limit = Number.parseInt(limitRaw, 10);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new BadRequestError("invalid limit (1..100)");
+  }
+  const pages = await ctx.mcp.listPages({
+    ...(type ? { type } : {}),
+    limit,
+    sort: "updated_desc",
+  });
+  return Response.json(pages satisfies PageSummary[]);
+}
+
+export async function handlePageFacets(ctx: ApiContext): Promise<Response> {
+  const stats = await ctx.mcp.schemaStats();
+  // gbrain nests the counters under `aggregate`; normalize here so the UI
+  // never depends on the raw shape (narrow adaptation surface).
+  const agg = (stats.aggregate ?? {}) as {
+    total_pages?: number;
+    by_type?: PagesFacets["by_type"];
+  };
+  const facets: PagesFacets = {
+    pack_identity: stats.pack_identity,
+    total_pages: agg.total_pages,
+    by_type: agg.by_type ?? [],
+  };
+  return Response.json(facets);
+}
+
+export async function handlePage(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const slug = requirePattern(param(url, "slug"), "slug", SLUG_RE);
+  const [page, versions] = await Promise.all([
+    ctx.mcp.getPage(slug),
+    ctx.mcp.versions(slug).catch(() => [] as PageVersion[]),
+  ]);
+  return Response.json({ page: page satisfies PageDetail, versions });
+}
+
+export async function handleSearch(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const raw = param(url, "q");
+  if (raw === undefined || raw.length < 1 || raw.length > 200) {
+    throw new BadRequestError("q is required (1..200 chars)");
+  }
+  // strip control characters; the rest is passed verbatim as a search term
+  const q = raw.replace(/[\x00-\x1f\x7f]/g, "");
+  const hits = await ctx.mcp.search(q);
+  return Response.json(hits satisfies SearchHit[]);
+}
+
+// --- inbox ------------------------------------------------------------------
+
+async function trustQueue(
+  ctx: ApiContext,
+): Promise<InboxQueue<TrustReviewItem>> {
+  if (!ctx.cli) {
+    return {
+      status: "down",
+      error: "CLI channel unavailable on this host — actions degrade to copy-command",
+    };
+  }
+  try {
+    const envelopeData = await ctx.cli.trustReview();
+    return {
+      status: "ok",
+      items: envelopeData.items ?? [],
+      counts: envelopeData.counts,
+    } satisfies InboxQueue<TrustReviewItem> & { counts?: Record<string, number> };
+  } catch (err) {
+    return {
+      status: "down",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function edgeQueue(
+  ctx: ApiContext,
+): Promise<InboxQueue<EdgeProposal>> {
+  if (!ctx.cli) {
+    return {
+      status: "down",
+      error: "CLI channel unavailable on this host — actions degrade to copy-command",
+    };
+  }
+  try {
+    const items = await ctx.cli.edgeList();
+    return { status: "ok", items };
+  } catch (err) {
+    return {
+      status: "down",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function takesQueue(ctx: ApiContext): Promise<InboxQueue<TakeItem>> {
+  try {
+    const items = await ctx.mcp.takesList();
+    return { status: "ok", items };
+  } catch (err) {
+    if (err instanceof McpError) {
+      return { status: "degraded", error: err.message };
+    }
+    return {
+      status: "down",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export async function handleInbox(ctx: ApiContext): Promise<Response> {
+  const [trust, edgeProposals, takes] = await Promise.all([
+    trustQueue(ctx),
+    edgeQueue(ctx),
+    takesQueue(ctx),
+  ]);
+  const cliChannel = ctx.cli
+    ? await ctx.cli.status()
+    : { available: false, error: "gbrain binary not found" };
+  const report: InboxReport = { trust, edgeProposals, takes, cliChannel };
+  return Response.json(report);
+}
+
+// --- adjudication actions ---------------------------------------------------
+
+export async function handleTrustDrop(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const ref = requirePattern(
+    typeof body.ref === "string" ? body.ref : undefined,
+    "ref",
+    REF_RE,
+  );
+  if (!ctx.cli) {
+    return envelope(
+      503,
+      "E_UPSTREAM",
+      "CLI channel unavailable on this host — use the copy-command instead",
+    );
+  }
+  const result = await ctx.cli.trustDrop(ref);
+  ctx.mcp.invalidateAll();
+  await auditWrite("owner", { action: "trust.drop", detail: { ref } });
+  return Response.json({ ok: true, output: result.output });
+}
+
+export async function handleEdgeAction(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const op = body.op;
+  const id = requirePattern(
+    typeof body.id === "string" ? body.id : undefined,
+    "id",
+    ID_RE,
+  );
+  if (!ctx.cli) {
+    return envelope(
+      503,
+      "E_UPSTREAM",
+      "CLI channel unavailable on this host — use the copy-command instead",
+    );
+  }
+  let result: { output: string };
+  switch (op) {
+    case "accept":
+      result = await ctx.cli.edgeAccept(id);
+      break;
+    case "reject":
+      result = await ctx.cli.edgeReject(id);
+      break;
+    case "undo":
+      result = await ctx.cli.edgeUndo(id);
+      break;
+    case "date":
+      result = await ctx.cli.edgeDate(
+        id,
+        requirePattern(
+          typeof body.date === "string" ? body.date : undefined,
+          "date",
+          DATE_RE,
+        ),
+      );
+      break;
+    default:
+      throw new BadRequestError("op must be accept|reject|undo|date");
+  }
+  ctx.mcp.invalidateAll();
+  await auditWrite("owner", { action: `edge-proposals.${op}`, detail: { id } });
+  return Response.json({ ok: true, output: result.output });
+}
+
+export async function handleTakeResolve(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const ref = requirePattern(
+    typeof body.ref === "string" ? body.ref : undefined,
+    "ref",
+    REF_RE,
+  );
+  const quality = body.quality;
+  if (typeof quality !== "string" || !QUALITIES.includes(quality as TakeQuality)) {
+    throw new BadRequestError("quality must be correct|incorrect|partial|unresolvable");
+  }
+  const evidence =
+    typeof body.evidence === "string" && body.evidence.trim()
+      ? body.evidence.trim().slice(0, 2000)
+      : undefined;
+  const result = await ctx.mcp.resolveTake({
+    ref,
+    quality: quality as TakeQuality,
+    evidence,
+  });
+  ctx.mcp.invalidateAll();
+  await auditWrite("owner", {
+    action: "takes.resolve",
+    detail: { ref, quality },
+  });
+  return Response.json({ ok: true, result });
+}
+
+export async function handleConfirm(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const ref = requirePattern(
+    typeof body.ref === "string" ? body.ref : undefined,
+    "ref",
+    /^(f|t)\d{1,18}$|^p:[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,200}$/,
+  );
+  const result = await ctx.mcp.confirmMemory({ ref });
+  ctx.mcp.invalidateAll();
+  await auditWrite("owner", { action: "memory.confirm", detail: { ref } });
+  return Response.json({ ok: true, result });
+}
+
+// --- page write (receipt protocol) -------------------------------------------
+
+export async function handlePageWrite(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const slug = requirePattern(
+    typeof body.slug === "string" ? body.slug : undefined,
+    "slug",
+    SLUG_RE,
+  );
+  if (typeof body.content !== "string" || body.content.length > 1_000_000) {
+    throw new BadRequestError("content must be a string (≤1MB)");
+  }
+  // gbrain 0.60.x revisions are UUID strings (live-probed); accept both.
+  const rawRevision = body.expected_revision;
+  const expectedRevision =
+    typeof rawRevision === "string" && /^[0-9a-fA-F-]{8,64}$/.test(rawRevision)
+      ? rawRevision
+      : typeof rawRevision === "number" &&
+          Number.isInteger(rawRevision) &&
+          rawRevision >= 0
+        ? rawRevision
+        : undefined;
+  if (expectedRevision === undefined) {
+    throw new BadRequestError(
+      "expected_revision must be the page's current revision (string or integer)",
+    );
+  }
+  // Client may pass its own request_id to make retries idempotent across
+  // lost replies; otherwise we mint one. NEVER re-send with a new id.
+  const requestId =
+    typeof body.request_id === "string" && REQUEST_ID_RE.test(body.request_id)
+      ? body.request_id
+      : randomUUID();
+
+  const receipt = await ctx.mcp.putPage({
+    slug,
+    content: body.content as string,
+    expectedRevision,
+    requestId,
+  });
+  if (receipt.status === "committed") ctx.mcp.invalidateAll();
+  await auditWrite("owner", {
+    action: "page.write",
+    detail: { slug, request_id: requestId, status: receipt.status },
+  });
+  return Response.json(receipt satisfies WriteReceipt);
+}
+
+export async function handleWriteRequest(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const requestId = requirePattern(
+    param(url, "request_id"),
+    "request_id",
+    REQUEST_ID_RE,
+  );
+  const receipt = await ctx.mcp.getWriteRequest(requestId);
+  if (receipt.status === "committed") ctx.mcp.invalidateAll();
+  return Response.json(receipt satisfies WriteReceipt);
+}

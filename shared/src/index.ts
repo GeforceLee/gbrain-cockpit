@@ -133,3 +133,151 @@ export function worstStatus(...statuses: CheckStatus[]): CheckStatus {
   if (statuses.includes("degraded")) return "degraded";
   return "ok";
 }
+
+// --- Read surface (core-loop milestone) ------------------------------------
+// gbrain 0.60.558 shapes, recorded from live probes 2026-11-04. All types
+// carry an index signature: fields we don't model pass through instead of
+// being dropped, and the UI renders known fields defensively.
+
+export interface PageSummary {
+  slug: string;
+  source_id?: string;
+  type?: string;
+  title?: string;
+  updated_at?: string;
+  [k: string]: unknown;
+}
+
+export interface FacetTypeCount {
+  type: string;
+  count: number;
+}
+
+export interface PagesFacets {
+  pack_identity?: string;
+  total_pages?: number;
+  by_type: FacetTypeCount[];
+  [k: string]: unknown;
+}
+
+export interface PageDetail {
+  slug: string;
+  /** gbrain 0.60.x hands out UUID strings here; numeric for safety */
+  revision?: number | string;
+  content?: string;
+  title?: string;
+  type?: string;
+  tags?: string[];
+  trust_tier?: string;
+  origin?: string;
+  quoted?: string;
+  created_at?: string;
+  updated_at?: string;
+  compiled_truth?: string;
+  [k: string]: unknown;
+}
+
+export interface PageVersion {
+  id?: number | string;
+  snapshot_at?: string;
+  title?: string;
+  type?: string;
+  [k: string]: unknown;
+}
+
+export interface SearchHit {
+  slug?: string;
+  title?: string;
+  type?: string;
+  chunk_text?: string;
+  score?: number;
+  trust_tier?: string;
+  source_id?: string;
+  [k: string]: unknown;
+}
+
+// --- Inbox ------------------------------------------------------------------
+// Trust refs: tp<id> proposal, h<id> held write, f<id> standing preference /
+// fact candidate, a<id> allow rule, t<id> take (see `gbrain trust --help`).
+// review items carry their exact commands — prefer gbrain's own command text
+// over anything cockpit builds (narrow adaptation surface).
+
+export type TrustRefPrefix = "tp" | "h" | "f" | "a" | "t";
+
+export interface TrustReviewItem {
+  ref?: string;
+  kind?: string;
+  /** gbrain's ready-to-run commands for this item, when provided */
+  commands?: unknown;
+  [k: string]: unknown;
+}
+
+export interface TrustReviewEnvelope {
+  schema_version?: number;
+  items?: TrustReviewItem[];
+  groups?: unknown[];
+  counts?: Record<string, number>;
+  [k: string]: unknown;
+}
+
+export interface EdgeProposal {
+  id?: string | number;
+  [k: string]: unknown;
+}
+
+export interface TakeItem {
+  ref?: string;
+  id?: string | number;
+  claim?: string;
+  holder?: string;
+  kind?: string;
+  active?: boolean;
+  [k: string]: unknown;
+}
+
+export interface InboxQueue<T> {
+  status: CheckStatus;
+  items?: T[];
+  counts?: Record<string, number>;
+  error?: string;
+}
+
+export interface InboxReport {
+  trust: InboxQueue<TrustReviewItem>;
+  edgeProposals: InboxQueue<EdgeProposal>;
+  takes: InboxQueue<TakeItem>;
+  cliChannel: CliChannelStatus;
+}
+
+export type TakeQuality = "correct" | "incorrect" | "partial" | "unresolvable";
+
+// --- CLI channel ------------------------------------------------------------
+
+export interface CliChannelStatus {
+  available: boolean;
+  /** "unprobed" until first use; result cached briefly */
+  probedAt?: string;
+  error?: string;
+}
+
+// --- Write receipts ----------------------------------------------------------
+// gbrain write states: queued → running → committed | conflict | failed |
+// cancelled. "pending" = wait_ms elapsed without a final receipt; poll
+// get_write_request with the SAME request_id, never re-send (ARCHITECTURE §3.1).
+
+export type WriteStatus =
+  | "queued"
+  | "running"
+  | "pending"
+  | "committed"
+  | "conflict"
+  | "failed"
+  | "cancelled"
+  | "unknown";
+
+export interface WriteReceipt {
+  request_id: string;
+  status: WriteStatus;
+  detail?: string;
+  [k: string]: unknown;
+}
