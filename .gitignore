@@ -1,0 +1,22 @@
+# Secrets & env (never commit)
+.env
+.env.*
+!.env.example
+
+# Internal dev notes — never published (Chinese working docs, see internal/README.md)
+internal/
+
+# Dependencies & build artifacts
+node_modules/
+dist/
+build/
+*.log
+
+# Test & runtime temp files
+tmp/
+*.tmp
+
+# Editor & OS
+.DS_Store
+.idea/
+.vscode/
