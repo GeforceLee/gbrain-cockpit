@@ -1,0 +1,20 @@
+{
+  "name": "gbrain-cockpit",
+  "private": true,
+  "workspaces": [
+    "server",
+    "web",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "cd server && bun dev & cd web && bun dev",
+    "build": "bun run --filter '@gbrain-cockpit/web' build",
+    "typecheck": "tsc --noEmit -p shared && tsc --noEmit -p server && tsc --noEmit -p web",
+    "test": "bun test",
+    "check:locales": "bun scripts/check-locales.ts",
+    "audit": "bun audit"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

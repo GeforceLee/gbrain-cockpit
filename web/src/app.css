@@ -1,0 +1,274 @@
+/*
+ * M0 placeholder styles only. The visual direction is NOT decided — three
+ * mockup candidates are awaiting the owner's final review (internal/mockups).
+ * Until then: neutral grays, no brand color, semantic colors reserved for
+ * status (ok/degraded/down). Hard constraints from the style review that hold
+ * for ANY direction are already applied: 1px-border layering, opacity-only
+ * micro-animations ≤160ms, mono for machine output, zh-CN copy ≥13px with
+ * line-height ≥1.6, prefers-reduced-motion respected.
+ */
+
+:root {
+  --bg: #111214;
+  --surface: #17181b;
+  --surface-2: #1d1f23;
+  --border: #2a2d33;
+  --text: #e6e8ec;
+  --text-muted: #9aa0aa;
+  --ok: #3fb27f;
+  --warn: #d8a428;
+  --down: #d65f5f;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.app {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+/* header */
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+}
+
+.app-title {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.2px;
+}
+
+.app-tagline {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+}
+
+.lang-switch {
+  display: flex;
+  gap: 4px;
+}
+
+/* nav */
+.panel-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 16px 0;
+}
+
+.panel-nav button {
+  border: 1px solid transparent;
+  background: none;
+}
+
+.panel-nav button.active {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+/* buttons */
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  opacity: 0.8;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* panels */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.panel-desc {
+  color: var(--text-muted);
+}
+
+.panel-note {
+  color: var(--text-muted);
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+
+/* token form */
+.token-form {
+  display: grid;
+  gap: 8px;
+  max-width: 420px;
+  margin-top: 16px;
+}
+
+.token-form label {
+  font-size: 13px;
+}
+
+.token-form input {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.token-form .hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* cards */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.chip {
+  display: inline-block;
+  border-radius: 999px;
+  font-size: 13px;
+  padding: 1px 10px;
+  border: 1px solid;
+}
+
+.chip-ok {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.chip-degraded {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.chip-down {
+  color: var(--down);
+  border-color: var(--down);
+}
+
+/* key-value rows */
+.kv {
+  margin: 8px 0 0;
+}
+
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+.kv-row dt {
+  color: var(--text-muted);
+}
+
+.kv-row dd {
+  margin: 0;
+}
+
+/* text utilities */
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.small {
+  font-size: 13px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--down);
+}
+
+/* footer */
+.app-footer {
+  margin-top: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
