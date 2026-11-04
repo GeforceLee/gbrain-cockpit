@@ -5,12 +5,14 @@ import { TokenVerifier } from "./auth";
 import { loadConfig, ConfigError, type Config } from "./config";
 import { locateGbrainBin, CliDriver } from "./drivers/cli";
 import { McpDriver } from "./drivers/mcp";
+import { PgReadonlyDriver } from "./drivers/pg-readonly";
 import { loadRootEnv } from "./env";
 import { envelope, guardRequest } from "./http";
 import { serveStatic } from "./static";
 import {
   handleConfirm,
   handleEdgeAction,
+  handleGraph,
   handleInbox,
   handlePage,
   handlePageFacets,
@@ -59,7 +61,24 @@ if (cfg.gbrainBin && !gbrainBin) {
   console.error(`[cockpit] GBRAIN_BIN is set but not executable: ${cfg.gbrainBin}`);
   process.exit(1);
 }
-const api: ApiContext = { mcp, cli };
+
+// Read-only graph bypass: optional channel — unset DSN (PGLite engines)
+// simply means Nebula reports "down"; never fatal (ARCHITECTURE §3.3, §11-3).
+const pg = new PgReadonlyDriver({ dsn: cfg.pgReadonlyDsn });
+if (cfg.pgReadonlyDsn) {
+  try {
+    const latency = await pg.ping();
+    console.log(`[cockpit] graph bypass: read-only Postgres reachable (${latency}ms)`);
+  } catch (err) {
+    console.warn(
+      `[cockpit] graph bypass: Postgres probe failed — Nebula degrades to cached/stale (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+} else {
+  console.log("[cockpit] graph bypass: PG_READONLY_DSN unset — Nebula will report the channel as down");
+}
+
+const api: ApiContext = { mcp, cli, pg };
 
 const server = Bun.serve({
   hostname: cfg.bind,
@@ -72,7 +91,7 @@ const server = Bun.serve({
       if (req.method !== "GET") {
         return envelope(405, "E_METHOD_NOT_ALLOWED" as ErrorCode, "only GET is allowed");
       }
-      return Response.json(toCoarse(await getHealthReport(cfg, mcp)));
+      return Response.json(toCoarse(await getHealthReport(cfg, mcp, pg)));
     }
 
     const rejected = guardRequest(req, url, cfg);
@@ -88,7 +107,9 @@ const server = Bun.serve({
       try {
         switch (route) {
           case "GET /api/healthz":
-            return Response.json(await getHealthReport(cfg, mcp));
+            return Response.json(await getHealthReport(cfg, mcp, pg));
+          case "GET /api/graph":
+            return await handleGraph(api);
           case "GET /api/pages":
             return await handlePages(api, url);
           case "GET /api/pages/facets":

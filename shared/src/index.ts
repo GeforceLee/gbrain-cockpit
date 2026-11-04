@@ -122,6 +122,12 @@ export interface BrainCheck {
   error?: string;
 }
 
+export interface PgCheck {
+  status: CheckStatus;
+  latencyMs?: number;
+  error?: string;
+}
+
 export interface HealthReport {
   status: CheckStatus;
   cockpitVersion: string;
@@ -131,6 +137,8 @@ export interface HealthReport {
     mcp: McpCheck;
     brain: BrainCheck;
     cli: CliCheck;
+    /** read-only graph bypass — present only when PG_READONLY_DSN is set */
+    pg?: PgCheck;
   };
 }
 
@@ -285,6 +293,48 @@ export interface CliChannelStatus {
   /** "unprobed" until first use; result cached briefly */
   probedAt?: string;
   error?: string;
+}
+
+// --- Graph (read-only bypass) -------------------------------------------------
+// ARCHITECTURE §3.3, channel ③: a fixed read-only SELECT over the pages and
+// links tables — the ONLY data source for the Nebula whole-brain map. Zero
+// user input ever reaches SQL. PGLite engines simply leave PG_READONLY_DSN
+// unset; the channel then reports "down" and degrades, never crashes.
+
+export interface GraphNode {
+  slug: string;
+  title?: string;
+  type?: string;
+  updated_at?: string;
+  degree: number;
+  [k: string]: unknown;
+}
+
+export interface GraphEdge {
+  /** source page slug */
+  source: string;
+  /** target page slug */
+  target: string;
+  link_type?: string;
+  link_source?: string;
+  [k: string]: unknown;
+}
+
+export interface GraphReport {
+  status: CheckStatus;
+  /**
+   * Changes whenever the underlying pages/links change. Clients freeze FA2
+   * layout coordinates per fingerprint so dream diffs stay comparable
+   * (layout coordinates frozen — style-review hard constraint).
+   */
+  fingerprint?: string;
+  /** true when serving the cached graph after a probe/refetch failure */
+  stale?: boolean;
+  generatedAt?: string;
+  error?: string;
+  nodes?: GraphNode[];
+  edges?: GraphEdge[];
+  [k: string]: unknown;
 }
 
 // --- Write receipts ----------------------------------------------------------

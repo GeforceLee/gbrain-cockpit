@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
   EdgeProposal,
+  GraphReport,
   InboxReport,
   InboxQueue,
   PageDetail,
@@ -17,6 +18,7 @@ import { auditWrite } from "../audit";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliDriver, CliValidationError } from "../drivers/cli";
 import { McpError, McpDriver } from "../drivers/mcp";
+import type { PgReadonlyDriver } from "../drivers/pg-readonly";
 
 // API surface (core-loop milestone). Every handler receives an already
 // authenticated request; param validation is regex-whitelisted before it
@@ -25,6 +27,7 @@ import { McpError, McpDriver } from "../drivers/mcp";
 export interface ApiContext {
   mcp: McpDriver;
   cli: CliDriver | null;
+  pg: PgReadonlyDriver | null;
 }
 
 // --- validation patterns (single place, no scattered regexes) --------------
@@ -72,6 +75,42 @@ export function mapError(err: unknown): Response {
   }
   console.error("[api] unexpected error:", err);
   return envelope(500, "E_INTERNAL", "unexpected server error");
+}
+
+// --- graph (read-only bypass, Nebula's only data source) ----------------------
+
+export async function handleGraph(ctx: ApiContext): Promise<Response> {
+  if (!ctx.pg || !ctx.pg.configured) {
+    // Not an error: PGLite engines and hosts without the bypass simply leave
+    // the DSN unset. The UI degrades with a bilingual note.
+    const down: GraphReport = {
+      status: "down",
+      error:
+        "read-only bypass not configured (PG_READONLY_DSN unset — PGLite engines leave it unset)",
+    };
+    return Response.json(down);
+  }
+  try {
+    const { snapshot, stale, error } = await ctx.pg.getGraph();
+    const report: GraphReport = {
+      status: stale ? "degraded" : "ok",
+      fingerprint: snapshot.fingerprint,
+      stale,
+      generatedAt: new Date().toISOString(),
+      ...(error ? { error } : {}),
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+    };
+    return Response.json(report);
+  } catch (err) {
+    // Channel-down reads report in-band (same vocabulary as inbox queues);
+    // the MCP-composite fallback chain is a later milestone (ARCHITECTURE §3.3).
+    const down: GraphReport = {
+      status: "down",
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(down);
+  }
 }
 
 // --- read routes ------------------------------------------------------------

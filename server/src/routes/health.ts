@@ -7,10 +7,12 @@ import {
   type HealthReport,
   type McpCheck,
   type McpWhoami,
+  type PgCheck,
 } from "@gbrain-cockpit/shared";
 import type { Config } from "../config";
 import { inspectCli } from "../drivers/cli";
 import { McpDriver, McpError } from "../drivers/mcp";
+import type { PgReadonlyDriver } from "../drivers/pg-readonly";
 
 // /healthz assembly (ARCHITECTURE §5-11). The MCP probe doubles as the
 // startup canary: if gbrain is unreachable we say so instead of guessing.
@@ -25,6 +27,7 @@ let cache: { at: number; report: HealthReport } | null = null;
 export async function getHealthReport(
   cfg: Config,
   mcp: McpDriver,
+  pg: PgReadonlyDriver | null = null,
   opts: { force?: boolean } = {},
 ): Promise<HealthReport> {
   if (!opts.force && cache && Date.now() - cache.at < CACHE_TTL_MS) {
@@ -37,13 +40,19 @@ export async function getHealthReport(
       ? { status: "down", error: mcpCheck.error }
       : await checkBrain(mcp);
   const cliCheck: CliCheck = await inspectCli(cfg.gbrainBin);
+  const pgCheck = await checkPg(pg);
 
   const report: HealthReport = {
-    status: worstStatus(mcpCheck.status, brainCheck.status, cliCheck.status),
+    status: worstStatus(
+      mcpCheck.status,
+      brainCheck.status,
+      cliCheck.status,
+      ...(pgCheck ? [pgCheck.status] : []),
+    ),
     cockpitVersion: COCKPIT_VERSION,
     uptimeMs: Date.now() - PROCESS_STARTED_AT,
     generatedAt: new Date().toISOString(),
-    checks: { mcp: mcpCheck, brain: brainCheck, cli: cliCheck },
+    checks: { mcp: mcpCheck, brain: brainCheck, cli: cliCheck, ...(pgCheck ? { pg: pgCheck } : {}) },
   };
   cache = { at: Date.now(), report };
   return report;
@@ -54,7 +63,7 @@ export function toCoarse(report: HealthReport): {
   status: CheckStatus;
   cockpitVersion: string;
   generatedAt: string;
-  checks: Record<keyof HealthReport["checks"], CheckStatus>;
+  checks: Record<string, CheckStatus>;
 } {
   return {
     status: report.status,
@@ -64,6 +73,7 @@ export function toCoarse(report: HealthReport): {
       mcp: report.checks.mcp.status,
       brain: report.checks.brain.status,
       cli: report.checks.cli.status,
+      ...(report.checks.pg ? { pg: report.checks.pg.status } : {}),
     },
   };
 }
@@ -117,5 +127,16 @@ async function checkBrain(mcp: McpDriver): Promise<BrainCheck> {
       status: "degraded",
       error: err instanceof McpError ? err.message : (err as Error).message,
     };
+  }
+}
+
+/** read-only graph bypass probe — only present when the DSN is configured */
+async function checkPg(pg: PgReadonlyDriver | null): Promise<PgCheck | null> {
+  if (!pg || !pg.configured) return null;
+  try {
+    const latencyMs = await pg.ping();
+    return { status: "ok", latencyMs };
+  } catch (err) {
+    return { status: "down", error: err instanceof Error ? err.message : String(err) };
   }
 }
