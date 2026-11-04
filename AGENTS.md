@@ -27,3 +27,4 @@ These constraints define the project. Violating any of them is a design break, n
 - **Planned stack:** Bun workspaces — `server` (Bun + TypeScript, zero runtime npm deps), `web` (React + Vite + sigma.js), `shared` (channel-matrix types + error codes). CI and release pipeline land with the first code.
 - **Planned panels:** Inbox · Nebula · Pages · Search · Health.
 - **UI copy:** bilingual `zh-CN` + `en` from the first release; every panel / action / empty state / error carries a one-line self-description. Locale keys ship in the same PR as the feature; CI fails on zh/en key-set drift.
+- **Versioning:** releases are `0.x` until the owner promotes them; internal milestone labels (`M0`, `V1.0`, `V1.1` …) name scope batches in the design docs and are never release numbers.
