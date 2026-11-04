@@ -4,12 +4,28 @@
 export const en = {
   "app.title": "gbrain-cockpit",
   "app.tagline": "dream proposes overnight — you adjudicate in the morning.",
-  "app.skeleton":
-    "Dev build 0.0.1: Inbox/Pages/Search/Health run on live data; Nebula lands in a later milestone; visual direction still under review.",
+  "app.meta.community": "community project, not affiliated with gbrain upstream · skin: Mint Audit v5",
 
   "lang.label": "Language",
   "lang.zh": "中文",
   "lang.en": "English",
+  "lang.zhShort": "中",
+  "lang.enShort": "EN",
+
+  "shell.navLabel": "PANELS",
+  "shell.owner": "owner",
+  "shell.searchPlaceholder": "search the brain… (Enter to jump)",
+
+  "nav.inbox.zh": "收件箱",
+  "nav.inbox.en": "Inbox",
+  "nav.nebula.zh": "星云图",
+  "nav.nebula.en": "Nebula",
+  "nav.pages.zh": "页面",
+  "nav.pages.en": "Pages",
+  "nav.search.zh": "搜索",
+  "nav.search.en": "Search",
+  "nav.health.zh": "健康",
+  "nav.health.en": "Health",
 
   "panel.inbox.title": "Inbox",
   "panel.inbox.desc":
@@ -24,8 +40,6 @@ export const en = {
   "panel.health.title": "Health",
   "panel.health.desc":
     "gbrain service status, channel connectivity and latency, dream state.",
-  "panel.placeholder":
-    "Placeholder — Nebula lands in a later milestone (read-only bypass + sigma.js); copy is part of the feature.",
 
   "pages.filterByType": "Filter by type",
   "pages.allTypes": "all",
@@ -67,6 +81,12 @@ export const en = {
   "inbox.factDiscard": "Discard",
   "inbox.edgeAccept": "Accept",
   "inbox.edgeReject": "Reject",
+  "inbox.tab.all": "All",
+  "inbox.listCaption": "pending items",
+  "inbox.noSelection": "Pick an item on the left — the document and the decision rail unfold here.",
+  "inbox.via.cli": "one-key · CLI whitelist channel",
+  "inbox.edgeHint": "To reject, change accept to reject in the command (same id).",
+  "inbox.takeHint": "To reject, change --accept to --reject (same id).",
   "inbox.queue.proposals": "Trust proposals",
   "inbox.queue.proposalsDesc":
     "Writes dream or an agent proposed that trust rules held for your adjudication. Accepting requires you, in person, at the brain host terminal (gbrain safety design) — never here.",
@@ -81,11 +101,50 @@ export const en = {
   "inbox.queue.takesDesc": "dream's LLM-proposed takes (propose_takes queue): accept writes it into the page's takes, reject dismisses it; click the page slug to inspect the source.",
   "inbox.queue.others": "Other pending",
   "inbox.queue.othersDesc": "Trust rules / allow entries etc. — use explain for detail.",
+  "inbox.doc.raw": "Raw proposal (gbrain output)",
+  "inbox.doc.sourcePage": "Source page",
+  "inbox.doc.provenance": "Provenance",
+  "inbox.doc.pipeline": "Trust pipeline",
+  "inbox.doc.summary": "Summary",
+  "inbox.doc.commands": "Commands from gbrain",
+  "inbox.chain.collect": "collected",
+  "inbox.chain.extract": "extracted",
+  "inbox.chain.intercept": "held by trust",
+  "inbox.chain.owner": "owner decides",
+  "inbox.chain.effect": "in effect",
+  "inbox.rail.caption": "DECIDE",
+
+  "stamp.rejected": "Rejected",
+  "stamp.accepted": "Accepted",
+  "stamp.confirmed": "Confirmed",
+
+  "channel.title": "Channel check",
+  "channel.row.drop": "drop",
+  "channel.row.accept": "accept",
+  "channel.row.release": "release",
+  "channel.row.confirm": "confirm",
+  "channel.row.discard": "discard",
+  "channel.row.mcp": "MCP tool",
+  "channel.row.db": "direct DB write",
+  "channel.row.explain": "explain",
+  "channel.onekey": "one-key ✓",
+  "channel.degraded": "degraded",
+  "channel.terminal": "terminal only",
+  "channel.none": "—",
+  "channel.never": "never ✗",
+
+  "audit.title": "AUDIT",
+  "audit.cap": "fixed receipt slot · this session",
+  "audit.empty": "No actions this session yet — verdicts and write receipts land here, never a toast.",
 
   "cmd.badge": "gbrain safety design · owner terminal action",
+  "cmd.terminal": "run at the brain host terminal",
   "cmd.copy": "Copy",
   "cmd.copied": "Copied ✓",
-  "cmd.steps": "copy → paste & run in the brain host terminal → come back and refresh",
+  "cmd.step1": "copy the command",
+  "cmd.step2": "paste & run at the brain host terminal",
+  "cmd.step3": "type the confirmation token verbatim, then come back and refresh",
+  "cmd.nobatch": "this action cannot be batched (gbrain safety design)",
 
   "health.token.label": "Access token",
   "health.token.hint":
@@ -102,6 +161,11 @@ export const en = {
   "health.check.mcp": "MCP channel",
   "health.check.brain": "brain summary",
   "health.check.cli": "CLI channel",
+  "health.check.pg": "read-only bypass",
+  "health.pg.unset": "PG_READONLY_DSN unset — the graph data channel is off (PGLite engines keep it unset).",
+  "health.uptime": "uptime",
+  "health.generated": "generated",
+  "health.brain.pages": "pages",
 
   "health.status.ok": "ok",
   "health.status.degraded": "degraded",
@@ -114,7 +178,7 @@ export const en = {
 
   "health.cli.bin": "binary",
   "health.cli.unverified":
-    "gbrain binary found, but the channel is not smoke-tested yet (warm/cold smoke lands with the V1.0 CLI driver); if this host is not the brain host, adjudication actions degrade to copy-command.",
+    "gbrain binary found; if this host is not the brain host, adjudication actions degrade to copy-command.",
   "health.cli.missing":
     "No gbrain binary found: whitelist CLI actions are unavailable and degrade to copy-command mode.",
 
@@ -123,8 +187,39 @@ export const en = {
   "health.brain.version": "gbrain version",
   "health.brain.counts": "counts",
 
+  "health.checklist": "Safety checklist",
+  "health.checklist.token": "token travels only in the Authorization header",
+  "health.checklist.cli": "CLI whitelist channel (execFile + arg checks)",
+  "health.checklist.pg": "read-only bypass (fixed SELECT on pages/links)",
+  "health.checklist.mcp": "writes on the MCP receipt protocol (optimistic lock + idempotency)",
+
+  "nebula.view.label": "paradigm",
+  "nebula.view.field": "starfield",
+  "nebula.view.orbit": "orbit",
+  "nebula.view.matrix": "matrix",
+  "nebula.noise": "noise filter",
+  "nebula.noiseHint": "hide nodes with degree < 3 (pending nodes always shown)",
+  "nebula.search": "locate a page slug…",
+  "nebula.tipPending": "pending",
+  "nebula.legend.newEdge": "dream new edge",
+  "nebula.legend.pending": "pending",
+  "nebula.drawer.caption": "NODE",
+  "nebula.drawer.type": "type",
+  "nebula.drawer.degree": "degree",
+  "nebula.drawer.pending": "pending",
+  "nebula.drawer.openPage": "open page →",
+  "nebula.matrix.caption": "adjacency matrix (≤2 hops, sorted by community & degree)",
+  "nebula.caption": "graph fingerprint (layout frozen per fingerprint)",
+  "nebula.stale": "graph data stale",
+  "nebula.staleDesc": "the read-only bypass is unreachable — showing the cached whole-brain map; it refreshes once the channel recovers.",
+  "nebula.down": "graph data channel unavailable",
+  "nebula.empty": "the graph is empty.",
+
   "common.loading": "Loading…",
   "common.close": "Close",
   "common.retry": "Retry",
   "common.panelError": "Panel render error",
+  "common.pass": "PASS ✓",
+  "common.na": "—",
+  "common.fail": "FAIL ✗",
 } satisfies Record<string, string>;

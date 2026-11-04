@@ -13,6 +13,7 @@ export function TokenGate({ onAuthed }: { onAuthed: () => void }) {
   return (
     <section className="panel token-gate">
       <h2>{t("health.token.label")}</h2>
+      <p className="panel-desc">{t("app.tagline")}</p>
       <form
         className="token-form"
         onSubmit={(e) => {

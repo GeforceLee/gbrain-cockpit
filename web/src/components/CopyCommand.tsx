@@ -6,11 +6,20 @@ import { useI18n } from "../lib/i18n";
 // copy-command actions render HERE, never as a colored button: the only
 // interactive element inside the block is "copy". This is the front half of
 // gbrain's ENG-15 owner-presence design; it is a first-class action surface,
-// not a degraded fallback, and it is never batched.
+// not a degraded fallback, and it is never batched. Ink bg + phosphor text is
+// "terminal material": it does not change with the skin.
 
-export function CopyCommand({ command }: { command: string }) {
+export function CopyCommand({
+  command,
+  hint,
+}: {
+  command: string;
+  /** optional one-line hint above the steps (e.g. the sibling command) */
+  hint?: string;
+}) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [flash, setFlash] = useState(false);
 
   async function copy() {
     try {
@@ -26,19 +35,33 @@ export function CopyCommand({ command }: { command: string }) {
       }
     }
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setFlash(true);
+    setTimeout(() => {
+      setCopied(false);
+      setFlash(false);
+    }, 2000);
   }
 
   return (
-    <div className="cmd-block">
-      <div className="cmd-head">
-        <span className="cmd-badge">{t("cmd.badge")}</span>
-        <button type="button" className="cmd-copy" onClick={() => void copy()}>
-          {copied ? t("cmd.copied") : t("cmd.copy")}
-        </button>
-      </div>
-      <code id={"cmd-" + hash(command)}>$ {command}</code>
-      <p className="cmd-steps">{t("cmd.steps")}</p>
+    <div className={`cmd ${flash ? "flash" : ""}`}>
+      <p className="cap">
+        <span>{t("cmd.badge")}</span>
+        <span className="zh">{t("cmd.terminal")}</span>
+      </p>
+      <code id={"cmd-" + hash(command)}>{command}</code>
+      {hint ? (
+        <p className="steps">
+          <b>{hint}</b>
+        </p>
+      ) : null}
+      <p className="steps">
+        <b>①</b> {t("cmd.step1")} <b>②</b> {t("cmd.step2")} <b>③</b>{" "}
+        {t("cmd.step3")}
+      </p>
+      <button type="button" className="copybtn" onClick={() => void copy()}>
+        {copied ? t("cmd.copied") : t("cmd.copy")}
+      </button>
+      <p className="nobatch">{t("cmd.nobatch")}</p>
     </div>
   );
 }

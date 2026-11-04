@@ -1,22 +1,28 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { SearchHit } from "@gbrain-cockpit/shared";
 import { ApiError, apiGet } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
 // Search panel: the cheap hybrid search (no LLM). Results are persistent
 // untrusted input — titles/snippets render as plain text, never as markup.
+// The shell's global search box (topbar) lands here with a seed query.
 
-export function Search({ onOpenPage }: { onOpenPage: (slug: string) => void }) {
+export function Search({
+  seed,
+  onConsumeSeed,
+  onOpenPage,
+}: {
+  seed?: string | null;
+  onConsumeSeed?: () => void;
+  onOpenPage: (slug: string) => void;
+}) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function run(e: React.FormEvent) {
-    e.preventDefault();
-    const q = query.trim();
-    if (!q) return;
+  const runQuery = useCallback(async (q: string) => {
     setBusy(true);
     setError(null);
     try {
@@ -27,10 +33,25 @@ export function Search({ onOpenPage }: { onOpenPage: (slug: string) => void }) {
     } finally {
       setBusy(false);
     }
+  }, []);
+
+  // a seed from the shell's global search box runs immediately, once
+  useEffect(() => {
+    if (!seed) return;
+    setQuery(seed);
+    void runQuery(seed);
+    onConsumeSeed?.();
+  }, [seed, runQuery, onConsumeSeed]);
+
+  async function run(e: React.FormEvent) {
+    e.preventDefault();
+    const q = query.trim();
+    if (!q) return;
+    await runQuery(q);
   }
 
   return (
-    <section className="panel">
+    <section className="panel search-panel">
       <h2>{t("panel.search.title")}</h2>
       <p className="panel-desc">{t("panel.search.desc")}</p>
       <form className="search-form" onSubmit={run}>
@@ -40,6 +61,7 @@ export function Search({ onOpenPage }: { onOpenPage: (slug: string) => void }) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t("search.placeholder")}
           maxLength={200}
+          autoFocus
         />
         <button type="submit" disabled={busy || !query.trim()}>
           {busy ? t("common.loading") : t("search.run")}

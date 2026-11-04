@@ -6,6 +6,7 @@ import type {
   PagesFacets,
   WriteReceipt,
 } from "@gbrain-cockpit/shared";
+import { appendAudit } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
@@ -99,6 +100,9 @@ export function Pages({
         const next = await apiGet<WriteReceipt>(
           `/api/write-request?request_id=${encodeURIComponent(receipt.request_id)}`,
         );
+        if (next.status !== receipt.status) {
+          appendAudit(`page.write ${receipt.request_id} -> ${next.status}`);
+        }
         setEditor({ mode: "receipt", receipt: next });
       } catch {
         // transient poll failure — keep the slot, try again next tick
@@ -110,14 +114,17 @@ export function Pages({
   async function save() {
     if (editor.mode !== "editing" || !bundle) return;
     setEditor({ mode: "saving" });
+    const requestId = crypto.randomUUID();
+    appendAudit(`page.write ${bundle.page.slug} req=${requestId.slice(0, 8)} -> SENT`);
     try {
       const receipt = await apiSend<WriteReceipt>("/api/page", "PUT", {
         slug: bundle.page.slug,
         content: editor.draft,
         expected_revision: bundle.page.revision,
-        request_id: crypto.randomUUID(),
+        request_id: requestId,
       });
       setEditor({ mode: "receipt", receipt });
+      appendAudit(`page.write ${requestId} -> ${receipt.status}`);
       if (receipt.status === "committed") {
         // refresh the detail view behind the receipt slot
         const fresh = await apiGet<PageBundle>(
@@ -126,6 +133,7 @@ export function Pages({
         setBundle(fresh);
       }
     } catch (err) {
+      appendAudit(`page.write ${requestId} -> ERR`);
       setEditor({
         mode: "receipt",
         receipt: {
@@ -140,7 +148,7 @@ export function Pages({
   const inDetail = selected !== null;
 
   return (
-    <section className="panel">
+    <section className="panel pages">
       {!inDetail ? (
         <>
           <h2>{t("panel.pages.title")}</h2>

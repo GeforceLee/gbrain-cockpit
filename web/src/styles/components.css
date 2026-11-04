@@ -1,0 +1,789 @@
+/*
+ * Mint Audit (v5) — shared component vocabulary: the brut family, tags,
+ * status chips, kv tables, receipts, the phosphor command block, stamps,
+ * trust chain, radial gauges, health cards. Ported 1:1 from the frozen
+ * mockup (internal/mockups/5-approva-audit.html).
+ */
+
+/* --- brut family (Approva originals) --- */
+
+.brut {
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--paper);
+}
+
+.brut-lg {
+  border: 3px solid var(--ink);
+  box-shadow: 6px 6px 0 var(--ink);
+  background: var(--paper);
+}
+
+.brut-sm {
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  background: var(--paper);
+}
+
+.grid-paper {
+  background-image:
+    linear-gradient(var(--line-faint) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line-faint) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* hazard tape — ONLY for dream-running degradation banners / >1d escalation */
+.stripes-amber {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--warn-pale),
+    var(--warn-pale) 12px,
+    var(--warn) 12px,
+    var(--warn) 14px
+  );
+}
+
+/* --- tags (mono, 2px ink border) --- */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 2px solid var(--ink);
+  font-weight: 600;
+  font-size: 11px;
+  font-family: var(--f-mono);
+  background: var(--paper);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+.tag.soft {
+  background: var(--mint);
+}
+
+.tag.warn {
+  background: var(--warn);
+}
+
+.tag.stop {
+  background: var(--stop);
+  color: var(--paper);
+}
+
+.tag.ok {
+  background: var(--ok);
+  color: var(--paper);
+}
+
+.tag.term {
+  background: var(--ink);
+  color: var(--phos);
+  font-weight: 700;
+}
+
+/* --- status chips (traffic-light vocabulary: ok / degraded / down) --- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 2px solid var(--ink);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 9px;
+  background: var(--paper);
+  white-space: nowrap;
+}
+
+.chip::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+}
+
+.chip-ok {
+  background: var(--ok);
+  color: var(--paper);
+}
+
+.chip-ok::before {
+  background: var(--paper);
+}
+
+.chip-degraded {
+  background: var(--warn);
+}
+
+.chip-degraded::before {
+  background: var(--ink);
+}
+
+.chip-down {
+  background: var(--stop);
+  color: var(--paper);
+}
+
+.chip-down::before {
+  background: var(--paper);
+}
+
+/* --- kv rows --- */
+
+.kv {
+  margin: 8px 0 0;
+}
+
+.kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.kv-row:last-child {
+  border-bottom: none;
+}
+
+.kv-row dt {
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+.kv-row dd {
+  margin: 0;
+}
+
+/* --- generic card grid --- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.card {
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 14px 16px;
+}
+
+.card h3 {
+  margin: 0 0 8px;
+  font-family: var(--f-disp);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* --- tables (machine product: mono headers, 3px ink rules) --- */
+
+table.items {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+table.items th {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-align: left;
+  padding: 6px 8px;
+  border-top: 3px solid var(--ink);
+  border-bottom: 3px solid var(--ink);
+}
+
+table.items th.r,
+table.items td.r {
+  text-align: right;
+}
+
+table.items td {
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+/* --- receipt slot — fixed placement, never a disappearing toast --- */
+
+.receipt {
+  margin-top: 12px;
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  border-left-width: 10px;
+  padding: 10px 14px;
+  background: var(--paper);
+}
+
+.receipt p {
+  font-size: 12.5px;
+}
+
+.receipt-committed {
+  border-left-color: var(--ok);
+}
+
+.receipt-conflict,
+.receipt-failed,
+.receipt-cancelled {
+  border-left-color: var(--stop);
+}
+
+.receipt-queued,
+.receipt-running,
+.receipt-pending,
+.receipt-unknown {
+  border-left-color: var(--warn);
+}
+
+.receipt .mono {
+  font-size: 11px;
+}
+
+/* --- phosphor command block — the signature component (ENG-15 front half).
+ *   Terminal material: ink background, phosphor text; the ONLY interactive
+ *   element inside is "copy". Never batched, never a button for this channel. */
+
+.cmd {
+  background: var(--ink);
+  color: var(--phos);
+  padding: 13px 14px;
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+}
+
+.cmd .cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  color: var(--cmd-cap);
+  margin: 0;
+  flex-wrap: wrap;
+}
+
+.cmd .cap .zh {
+  color: var(--cmd-cap-bright);
+  font-size: 11px;
+}
+
+.cmd code {
+  display: block;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 400;
+  margin: 9px 0 10px;
+  padding: 9px 10px;
+  background: var(--cmd-code-bg);
+  border: 1px solid var(--cmd-code-border);
+  word-break: break-all;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.cmd .steps {
+  font-size: 11px;
+  color: var(--cmd-step);
+  line-height: 1.8;
+  margin: 0;
+}
+
+.cmd .steps b {
+  color: var(--cmd-strong);
+  font-weight: 600;
+}
+
+.cmd .copybtn {
+  margin-top: 10px;
+  width: 100%;
+  border: 2px solid var(--phos);
+  color: var(--phos);
+  background: var(--ink);
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 12.5px;
+  padding: 8px;
+  letter-spacing: 0.06em;
+  box-shadow: none;
+}
+
+.cmd .copybtn:hover {
+  background: var(--phos);
+  color: var(--ink);
+}
+
+.cmd .copybtn:active {
+  transform: none;
+}
+
+.cmd .nobatch {
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  color: var(--cmd-mute);
+  margin: 8px 0 0;
+}
+
+.cmd.flash {
+  animation: cmdflash 0.8s var(--ease);
+}
+
+@keyframes cmdflash {
+  15% {
+    box-shadow:
+      0 0 0 4px rgba(123, 227, 139, 0.55),
+      4px 4px 0 var(--ink);
+  }
+}
+
+/* --- stamps --- */
+
+.stamp-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 13px 10px;
+  font-family: var(--f-disp);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  width: 100%;
+}
+
+.stamp-btn:active:not(:disabled) {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.stamp-btn .zh {
+  font-size: 16px;
+}
+
+.stamp-btn .en {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  opacity: 0.85;
+}
+
+.stamp-btn .how {
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  opacity: 0.8;
+  margin-top: 3px;
+}
+
+.stamp-btn.drop {
+  background: var(--stop);
+  color: var(--paper);
+}
+
+.stamp-btn.ok {
+  background: var(--ok);
+  color: var(--paper);
+}
+
+/* the big verdict stamp — the brand moment */
+.big-stamp {
+  position: absolute;
+  top: 46px;
+  right: 34px;
+  pointer-events: none;
+  font-family: var(--f-disp);
+  font-weight: 900;
+  text-align: center;
+  border: 7px solid currentColor;
+  border-radius: 6px;
+  padding: 10px 22px 12px;
+  opacity: 0;
+  transform: scale(2.4) rotate(-14deg);
+}
+
+.big-stamp .zh {
+  font-size: 34px;
+  letter-spacing: 0.18em;
+  display: block;
+}
+
+.big-stamp .en {
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  display: block;
+  margin-top: 2px;
+  font-weight: 700;
+}
+
+.big-stamp::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.55;
+}
+
+.big-stamp.drop {
+  color: var(--stop);
+  animation: stampin 0.5s var(--spring) forwards;
+}
+
+.big-stamp.ok {
+  color: var(--ok);
+  animation: stampin 0.5s var(--spring) forwards;
+}
+
+@keyframes stampin {
+  to {
+    opacity: 0.92;
+    transform: scale(1) rotate(-5deg);
+  }
+}
+
+.shake {
+  animation: shake 0.45s var(--ease);
+}
+
+@keyframes shake {
+  20% {
+    transform: translate(-7px, 2px);
+  }
+  45% {
+    transform: translate(5px, -2px);
+  }
+  70% {
+    transform: translate(-3px, 1px);
+  }
+}
+
+/* mini stamp (verdict history rows) */
+.ministamp {
+  display: inline-block;
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  border: 2.5px solid currentColor;
+  border-radius: 3px;
+  padding: 2px 6px;
+  transform: rotate(-2deg);
+  position: relative;
+}
+
+.ministamp::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1px solid currentColor;
+  opacity: 0.5;
+  border-radius: 1px;
+}
+
+.ministamp.ok {
+  color: var(--ok);
+}
+
+.ministamp.stop {
+  color: var(--stop);
+  transform: rotate(2deg);
+}
+
+.ministamp.warn {
+  color: var(--warn-stamp);
+}
+
+/* --- trust chain (dream 采集 → 抽取 → 拦截 → owner → 生效) --- */
+
+.chain {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.chain .node {
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--f-mono);
+  background: var(--paper);
+}
+
+.chain .node.done {
+  background: var(--ok);
+  color: var(--paper);
+}
+
+.chain .node.now {
+  background: var(--warn);
+}
+
+.chain .node.wait {
+  opacity: 0.45;
+}
+
+.chain .link {
+  width: 14px;
+  height: 3px;
+  background: var(--ink);
+}
+
+.chain .link.wait {
+  opacity: 0.3;
+}
+
+/* --- channel-check card (通道核查) --- */
+
+.check {
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--paper);
+  padding: 11px 13px;
+}
+
+.check .cap {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  opacity: 0.55;
+  margin: 0 0 7px;
+  letter-spacing: 0.05em;
+}
+
+.check .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 3px 0;
+}
+
+.check .row b.yes {
+  color: var(--ok);
+}
+
+.check .row b.no {
+  color: var(--stop);
+}
+
+.check .row b.na {
+  opacity: 0.55;
+  font-weight: 500;
+}
+
+.check .row .ch {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  opacity: 0.6;
+}
+
+/* --- ink audit block (fixed receipt slot, terminal register) --- */
+
+.audit {
+  background: var(--ink);
+  color: var(--paper);
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 16px 20px;
+}
+
+.audit .cap2 {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 9px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.audit .cap2 b {
+  font-family: var(--f-disp);
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+.audit .cap2 span {
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  color: var(--white-dim);
+}
+
+.audit pre {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  line-height: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.audit pre .new {
+  color: var(--phos);
+}
+
+.audit pre .cursor {
+  animation: blink 1.1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* --- radial gauge (Maple geometry, Mint Audit ink-edge restyle) --- */
+
+.gauge {
+  position: relative;
+  width: 128px;
+  height: 128px;
+  flex-shrink: 0;
+}
+
+.gauge svg {
+  transform: rotate(126deg);
+  display: block;
+}
+
+.gauge .arc {
+  fill: none;
+  stroke-linecap: butt;
+  transition: stroke-dashoffset 1.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.gauge .read {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.gauge .read .v {
+  font-family: var(--f-mono);
+  font-weight: 700;
+  font-size: 24px;
+}
+
+.gauge .read .u {
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  opacity: 0.6;
+}
+
+.gauge-side {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  line-height: 2;
+}
+
+.gauge-side i {
+  font-style: normal;
+  color: var(--ok);
+}
+
+/* --- health cards --- */
+
+.hgrid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 16px;
+}
+
+.hcard {
+  border: 3px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--paper);
+  padding: 14px 16px;
+  min-width: 0;
+}
+
+.hcard .cap {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  opacity: 0.6;
+  margin: 0 0 6px;
+  letter-spacing: 0.06em;
+}
+
+.hcard.span4 {
+  grid-column: span 4;
+}
+
+.hcard.span8 {
+  grid-column: span 8;
+}
+
+.hcard.span6 {
+  grid-column: span 6;
+}
+
+.gauge-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.kpi {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.kpi .n {
+  font-family: var(--f-mono);
+  font-weight: 700;
+  font-size: 30px;
+}
+
+.kpi .u {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  opacity: 0.6;
+}
+
+.checklist .row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--line-dashed);
+}
+
+.checklist .row:last-child {
+  border-bottom: none;
+}
+
+.checklist b.yes {
+  color: var(--ok);
+}
+
+.checklist b.no {
+  color: var(--stop);
+}
+
+@media (max-width: 1240px) {
+  .hcard.span4,
+  .hcard.span8,
+  .hcard.span6 {
+    grid-column: span 12;
+  }
+}

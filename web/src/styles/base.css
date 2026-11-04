@@ -1,0 +1,118 @@
+/*
+ * Mint Audit (v5) — base layer. Every color arrives as an injected design
+ * token (src/design/tokens.ts); this file references var(--*) only.
+ * Hard constraints encoded here: zh first-class (>=13px, line-height >=1.6),
+ * mono + tabular-nums for machine products, prefers-reduced-motion via .rm,
+ * light mode only (no dark token fork — deliberate, per the frozen decision).
+ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  font-family: var(--f-body);
+  font-size: 13.5px; /* >=13px so zh copy never shrinks below the floor */
+  line-height: 1.6;
+  background: var(--mint);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--line-soft);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* Buttons default to the small brut variant; press = translate into the
+ * shadow (the stamp-down interaction). Specialists (nav-item, tab, stamp-btn,
+ * copybtn) restyle on top. */
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  box-shadow: 3px 3px 0 var(--ink);
+  padding: 5px 12px;
+  font-family: var(--f-disp);
+  font-weight: 700;
+  font-size: 12.5px;
+  transition:
+    transform 0.1s var(--ease),
+    box-shadow 0.1s var(--ease);
+}
+
+button:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: none;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  padding: 6px 10px;
+}
+
+textarea {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* --- utilities (kept from the M0 vocabulary, restyled) --- */
+
+.mono {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.muted {
+  opacity: 0.62;
+}
+
+.error {
+  color: var(--stop);
+  font-weight: 600;
+}
+
+.rm * {
+  animation: none !important;
+  transition: none !important;
+}
