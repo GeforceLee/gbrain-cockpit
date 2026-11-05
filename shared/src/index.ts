@@ -112,7 +112,11 @@ export interface CliCheck {
   /** null = not found on this host */
   bin?: string | null;
   /** machine-readable reason for the status */
-  reason?: "binary-found-unverified" | "binary-not-found" | "not-configured-host";
+  reason?:
+    | "binary-verified"
+    | "binary-found-unverified"
+    | "binary-not-found"
+    | "not-configured-host";
   error?: string;
 }
 

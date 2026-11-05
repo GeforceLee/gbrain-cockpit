@@ -225,6 +225,8 @@ export const en = {
   "health.mcp.latency": "latency",
 
   "health.cli.bin": "binary",
+  "health.cli.verified":
+    "gbrain binary live: one-key adjudication verified against this host's brain.",
   "health.cli.unverified":
     "gbrain binary found; if this host is not the brain host, adjudication actions degrade to copy-command.",
   "health.cli.missing":

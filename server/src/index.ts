@@ -91,7 +91,7 @@ const server = Bun.serve({
       if (req.method !== "GET") {
         return envelope(405, "E_METHOD_NOT_ALLOWED" as ErrorCode, "only GET is allowed");
       }
-      return Response.json(toCoarse(await getHealthReport(cfg, mcp, pg)));
+      return Response.json(toCoarse(await getHealthReport(cfg, mcp, pg, { cli })));
     }
 
     const rejected = guardRequest(req, url, cfg);
@@ -107,7 +107,7 @@ const server = Bun.serve({
       try {
         switch (route) {
           case "GET /api/healthz":
-            return Response.json(await getHealthReport(cfg, mcp, pg));
+            return Response.json(await getHealthReport(cfg, mcp, pg, { cli }));
           case "GET /api/graph":
             return await handleGraph(api);
           case "GET /api/pages":

@@ -10,7 +10,7 @@ import {
   type PgCheck,
 } from "@gbrain-cockpit/shared";
 import type { Config } from "../config";
-import { inspectCli } from "../drivers/cli";
+import { inspectCli, type CliDriver } from "../drivers/cli";
 import { McpDriver, McpError } from "../drivers/mcp";
 import type { PgReadonlyDriver } from "../drivers/pg-readonly";
 
@@ -28,7 +28,7 @@ export async function getHealthReport(
   cfg: Config,
   mcp: McpDriver,
   pg: PgReadonlyDriver | null = null,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; cli?: CliDriver | null } = {},
 ): Promise<HealthReport> {
   if (!opts.force && cache && Date.now() - cache.at < CACHE_TTL_MS) {
     return cache.report;
@@ -39,7 +39,7 @@ export async function getHealthReport(
     mcpCheck.status === "down"
       ? { status: "down", error: mcpCheck.error }
       : await checkBrain(mcp);
-  const cliCheck: CliCheck = await inspectCli(cfg.gbrainBin);
+  const cliCheck = await checkCli(cfg.gbrainBin, opts.cli ?? null);
   const pgCheck = await checkPg(pg);
 
   const report: HealthReport = {
@@ -128,6 +128,28 @@ async function checkBrain(mcp: McpDriver): Promise<BrainCheck> {
       error: err instanceof McpError ? err.message : (err as Error).message,
     };
   }
+}
+
+/**
+ * CLI channel check. With a live driver, availability is decided by the real
+ * probe (`trust review --json` succeeding against THIS host's brain) — the
+ * same truth the Inbox chip shows. Without a driver (binary not found), it
+ * degrades to the filesystem inspection alone.
+ */
+async function checkCli(gbrainBin: string | null, cli: CliDriver | null): Promise<CliCheck> {
+  const found = await inspectCli(gbrainBin);
+  if (found.status === "down") return found;
+  if (!cli) return found;
+  const probe = await cli.status();
+  if (probe.available) {
+    return { status: "ok", bin: found.bin ?? null, reason: "binary-verified" };
+  }
+  return {
+    status: "degraded",
+    bin: found.bin ?? null,
+    reason: "binary-found-unverified",
+    error: probe.error,
+  };
 }
 
 /** read-only graph bypass probe — only present when the DSN is configured */

@@ -180,7 +180,9 @@ export function Health() {
             <p className="muted small">
               {cli?.reason === "binary-not-found"
                 ? t("health.cli.missing")
-                : t("health.cli.unverified")}
+                : cli?.reason === "binary-verified"
+                  ? t("health.cli.verified")
+                  : t("health.cli.unverified")}
             </p>
           </div>
 

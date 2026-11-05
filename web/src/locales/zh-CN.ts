@@ -223,6 +223,8 @@ export const zhCN = {
   "health.mcp.latency": "延迟",
 
   "health.cli.bin": "二进制",
+  "health.cli.verified":
+    "gbrain 二进制在线:一键裁决已对本机 brain 实测验证。",
   "health.cli.unverified":
     "已找到 gbrain 二进制;本机若非 brain 主机,裁决类动作将降级为复制命令。",
   "health.cli.missing":

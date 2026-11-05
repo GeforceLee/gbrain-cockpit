@@ -132,7 +132,7 @@ export function Inbox({
   /** sidebar count chip — reported after every fetch, no extra request */
   onTotal?: (total: number) => void;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [report, setReport] = useState<InboxReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -538,7 +538,9 @@ export function Inbox({
                     {stamp ? (
                       <div className={`big-stamp ${stamp.variant}`}>
                         <span className="zh">{stamp.zh}</span>
-                        <span className="en">{stamp.en}</span>
+                        {locale === "zh-CN" ? (
+                          <span className="en">{stamp.en}</span>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
