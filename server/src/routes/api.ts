@@ -19,6 +19,7 @@ import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliDriver, CliValidationError } from "../drivers/cli";
 import { McpError, McpDriver } from "../drivers/mcp";
 import type { PgReadonlyDriver } from "../drivers/pg-readonly";
+import { TRUST_REF_RE } from "@gbrain-cockpit/shared";
 
 // API surface (core-loop milestone). Every handler receives an already
 // authenticated request; param validation is regex-whitelisted before it
@@ -34,7 +35,8 @@ export interface ApiContext {
 
 const SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,200}$/;
 const TYPE_RE = /^[a-z][a-z0-9-]{0,40}$/;
-const REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
+/** trust refs — the single shared pattern (shared/src, also used by the web client) */
+const REF_RE = TRUST_REF_RE;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REQUEST_ID_RE = /^[0-9a-fA-F-]{8,64}$/;

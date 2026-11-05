@@ -30,7 +30,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.0.1";
+export const COCKPIT_VERSION = "0.1.0";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>
@@ -215,6 +215,12 @@ export interface SearchHit {
 // fact candidate, a<id> allow rule, t<id> take (see `gbrain trust --help`).
 // review items carry their exact commands — prefer gbrain's own command text
 // over anything cockpit builds (narrow adaptation surface).
+
+/**
+ * The one trust-ref pattern, shared by the server's route validation and the
+ * web client's copy-command builder, so the two can never drift apart.
+ */
+export const TRUST_REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
 
 export type TrustRefPrefix = "tp" | "h" | "f" | "a" | "t";
 
