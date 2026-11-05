@@ -285,8 +285,16 @@ export class CliDriver {
     return this.#runText("edge-proposals undo", { id });
   }
 
-  /** Pending LLM-proposed takes queue (the Inbox takes queue's real source). */
-  async takesProposeList(limit = 500): Promise<TakeProposal[]> {
+  /**
+   * Pending LLM-proposed takes queue (the Inbox takes queue's real source).
+   * Measured on gbrain 0.60.558: the list is newest-first and any larger
+   * --limit is clamped server-side to 500, with no working paging flag
+   * (--offset is accepted but ignored, --after does not exist) — so when the
+   * backlog exceeds 500, older proposals only surface as newer ones are
+   * adjudicated. We still ask high: if a future gbrain raises its ceiling,
+   * the full list arrives without a cockpit change.
+   */
+  async takesProposeList(limit = 9999): Promise<TakeProposal[]> {
     return this.#runJson("takes propose list", { limit: String(limit) });
   }
 
