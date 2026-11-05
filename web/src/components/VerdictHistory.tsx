@@ -22,7 +22,7 @@ export function VerdictHistory() {
       <table>
         <thead>
           <tr>
-            <th style={{ width: 110 }}>REF</th>
+            <th style={{ width: 110 }}>{t("inbox.history.ref")}</th>
             <th>{t("inbox.history.item")}</th>
             <th style={{ width: 110 }}>{t("inbox.history.receipt")}</th>
             <th style={{ width: 88 }}>{t("inbox.history.time")}</th>

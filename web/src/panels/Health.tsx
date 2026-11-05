@@ -102,7 +102,7 @@ export function Health() {
               </span>
             </p>
             <dl className="kv">
-              <Row label="cockpit" value={`v${report.cockpitVersion}`} />
+              <Row label={t("health.cockpit")} value={`v${report.cockpitVersion}`} />
               <Row
                 label={t("health.uptime")}
                 value={`${Math.floor(report.uptimeMs / 1000)}s`}
@@ -125,8 +125,21 @@ export function Health() {
                 <div>
                   <i>●</i> {t(`health.status.${mcp?.status ?? "down"}` as MessageKey)}
                 </div>
-                {mcp?.whoami?.client && <div>{mcp.whoami.client}</div>}
-                {mcp?.whoami?.scopes && <div>{mcp.whoami.scopes.join(",")}</div>}
+                {mcp?.whoami?.transport && (
+                  <div>
+                    {t("health.mcp.transport")}: {String(mcp.whoami.transport)}
+                  </div>
+                )}
+                {mcp?.whoami?.client && (
+                  <div>
+                    {t("health.mcp.client")}: {mcp.whoami.client}
+                  </div>
+                )}
+                {mcp?.whoami?.scopes && (
+                  <div>
+                    {t("health.mcp.scopes")}: {mcp.whoami.scopes.join(",")}
+                  </div>
+                )}
                 {mcp?.error && <div className="error">{firstLine(mcp.error)}</div>}
               </div>
             </div>
@@ -159,7 +172,11 @@ export function Health() {
                 {t(`health.status.${cli?.status ?? "down"}` as MessageKey)}
               </span>
             </p>
-            {cli?.bin && <p className="mono small">{cli.bin}</p>}
+            {cli?.bin && (
+              <p className="mono small">
+                {t("health.cli.bin")}: {cli.bin}
+              </p>
+            )}
             <p className="muted small">
               {cli?.reason === "binary-not-found"
                 ? t("health.cli.missing")

@@ -14,6 +14,7 @@ export const en = {
 
   "shell.navLabel": "PANELS",
   "shell.owner": "owner",
+  "shell.principal": "Principal",
   "shell.searchPlaceholder": "search the brain… (Enter to jump)",
   "side.dream.cap": "LAST NIGHT'S DREAM",
   "side.dream.pending": "telemetry pending (lights up with the healthz extension)",
@@ -33,7 +34,7 @@ export const en = {
 
   "panel.inbox.title": "Inbox",
   "panel.inbox.desc":
-    "Everything dream and daily use proposed for adjudication, in four queues.",
+    "Everything dream and daily use proposed for adjudication, queued by kind.",
   "panel.nebula.title": "Graph",
   "panel.nebula.desc":
     "Every page in the brain and the relations between them, one map; click a page to see its neighbors.",
@@ -61,6 +62,8 @@ export const en = {
   "pages.trust": "trust tier",
   "pages.revision": "revision",
   "pages.versions": "versions",
+
+  "common.errorLabel": "Error",
 
   "receipt.queued": "Queued, waiting for gbrain…",
   "receipt.running": "gbrain is applying the write…",
@@ -113,6 +116,12 @@ export const en = {
   "inbox.queue.others": "Other pending",
   "inbox.queue.othersDesc": "Trust rules / allow entries etc. — use explain for detail.",
   "inbox.doc.raw": "Raw proposal (gbrain output)",
+  "inbox.doc.target": "target page",
+  "inbox.doc.ref": "ref",
+  "inbox.doc.kind": "kind",
+  "inbox.doc.source": "source",
+  "inbox.doc.holder": "holder",
+  "inbox.doc.weightDomain": "weight · domain",
   "inbox.doc.unknownTarget": "unknown (item carries none)",
   "inbox.doc.sourcePage": "Source page",
   "inbox.doc.provenance": "Provenance",
@@ -127,6 +136,7 @@ export const en = {
   "inbox.rail.caption": "DECIDE",
 
   "inbox.history.title": "Recent verdicts",
+  "inbox.history.ref": "ref",
   "inbox.history.session": "this session",
   "inbox.history.item": "item",
   "inbox.history.receipt": "receipt",
@@ -143,6 +153,17 @@ export const en = {
   "stamp.rejected": "Rejected",
   "stamp.accepted": "Accepted",
   "stamp.confirmed": "Confirmed",
+
+  // English halves of the bilingual stamps (the stamp always shows zh + en,
+  // like the nav labels; keys keep both packs parity-checked by CI).
+  "stamp.en.drop": "DROP",
+  "stamp.en.reject": "REJECT",
+  "stamp.en.discard": "DISCARD",
+  "stamp.en.accept": "ACCEPT",
+  "stamp.en.confirm": "CONFIRM",
+  "stamp.en.rejected": "REJECTED",
+  "stamp.en.accepted": "ACCEPTED",
+  "stamp.en.confirmed": "CONFIRMED",
 
   "channel.title": "Channel check",
   "channel.row.drop": "drop",
@@ -184,6 +205,7 @@ export const en = {
   "health.error": "Request failed",
 
   "health.overall": "Overall",
+  "health.cockpit": "cockpit",
   "health.check.mcp": "MCP channel",
   "health.check.brain": "brain summary",
   "health.check.cli": "CLI channel",
@@ -211,7 +233,6 @@ export const en = {
   "health.brain.name": "name",
   "health.brain.engine": "engine",
   "health.brain.version": "gbrain version",
-  "health.brain.counts": "counts",
 
   "health.checklist": "Safety checklist",
   "health.checklist.token": "token travels only in the Authorization header",
@@ -236,6 +257,7 @@ export const en = {
   "nebula.legend.relations": "relation types",
   "nebula.legend.toggle": "click to show/hide this relation type",
   "nebula.drawer.caption": "PAGE",
+  "nebula.drawer.slug": "slug",
   "nebula.drawer.type": "type",
   "nebula.drawer.degree": "relations",
   "nebula.drawer.pending": "pending",

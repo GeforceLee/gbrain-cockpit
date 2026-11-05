@@ -67,7 +67,11 @@ export function Search({
           {busy ? t("common.loading") : t("search.run")}
         </button>
       </form>
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error">
+          {t("common.errorLabel")}: {error}
+        </p>
+      )}
       {hits !== null && hits.length === 0 && (
         <p className="muted">{t("search.empty")}</p>
       )}

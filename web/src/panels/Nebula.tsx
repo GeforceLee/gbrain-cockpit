@@ -1362,7 +1362,11 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         </div>
       </div>
 
-      {error && <p className="error">{error}</p>}
+      {error && (
+        <p className="error">
+          {t("common.errorLabel")}: {error}
+        </p>
+      )}
       {report?.status === "down" && (
         <div className="card nebula-note">
           <h3>{t("nebula.down")}</h3>
@@ -1412,7 +1416,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
               <h5>{String(selectedAttrs.title ?? selected)}</h5>
               {String(selectedAttrs.title ?? "") !== selected && (
                 <div className="kv">
-                  <span>slug</span>
+                  <span>{t("nebula.drawer.slug")}</span>
                   <span className="mono">{selected}</span>
                 </div>
               )}

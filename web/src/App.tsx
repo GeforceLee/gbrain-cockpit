@@ -131,7 +131,8 @@ function App() {
             <div className="owner">
               <span className="dot" />
               <span>
-                {t("shell.owner")} <span className="mono">· Principal</span>
+                {t("shell.owner")}{" "}
+                <span className="mono">· {t("shell.principal")}</span>
               </span>
             </div>
           </div>
@@ -172,6 +173,7 @@ function App() {
                   type="button"
                   aria-pressed={locale === "zh-CN"}
                   className={locale === "zh-CN" ? "on" : ""}
+                  title={t("lang.zh")}
                   onClick={() => setLocale("zh-CN")}
                 >
                   {t("lang.zhShort")}
@@ -180,6 +182,7 @@ function App() {
                   type="button"
                   aria-pressed={locale === "en"}
                   className={locale === "en" ? "on" : ""}
+                  title={t("lang.en")}
                   onClick={() => setLocale("en")}
                 >
                   {t("lang.enShort")}

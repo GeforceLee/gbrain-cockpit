@@ -14,6 +14,7 @@ export const zhCN = {
 
   "shell.navLabel": "面板 PANELS",
   "shell.owner": "owner",
+  "shell.principal": "令牌主体",
   "shell.searchPlaceholder": "搜索 brain…(回车跳转)",
   "side.dream.cap": "昨晚 DREAM",
   "side.dream.pending": "遥测待接入(healthz 扩展后点亮)",
@@ -33,7 +34,7 @@ export const zhCN = {
 
   "panel.inbox.title": "收件箱 Inbox",
   "panel.inbox.desc":
-    "dream 与日常使用产生的所有待裁决项,汇成四条队列集中处理。",
+    "dream 与日常使用产生的所有待裁决项,按类别分队列集中处理。",
   "panel.nebula.title": "图谱 Graph",
   "panel.nebula.desc":
     "brain 里的全部页面与页面之间的关系,一张图总览;点开一页看它的邻居。",
@@ -58,8 +59,10 @@ export const zhCN = {
   "pages.type": "类型",
   "pages.updated": "更新时间",
   "pages.trust": "信任层级",
-  "pages.revision": "revision",
+  "pages.revision": "修订号",
   "pages.versions": "历史版本",
+
+  "common.errorLabel": "出错了",
 
   "receipt.queued": "已入队,等待 gbrain 执行…",
   "receipt.running": "gbrain 正在执行写入…",
@@ -112,6 +115,12 @@ export const zhCN = {
   "inbox.queue.others": "其他待办",
   "inbox.queue.othersDesc": "信任规则/allow 条目等,用 explain 查看详情。",
   "inbox.doc.raw": "原始提案(gbrain 返回)",
+  "inbox.doc.target": "目标页面",
+  "inbox.doc.ref": "编号",
+  "inbox.doc.kind": "类型",
+  "inbox.doc.source": "来源",
+  "inbox.doc.holder": "持有者",
+  "inbox.doc.weightDomain": "权重 · 领域",
   "inbox.doc.unknownTarget": "未知目标(条目未携带)",
   "inbox.doc.sourcePage": "源页面",
   "inbox.doc.provenance": "出处",
@@ -126,6 +135,7 @@ export const zhCN = {
   "inbox.rail.caption": "裁决 DECIDE",
 
   "inbox.history.title": "最近裁决 · RECENT VERDICTS",
+  "inbox.history.ref": "编号",
   "inbox.history.session": "本会话",
   "inbox.history.item": "条目",
   "inbox.history.receipt": "收据",
@@ -142,6 +152,16 @@ export const zhCN = {
   "stamp.rejected": "已驳回",
   "stamp.accepted": "已接受",
   "stamp.confirmed": "已入库",
+
+  // 戳章的英文半边(戳章永远双语同现,同导航标签;两包同值,CI 校验对齐)。
+  "stamp.en.drop": "DROP",
+  "stamp.en.reject": "REJECT",
+  "stamp.en.discard": "DISCARD",
+  "stamp.en.accept": "ACCEPT",
+  "stamp.en.confirm": "CONFIRM",
+  "stamp.en.rejected": "REJECTED",
+  "stamp.en.accepted": "ACCEPTED",
+  "stamp.en.confirmed": "CONFIRMED",
 
   "channel.title": "通道核查",
   "channel.row.drop": "驳回",
@@ -183,6 +203,7 @@ export const zhCN = {
   "health.error": "请求失败",
 
   "health.overall": "总览",
+  "health.cockpit": "cockpit",
   "health.check.mcp": "MCP 通道",
   "health.check.brain": "brain 概要",
   "health.check.cli": "CLI 通道",
@@ -190,7 +211,7 @@ export const zhCN = {
   "health.pg.unset": "未配置 PG_READONLY_DSN——星云图的图数据通道关闭(PGLite 引擎保持未设即可)。",
   "health.uptime": "运行时长",
   "health.generated": "生成时间",
-  "health.brain.pages": "pages",
+  "health.brain.pages": "页",
 
   "health.status.ok": "正常",
   "health.status.degraded": "降级",
@@ -210,7 +231,6 @@ export const zhCN = {
   "health.brain.name": "名称",
   "health.brain.engine": "引擎",
   "health.brain.version": "gbrain 版本",
-  "health.brain.counts": "计数",
 
   "health.checklist": "安全清单",
   "health.checklist.token": "令牌仅经 Authorization 头传输",
@@ -235,6 +255,7 @@ export const zhCN = {
   "nebula.legend.relations": "关系类型",
   "nebula.legend.toggle": "点击显示/隐藏这类关系",
   "nebula.drawer.caption": "页面 PAGE",
+  "nebula.drawer.slug": "页面标识",
   "nebula.drawer.type": "类型",
   "nebula.drawer.degree": "关联数",
   "nebula.drawer.pending": "待裁决",
