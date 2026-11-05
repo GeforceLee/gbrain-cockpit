@@ -98,7 +98,7 @@ cockpit is deliberately conservative with your brain:
 
 - **Never bypasses gbrain's owner-presence design** — accepting trust proposals / releasing held writes stays "copy the command, run it at the brain host terminal"
 - **Never writes to the gbrain database** — page writes ride MCP with optimistic locking, idempotent ids, and receipt polling; the only SQL is a fixed read-only SELECT for the graph
-- **Treats brain content as untrusted input** — plain-text rendering in 0.1 (rich rendering arrives with a marked → DOMPurify pipeline), no `innerHTML` anywhere, graph labels on canvas
+- **Treats brain content as untrusted input** — markdown rendering goes through the single marked → DOMPurify pipeline (scripts/images/forms stripped, links hardened); no other `innerHTML` anywhere, graph labels on canvas
 
 The channel each action travels is a compile-time constant — no runtime rerouting. Details: [architecture overview](docs/architecture.md).
 

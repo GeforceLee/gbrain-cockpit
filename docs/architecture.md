@@ -68,7 +68,7 @@ Saves ride gbrain's own write protocol end-to-end:
 - **Fail-closed startup**: missing `COCKPIT_TOKEN` or `GBRAIN_MCP_TOKEN` refuses to boot; a set-but-broken `GBRAIN_BIN` refuses to boot
 - **Token hygiene**: tokens travel only in the `Authorization` header — a token-looking query parameter is rejected with 400; browser-side the token lives in localStorage and is attached as a header, never in URLs; comparison is constant-time
 - **Host/Origin defenses**: Host-header whitelist (DNS-rebinding) + Origin/`Sec-Fetch-Site` checks on non-GET + JSON-only write bodies
-- **Untrusted content rendering**: all brain content (imported pages, mail, chat logs) is persistent untrusted input. 0.1 renders bodies as plain text only (no markdown pipeline yet — see Roadmap); there is no `innerHTML` anywhere; graph labels are drawn on canvas
+- **Untrusted content rendering**: all brain content (imported pages, mail, chat logs) is persistent untrusted input. Page bodies are markdown (gbrain's repo-of-Markdown design, verified against upstream docs and the real brain) and render through exactly one pipeline — `marked → DOMPurify` (`lib/markdown.ts` + `components/PageBody.tsx`; scripts/images/forms stripped, links hardened to `_blank`+`noopener`); that `dangerouslySetInnerHTML` is the app's only one, everything else stays plain text and graph labels are drawn on canvas
 - **SQL surface**: the graph bypass runs three module-level constant SELECTs against `pages`/`links` on a dedicated read-only role; user input cannot reach SQL
 - **Error envelope**: the browser only ever sees `{error: summary, code}`; subprocess stderr stays in server logs
 - **Audit trail**: write actions append to `~/.cockpit-audit/YYYY-MM-DD.jsonl` outside the program directory
@@ -112,7 +112,6 @@ cockpit is verified against gbrain 0.60.x. The coupling strategy:
 
 ## Roadmap (not in 0.1)
 
-- Rich page rendering: `marked → DOMPurify` pipeline (bodies are plain text in 0.1)
 - MCP-composite fallback path for the graph when the read-only bypass is unavailable
 - `/metrics` Prometheus endpoint; dream-window degradation banners
 - Docker image channel (adjudication degrades to copy-command in-container by design)

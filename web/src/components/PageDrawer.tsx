@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useI18n } from "../lib/i18n";
 import { usePageBundle } from "../lib/pages";
 import { firstLine } from "../lib/text";
+import { PageBody } from "./PageBody";
 
 // PageDrawer — the shared read-only page view every panel opens IN PLACE
 // (Inbox queue-card targets, Search hits; the Nebula drawer shares the same
@@ -96,11 +97,10 @@ export function PageDrawer({
               {t("viewer.loadError")} — {firstLine(error)}
             </p>
           )}
-          {/* page bodies are persistent untrusted input: plain text via a
-              React text node only, never innerHTML (same milestone rule as
-              Pages/Nebula; V1.1 swaps to marked → DOMPurify) */}
+          {/* page bodies are markdown + persistent untrusted input: they
+              render through the marked → DOMPurify pipeline only (PageBody) */}
           {page && !loading && (
-            <pre className="drawer-content">{page.content ?? ""}</pre>
+            <PageBody className="drawer-content" content={page.content ?? ""} />
           )}
         </div>
         {onEdit && (

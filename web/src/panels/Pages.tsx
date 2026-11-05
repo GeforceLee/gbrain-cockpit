@@ -8,15 +8,16 @@ import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { type PageBundle } from "../lib/pages";
+import { PageBody } from "../components/PageBody";
 import { Pager, usePageSize } from "../components/Pager";
 
 // Pages panel: list with type facets (enum from gbrain's schema_stats — never
 // hardcoded), detail view, and in-place editing on the full receipt protocol
 // (expected_revision optimistic lock + request_id idempotency + polling; a
 // lost reply is never re-sent with a new id — a 504 keeps the id and polls).
-// Page bodies are persistent untrusted input: rendered as plain text only in
-// this milestone — the marked → DOMPurify pipeline arrives with rich
-// rendering (V1.1).
+// Page bodies are markdown (verified 2026-11-05) and persistent untrusted
+// input: they render through the marked → DOMPurify pipeline only
+// (components/PageBody — never raw).
 //
 // The list paginates through gbrain's OWN keyset cursor (documented by
 // list_pages itself): sort=updated_desc + `updated_after` /
@@ -385,7 +386,10 @@ export function Pages({
               </dl>
 
               {editor.mode === "idle" && (
-                <pre className="page-content">{bundle.page.content ?? ""}</pre>
+                <PageBody
+                  className="page-content"
+                  content={bundle.page.content ?? ""}
+                />
               )}
 
               {editor.mode === "editing" && (

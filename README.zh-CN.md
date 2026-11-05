@@ -98,7 +98,7 @@ cockpit 对你的 brain 刻意保守:
 
 - **永不绕过 gbrain 的 owner 在场设计**——接受信任提案 / 放行搁置写入永远是「复制命令,本人到 brain 主机终端执行」
 - **永不直写 gbrain 数据库**——页面写入走 MCP 乐观锁 + 幂等 id + 收据轮询;唯一的 SQL 是图谱用的只读固定 SELECT
-- **brain 内容一律视为不可信输入**——0.1 纯文本渲染(富文本随 marked → DOMPurify 管线到来),全站无 `innerHTML`,图谱标签 canvas 绘制
+- **brain 内容一律视为不可信输入**——markdown 渲染只走唯一一条 marked → DOMPurify 管线(script/图片/表单剥离、外链加固),此外全站无 `innerHTML`,图谱标签 canvas 绘制
 
 每个动作走哪条通道是编译期常量——运行时不可重路由。细节见[架构概览](docs/architecture.zh-CN.md)。
 

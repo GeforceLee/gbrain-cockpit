@@ -37,6 +37,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - Deep keyset pagination on gbrain's own cursor — every page of a 10k-page brain is reachable, not just the first window
 - In-place editing on the full write-receipt protocol: optimistic-lock conflict instead of silent overwrite, idempotent request ids, receipt polling on timeout (never a re-send)
 - Detail view: type, updated, trust tier, revision, version count; the editing surface behind every page drawer's "edit in Pages →"
+- Page bodies render as markdown through the marked → DOMPurify pipeline everywhere (detail view, page drawer, graph peek) — gbrain stores pages as markdown (its repo-of-Markdown design), and imported content is persistent untrusted input: scripts/images/forms are stripped, external links open hardened (`_blank` + `noopener`)
 
 ## Search
 
@@ -54,8 +55,8 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - **Bilingual zh-CN / English**, from the first release: every panel, action, empty state and error carries a one-line self-description; the language switch persists per browser
 - **Token gate**: one `COCKPIT_TOKEN`, stored client-side only, sent as a header only
 - Keyboard affordances: `⌘K` / `/` search · `⌘⌫` one-key drop · `⌘↵` copy the terminal command
-- Untrusted-content discipline: imported brain content renders as plain text everywhere in 0.1 (rich rendering arrives with the marked → DOMPurify pipeline)
+- Untrusted-content discipline: imported brain content only ever enters the DOM through the one marked → DOMPurify pipeline (PageBody); graph labels draw on canvas, everything else stays plain text
 
 ## Roadmap (not in 0.1)
 
-Rich page rendering (marked → DOMPurify) · graph MCP-composite fallback · `/metrics` · dream-window telemetry banner · Docker channel · multi-token support
+Graph MCP-composite fallback · `/metrics` · dream-window telemetry banner · Docker channel · multi-token support

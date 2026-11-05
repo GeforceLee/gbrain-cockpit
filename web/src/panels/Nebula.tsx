@@ -9,6 +9,7 @@ import { ApiError, apiGet } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { usePageBundle } from "../lib/pages";
 import { firstLine } from "../lib/text";
+import { PageBody } from "../components/PageBody";
 
 // Nebula — the whole-brain map on the read-only bypass (ARCHITECTURE §3.3/§6).
 // Human vocabulary (owner decision 2026-11-04): a node IS a page, an edge IS
@@ -1438,11 +1439,13 @@ export function Nebula({
                     {t("nebula.drawer.contentError")} — {firstLine(peek.error)}
                   </p>
                 )}
-                {/* page bodies are persistent untrusted input: plain text via a
-                    React text node only, never innerHTML (same milestone rule
-                    as the Pages panel; V1.1 swaps both to marked → DOMPurify) */}
+                {/* page bodies are markdown + persistent untrusted input:
+                    marked → DOMPurify only (PageBody, shared pipeline) */}
                 {peek.bundle && !peek.loading && (
-                  <pre className="drawer-content">{peek.bundle.page.content ?? ""}</pre>
+                  <PageBody
+                    className="drawer-content"
+                    content={peek.bundle.page.content ?? ""}
+                  />
                 )}
               </div>
               <div className="drawer-actions">
