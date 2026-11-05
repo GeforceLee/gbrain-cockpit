@@ -232,7 +232,7 @@ export const en = {
   "nebula.hop2": "2 steps",
   "nebula.legend.newEdge": "dream new relation",
   "nebula.legend.pending": "pending",
-  "nebula.legend.pages": "page types",
+  "nebula.legend.groups": "groups",
   "nebula.legend.relations": "relation types",
   "nebula.legend.toggle": "click to show/hide this relation type",
   "nebula.drawer.caption": "PAGE",

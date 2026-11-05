@@ -13,18 +13,21 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // a relation between two pages. Views: 全景 overview (default) / 聚焦 focus
 // (a page's ≤2-step neighborhood) / 关系矩阵 relation matrix (neighborhood
 // grid) / 原版 stock (the same graph rendered with sigma's factory look, no
-// Deep Field skin — an owner comparison affordance). Skin: Deep Field
-// (2026-11-04 style review, candidate A) — a dark observation window inset
-// in the light Mint desk: borderless luminous nodes with additive glow
-// sprites, no community hulls, hover = neighborhood focus (the hovered
-// page's 1-hop set stays lit, everything else dims through the nodeReducer).
-// FA2 layout coordinates are frozen per graph fingerprint (localStorage) so
-// dream diffs stay comparable; labels render on sigma's canvas (native
-// canvas text — immune to HTML injection); node colors map page type, node
-// size and label size map relation count; relation color maps link_type,
-// the amber dash stays reserved for pending (un-adjudicated) dream
-// relations; pages with pending proposals pulse. All colors come from the
-// same-source GRAPH palette.
+// Paper Routes skin — an owner comparison affordance). Skin: Paper Routes
+// (2026-11-05 pick: B paper-atlas base × C direction particles) — a paper
+// canvas inside the Mint desk: louvain-COMMUNITY pastel discs (page-type
+// colors collapsed on real brains whose visible pages share one type),
+// region washes named by dominant slug family, always-on ink labels with a
+// paper halo (drawn on the overlay — sigma's own label renderer is off),
+// and relation "routes": thin tinted tracks with particles flowing
+// source→target (gbrain links are directed). Hover = neighborhood focus
+// (the hovered page's 1-hop set stays lit, the rest fades). FA2 layout
+// coordinates are frozen per graph fingerprint (localStorage) so dream
+// diffs stay comparable; all text renders on canvas (immune to HTML
+// injection); node size and label size map relation count; route color
+// maps link_type, the amber dash stays reserved for pending
+// (un-adjudicated) dream relations; pages with pending proposals pulse.
+// All colors come from the same-source GRAPH palette.
 //
 // Performance contract: sigma mounts ONCE per data change — paradigm and
 // selection switches filter through nodeReducer (no graph rebuild, no WebGL
@@ -39,14 +42,11 @@ const LAYOUT_PREFIX = "cockpit.nebula.layout.";
 const NOISE_DEGREE = 3;
 const MATRIX_MAX = 24;
 
-/** deterministic role rotation by page type (Deep Field luminous roles) */
-const TYPE_ROLES = GRAPH.typeRoles;
-
-function typeColor(type: string | undefined): string {
-  if (!type) return GRAPH.ghost;
-  let h = 0;
-  for (let i = 0; i < type.length; i++) h = ((h << 5) - h + type.charCodeAt(i)) | 0;
-  return TYPE_ROLES[Math.abs(h) % TYPE_ROLES.length]!;
+/** dominant slug family: "kb/migration0011" → "migration" (region naming) */
+function slugFamily(slug: string): string {
+  const tail = slug.includes("/") ? (slug.split("/").pop() ?? slug) : slug;
+  const fam = tail.replace(/\d+$/, "");
+  return fam || tail;
 }
 
 /** relation color = link_type (semantic); unknown types stay neutral grey */
@@ -64,7 +64,29 @@ function withAlpha(hex: string, alpha: number): string {
 }
 
 function nodeRadius(degree: number, focus: boolean): number {
-  return (3 + Math.sqrt(degree) * 2.3) * (focus ? 1.15 : 1);
+  return (4 + Math.sqrt(degree) * 2.4) * (focus ? 1.15 : 1);
+}
+
+/** Andrew monotone chain convex hull — region washes on the overlay */
+function convexHull(points: [number, number][]): [number, number][] {
+  if (points.length < 3) return points;
+  const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower: [number, number][] = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper: [number, number][] = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i]!;
+    while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop();
+  lower.pop();
+  return lower.concat(upper);
 }
 
 /** distance from a pointer to a segment — overlay-edge proximity hover */
@@ -281,6 +303,44 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       saveLayout(fingerprint, full);
     }
 
+    // map-shape guard: force layouts can come out tall-narrow, and a map
+    // reads wide. Presentation-side stretch (applies to stored layouts too,
+    // so it stays comparable across loads while the fingerprint is stable).
+    // Measured over the noise-VISIBLE pages — that is the extent the camera
+    // frames; far-out hidden isolates must not skew it.
+    let gx0 = Infinity;
+    let gy0 = Infinity;
+    let gx1 = -Infinity;
+    let gy1 = -Infinity;
+    let measured = false;
+    full.forEachNode((node, attrs) => {
+      if (full.degree(node) < NOISE_DEGREE && !pending.has(node)) return;
+      measured = true;
+      gx0 = Math.min(gx0, attrs.x);
+      gy0 = Math.min(gy0, attrs.y);
+      gx1 = Math.max(gx1, attrs.x);
+      gy1 = Math.max(gy1, attrs.y);
+    });
+    if (!measured) {
+      full.forEachNode((_node, attrs) => {
+        gx0 = Math.min(gx0, attrs.x);
+        gy0 = Math.min(gy0, attrs.y);
+        gx1 = Math.max(gx1, attrs.x);
+        gy1 = Math.max(gy1, attrs.y);
+      });
+    }
+    const gw = Math.max(gx1 - gx0, 1e-6);
+    const gh = Math.max(gy1 - gy0, 1e-6);
+    if (gh > gw / 1.45) {
+      // scale x by s and y by 1/s changes the aspect by s² — so s is the
+      // square root of the needed ratio, not the ratio itself
+      const s = Math.sqrt((gh * 1.45) / gw);
+      full.forEachNode((_node, attrs) => {
+        full.setNodeAttribute(_node, "x", attrs.x * s);
+        full.setNodeAttribute(_node, "y", attrs.y / s);
+      });
+    }
+
     // communities (matrix ordering only — the Deep Field skin draws no hulls)
     try {
       louvain.assign(full);
@@ -335,28 +395,39 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     const { nodes, full, degree, pending, newEdgeSet, edges, fingerprint } = baseData;
 
     const graph = new Graph({ multi: false, type: "undirected" });
+
+    // community colors — assigned by member count among noise-visible pages,
+    // largest community first. Page-TYPE colors collapsed on real brains
+    // whose visible pages share one type; louvain communities always
+    // diversify (style-review lesson, 2026-11-05).
+    const commSize = new Map<number, number>();
+    for (const n of nodes) {
+      const deg = degree.get(n.slug) ?? n.degree ?? 0;
+      if (deg < NOISE_DEGREE && !pending.has(n.slug)) continue;
+      const c = full.getNodeAttribute(n.slug, "community");
+      if (typeof c === "number") commSize.set(c, (commSize.get(c) ?? 0) + 1);
+    }
+    const commColor = new Map<number, string>();
+    [...commSize.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([c], i) => commColor.set(c, GRAPH.commColors[i] ?? GRAPH.ghostColor));
+
     for (const n of nodes) {
       const slug = n.slug;
       const deg = degree.get(slug) ?? n.degree ?? 0;
       const pos = full.getNodeAttributes(slug);
+      const community = full.getNodeAttribute(slug, "community");
       graph.addNode(slug, {
         label: slug,
         type: n.type,
         title: n.title,
         updated_at: n.updated_at,
         degree: deg,
-        community: full.getNodeAttribute(slug, "community"),
-        color: typeColor(n.type),
+        community,
+        color: (typeof community === "number" ? commColor.get(community) : undefined) ?? GRAPH.ghostColor,
         size: nodeRadius(deg, view === "orbit"),
         x: pos.x,
         y: pos.y,
-        forceLabel: pending.has(slug) || deg >= 8,
-        // sigma 4 label styling (per-node): body font, hubs bigger + heavier
-        // (Deep Field reads top-N pages first)
-        labelFont: GRAPH.labelFont,
-        labelSize: Math.min(Math.max(10 + deg * 0.42, 11), 15),
-        labelWeight: deg >= 8 ? "600" : "400",
-        labelColor: GRAPH.labelColor,
       });
     }
     // ALL relations enter the sigma graph (the 原版 stock view renders them
@@ -373,7 +444,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         link_type: e.link_type,
         isNew,
         color: GRAPH.edgeUnknown,
-        size: GRAPH.edgeWidth,
+        size: GRAPH.trackWidth,
       });
       allEdges.push({ source: e.source, target: e.target, link_type: e.link_type, isNew });
     }
@@ -414,19 +485,19 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         const shown = isHidden(node, graph.getNodeAttribute(node, "degree") ?? 0)
           ? { ...data, hidden: true }
           : data;
-        // 原版 stock view: strip the Deep Field skin (factory colors, default
-        // label font) while keeping data-driven size/position — no focus dim
+        // 原版 stock view: strip the Paper Routes skin (factory colors) while
+        // keeping data-driven size/position — no focus dim
         if (filterRef.current.view === "plain") {
-          return { ...shown, color: GRAPH.stock.node, labelColor: GRAPH.stock.label, labelFont: "sans-serif" };
+          return { ...shown, color: GRAPH.stock.node };
         }
         // hover = neighborhood focus: pages outside the hovered page's 1-hop
-        // set fade (fill AND label) until the pointer leaves
+        // set fade to pale ghosts until the pointer leaves (labels/routes
+        // dim on the overlay side)
         const near = filterRef.current.hoverNear;
         if (near && !near.has(node)) {
           return {
             ...shown,
-            color: withAlpha(typeof shown.color === "string" ? shown.color : GRAPH.ghost, GRAPH.dim),
-            labelColor: withAlpha(GRAPH.labelColor, GRAPH.dim),
+            color: withAlpha(typeof shown.color === "string" ? shown.color : GRAPH.ghostColor, GRAPH.dim),
           };
         }
         return shown;
@@ -439,10 +510,9 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
           ? { ...data, color: GRAPH.stock.edge }
           : { ...data, hidden: true },
       settings: {
-        labelDensity: 0.6,
-        labelGridCellSize: 100,
-        // Deep Field: hubs label first — small pages stay anonymous until zoom
-        labelRenderedSizeThreshold: 9,
+        // Paper Routes draws ALL labels itself on the overlay (greedy
+        // collision, ink + paper halo) — sigma's label renderer stays off
+        labelRenderedSizeThreshold: 1e9,
         minCameraRatio: 0.02,
         maxCameraRatio: 12,
       },
@@ -547,17 +617,20 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     if (!sigma || !wrap || !viewGraph || (view !== "field" && view !== "plain")) return;
     if (prevViewRef.current !== view) return; // a transition effect owns this render
     if (wrap.clientWidth === 0 || wrap.clientHeight === 0) return;
-    let raf = 0;
+    let retryTimer = 0;
     let tries = 0;
     const attempt = () => {
-      if (sigmaRef.current !== sigma) return; // unmounted before the frame
+      if (sigmaRef.current !== sigma) return; // unmounted before the attempt
       const a = sigma.graphToViewport({ x: 0, y: 0 });
       const b = sigma.graphToViewport({ x: 100, y: 100 });
       const ready =
         [a.x, a.y, b.x, b.y].every(Number.isFinite) &&
         (Math.abs(a.x - b.x) > 1 || Math.abs(a.y - b.y) > 1);
       if (!ready) {
-        if (++tries < 30) raf = requestAnimationFrame(attempt);
+        // timer-chain retry (NOT rAF): embedded webviews can stall rAF while
+        // the page stays visible — an rAF-only retry exhausts and silently
+        // keeps the default framing
+        if (++tries < 40) retryTimer = window.setTimeout(attempt, 120);
         return; // keep the default framing — better than a wrong one
       }
       const { graph } = viewGraph;
@@ -593,8 +666,8 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       cam.setState({ x: center.x, y: center.y, ratio: cam.getState().ratio * f });
       overlayDirty.current++;
     };
-    raf = requestAnimationFrame(attempt);
-    return () => cancelAnimationFrame(raf);
+    retryTimer = window.setTimeout(attempt, 60);
+    return () => window.clearTimeout(retryTimer);
   }, [viewGraph, view, noise, isHidden, mountTick]);
 
   // selection emphasis + filter changes: attribute bumps + one refresh (the
@@ -606,11 +679,6 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     graph.forEachNode((node, attrs) => {
       const base = nodeRadius(attrs.degree, view === "orbit");
       graph.setNodeAttribute(node, "size", node === selected ? base + 3 : base);
-      graph.setNodeAttribute(
-        node,
-        "forceLabel",
-        node === selected || viewGraph.pending.has(node),
-      );
     });
     sigma.refresh();
     overlayDirty.current++;
@@ -638,40 +706,76 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     return () => clearInterval(timer);
   }, [viewGraph, view, selected]);
 
-  // --- overlay canvas: node glow + typed relations + rings + vignette ----------
-  // sigma 4 has no glow, dashed-edge or vignette primitives, so the overlay
-  // draws them camera-synced through sigma.graphToViewport/scaleSize. The rAF
-  // loop stays cheap when idle: it skips the whole draw unless the camera
-  // state, the dirty counter, or the canvas size changed since last frame.
+  // --- overlay canvas: region washes + routes & particles + rings + labels ----
+  // sigma 4 has no wash, particle or label-halo primitives, so the overlay
+  // draws them camera-synced through sigma.graphToViewport/scaleSize. Two
+  // cadences: while direction particles animate (themed view, motion
+  // allowed, route count under GRAPH.maxAnimatedEdges) the loop repaints
+  // every visible frame — particles ARE the animation; otherwise (原版
+  // view, reduced motion, very large graphs → static chevrons) it returns
+  // to the cheap dirty-check idle skipping.
 
   useEffect(() => {
-    if (!viewGraph || view === "matrix" || view === "plain") return;
+    if (!viewGraph || view === "matrix") return;
     const { graph, allEdges, pending } = viewGraph;
+    const themed = view !== "plain";
 
-    // glow sprites: one radial-gradient disc per distinct node color (only a
-    // handful exist), drawn additively so stacked halos read as density
-    const glowCache = new Map<string, HTMLCanvasElement>();
-    function glowSprite(color: string): HTMLCanvasElement {
-      let sprite = glowCache.get(color);
-      if (!sprite) {
-        sprite = document.createElement("canvas");
-        sprite.width = sprite.height = 96;
-        const g = sprite.getContext("2d");
-        if (g) {
-          const grad = g.createRadialGradient(48, 48, 0, 48, 48, 48);
-          grad.addColorStop(0, withAlpha(color, 0.5));
-          grad.addColorStop(0.45, withAlpha(color, 0.22));
-          grad.addColorStop(1, withAlpha(color, 0));
-          g.fillStyle = grad;
-          g.fillRect(0, 0, 96, 96);
-        }
-        glowCache.set(color, sprite);
+    // region data (static per data/view/filters): visible members per
+    // community → hull + dominant slug family for the region name
+    // (kb/migration0011 → "migration · 14")
+    const byCommunity = new Map<
+      number,
+      { pts: [number, number][]; fam: Map<string, number>; color: string }
+    >();
+    graph.forEachNode((node, attrs) => {
+      if (isHidden(node, attrs.degree)) return;
+      const c = typeof attrs.community === "number" ? attrs.community : -1;
+      if (c < 0) return;
+      let entry = byCommunity.get(c);
+      if (!entry) {
+        entry = { pts: [], fam: new Map(), color: String(attrs.color) };
+        byCommunity.set(c, entry);
       }
-      return sprite;
+      entry.pts.push([attrs.x, attrs.y]);
+      const fam = slugFamily(node);
+      entry.fam.set(fam, (entry.fam.get(fam) ?? 0) + 1);
+    });
+    const regions: { hull: [number, number][]; count: number; name: string; color: string }[] = [];
+    if (themed) {
+      for (const entry of byCommunity.values()) {
+        if (entry.pts.length < GRAPH.washMin) continue;
+        let bestFam = "";
+        let best = 0;
+        for (const [fam, n] of entry.fam) {
+          if (n > best) {
+            best = n;
+            bestFam = fam;
+          }
+        }
+        regions.push({
+          hull: convexHull(entry.pts),
+          count: entry.pts.length,
+          name: `${bestFam} · ${entry.pts.length}`,
+          color: entry.color,
+        });
+      }
     }
 
-    // NOTE: glow reads node attributes LIVE each frame (not a setup-time
-    // snapshot) because the pulse and selection effects mutate `size`.
+    // visible route count decides the animation cadence
+    let routeCount = 0;
+    for (const e of allEdges) {
+      if (hiddenTypes.has(e.link_type ?? "?")) continue;
+      if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
+      const a = graph.getNodeAttributes(e.source);
+      const b = graph.getNodeAttributes(e.target);
+      if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+      routeCount++;
+    }
+    const reduced = document.documentElement.classList.contains("rm");
+    const animate = themed && !reduced && routeCount <= GRAPH.maxAnimatedEdges;
+
+    // NOTE: sizes/positions are read LIVE each frame (not setup snapshots)
+    // because the pulse and selection effects mutate node `size`.
 
     let raf = 0;
     let running = true;
@@ -680,7 +784,6 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     let lastW = 0;
     let lastH = 0;
     let lastPaint = 0;
-    let vignette: { w: number; h: number; grad: CanvasGradient } | null = null;
     const onVisibility = () => {
       running = !document.hidden;
       if (running) {
@@ -707,6 +810,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       const dpr = window.devicePixelRatio || 1;
       const w = wrap.clientWidth;
       const h = wrap.clientHeight;
+      if (w === 0 || h === 0) return; // not laid out yet — never collapse the canvas
       // camera readiness gate: sigma's matrices lag its first refresh —
       // painting before they exist draws NaN geometry (a frozen blank-ish
       // frame). Skip such frames entirely; the next one catches up.
@@ -720,10 +824,12 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       }
       const cam = sigma.getCamera().getState();
       const camKey = `${cam.x}|${cam.y}|${cam.ratio}|${cam.angle}`;
-      // idle frames skip the whole draw; the 1s backstop guarantees recovery
-      // from throttled/occluded tabs whose rAF stops mid-check (their first
-      // frame back would otherwise look "unchanged" and skip forever)
+      // idle frames skip the whole draw (only when particles are static);
+      // the 1s backstop guarantees recovery from throttled/occluded tabs
+      // whose rAF stops mid-check (their first frame back would otherwise
+      // look "unchanged" and skip forever)
       if (
+        !animate &&
         camKey === lastCamKey &&
         overlayDirty.current === lastDirty &&
         w === lastW &&
@@ -747,70 +853,123 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       ctx.clearRect(0, 0, w, h);
       const hoverNear = filterRef.current.hoverNear;
 
-      // node glow — additive so stacked halos accumulate like starlight;
-      // focused-out pages keep a faint mark instead of their glow
-      ctx.globalCompositeOperation = "lighter";
-      graph.forEachNode((node, attrs) => {
-        if (isHidden(node, attrs.degree)) return;
-        ctx.globalAlpha = hoverNear !== null && !hoverNear.has(node) ? GRAPH.dim : 1;
-        const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
-        const r = sigma.scaleSize(attrs.size) * GRAPH.glowRadius;
-        ctx.drawImage(glowSprite(String(attrs.color)), pos.x - r, pos.y - r, r * 2, r * 2);
-      });
-      ctx.globalCompositeOperation = "source-over";
-      ctx.globalAlpha = 1;
+      // region washes — communities ≥ washMin pages get a tinted hull + name
+      // (overview only: a focus view of ≤2 hops renders slivers, not regions)
+      if (themed && view === "field") {
+        for (const r of regions) {
+          if (r.hull.length < 3) continue;
+          ctx.beginPath();
+          r.hull.forEach((p, i) => {
+            const v = sigma.graphToViewport({ x: p[0], y: p[1] });
+            if (i === 0) ctx.moveTo(v.x, v.y);
+            else ctx.lineTo(v.x, v.y);
+          });
+          ctx.closePath();
+          ctx.globalAlpha = GRAPH.washFill;
+          ctx.fillStyle = r.color;
+          ctx.fill();
+          ctx.globalAlpha = GRAPH.washStroke;
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = r.color;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          const top = r.hull.reduce((a, b) => (b[1] < a[1] ? b : a));
+          const anchor = sigma.graphToViewport({ x: top[0], y: top[1] });
+          ctx.font = `600 10.5px ${GRAPH.regionFont}, "Noto Sans SC", sans-serif`;
+          ctx.fillStyle = GRAPH.washLabel;
+          ctx.fillText(r.name, anchor.x + 8, anchor.y + 4);
+        }
+      }
 
-      // relations — semantic: color = link_type, the amber dash is reserved
-      // for the pending (un-adjudicated) STATE. Drawn on the overlay because
-      // sigma's edge program can neither dash nor cheaply per-type color.
-      // Pending relations draw last so they sit on top; an edge focuses out
-      // together with either endpoint outside the hovered 1-hop set.
-      const solid: typeof allEdges = [];
-      const pendingEdges: typeof allEdges = [];
-      for (const e of allEdges) {
-        if (hiddenTypes.has(e.link_type ?? "?")) continue;
-        if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
-        const a = graph.getNodeAttributes(e.source);
-        const b = graph.getNodeAttributes(e.target);
-        if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
-        (e.isNew ? pendingEdges : solid).push(e);
+      // routes — thin tinted tracks + direction particles (source→target;
+      // gbrain links are directed). Track/particle color = link_type; the
+      // amber dash is reserved for the pending (un-adjudicated) STATE and
+      // draws last so it sits on top. Focused-out routes dim to a whisper
+      // and their particles rest. In the 原版 view sigma's own edge program
+      // renders factory greys — the overlay draws no routes at all.
+      if (themed) {
+        const solid: typeof allEdges = [];
+        const pendingEdges: typeof allEdges = [];
+        for (const e of allEdges) {
+          if (hiddenTypes.has(e.link_type ?? "?")) continue;
+          if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
+          const a = graph.getNodeAttributes(e.source);
+          const b = graph.getNodeAttributes(e.target);
+          if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+          (e.isNew ? pendingEdges : solid).push(e);
+        }
+        const nearEdge = (e: (typeof allEdges)[number]): boolean =>
+          hoverNear === null || (hoverNear.has(e.source) && hoverNear.has(e.target));
+        const drawRoute = (
+          e: (typeof allEdges)[number],
+          trackColor: string,
+          dash: number[],
+          trackWidth: number,
+          particleColor: string,
+        ) => {
+          const a = graph.getNodeAttributes(e.source);
+          const b = graph.getNodeAttributes(e.target);
+          const va = sigma.graphToViewport({ x: a.x, y: a.y });
+          const vb = sigma.graphToViewport({ x: b.x, y: b.y });
+          const near = nearEdge(e);
+          ctx.globalAlpha = near ? (dash.length ? 1 : GRAPH.trackAlpha) : GRAPH.trackAlpha * 0.25;
+          ctx.strokeStyle = trackColor;
+          ctx.lineWidth = trackWidth;
+          ctx.setLineDash(dash);
+          ctx.beginPath();
+          ctx.moveTo(va.x, va.y);
+          ctx.lineTo(vb.x, vb.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          if (!near) return; // focused out — particles rest
+          const len = Math.hypot(vb.x - va.x, vb.y - va.y);
+          if (len < 18) return; // too short to read direction
+          if (animate) {
+            let seed = 0;
+            for (let si = 0; si < e.source.length; si += 3) seed = (seed * 31 + e.source.charCodeAt(si)) % 97;
+            seed = (seed + e.target.length * 13) % 97;
+            const dots = len > 120 ? 2 : 1;
+            for (let di = 0; di < dots; di++) {
+              const base = (performance.now() / GRAPH.particleSpeedMs + (seed + di * 47) / 97) % 1;
+              for (let ti = 0; ti < GRAPH.particleTail.length; ti++) {
+                let ph = base - ti * GRAPH.particleTailGap;
+                if (ph < 0) ph += 1;
+                ctx.globalAlpha = GRAPH.particleTail[ti] ?? 0.95;
+                ctx.fillStyle = particleColor;
+                ctx.beginPath();
+                ctx.arc(
+                  va.x + (vb.x - va.x) * ph,
+                  va.y + (vb.y - va.y) * ph,
+                  GRAPH.particleSize - ti * 0.5,
+                  0,
+                  Math.PI * 2,
+                );
+                ctx.fill();
+              }
+            }
+          } else {
+            // static cadence: a chevron near the target keeps direction legible
+            const mx = va.x + (vb.x - va.x) * 0.58;
+            const my = va.y + (vb.y - va.y) * 0.58;
+            const ang = Math.atan2(vb.y - va.y, vb.x - va.x);
+            ctx.globalAlpha = 0.8;
+            ctx.fillStyle = particleColor;
+            ctx.beginPath();
+            ctx.moveTo(mx + Math.cos(ang) * 3.6, my + Math.sin(ang) * 3.6);
+            ctx.lineTo(mx + Math.cos(ang + 2.6) * 3.6, my + Math.sin(ang + 2.6) * 3.6);
+            ctx.lineTo(mx + Math.cos(ang - 2.6) * 3.6, my + Math.sin(ang - 2.6) * 3.6);
+            ctx.closePath();
+            ctx.fill();
+          }
+        };
+        for (const e of solid) {
+          drawRoute(e, edgeTypeColor(e.link_type), [], GRAPH.trackWidth, edgeTypeColor(e.link_type));
+        }
+        for (const e of pendingEdges) {
+          drawRoute(e, GRAPH.edgeNew, [6, 3], GRAPH.edgeNewWidth, GRAPH.edgeNew);
+        }
+        ctx.globalAlpha = 1;
       }
-      const drawEdge = (
-        e: (typeof allEdges)[number],
-        color: string,
-        width: number,
-        dash: number[],
-        alpha: number,
-      ) => {
-        const a = graph.getNodeAttributes(e.source);
-        const b = graph.getNodeAttributes(e.target);
-        const va = sigma.graphToViewport({ x: a.x, y: a.y });
-        const vb = sigma.graphToViewport({ x: b.x, y: b.y });
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = width;
-        ctx.setLineDash(dash);
-        ctx.beginPath();
-        ctx.moveTo(va.x, va.y);
-        ctx.lineTo(vb.x, vb.y);
-        ctx.stroke();
-      };
-      const nearEdge = (e: (typeof allEdges)[number]): boolean =>
-        hoverNear === null || (hoverNear.has(e.source) && hoverNear.has(e.target));
-      for (const e of solid) {
-        drawEdge(
-          e,
-          edgeTypeColor(e.link_type),
-          GRAPH.edgeWidth,
-          [],
-          nearEdge(e) ? GRAPH.edgeAlpha : GRAPH.edgeAlpha * GRAPH.dim,
-        );
-      }
-      for (const e of pendingEdges) {
-        drawEdge(e, GRAPH.edgeNew, GRAPH.edgeNewWidth, [6, 3], nearEdge(e) ? 1 : GRAPH.dim);
-      }
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
 
       // pending pages: steady amber ring (the size pulse stays the motion)
       ctx.strokeStyle = GRAPH.pendingRing;
@@ -827,14 +986,14 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       }
       ctx.globalAlpha = 1;
 
-      // hover/selected emphasis ring: white, lw 2.5, at radius + 3.5
+      // hover/selected emphasis ring: ink, lw 2, at radius + 3.5
       const focus = hoveredRef.current ?? selected;
       if (focus && graph.hasNode(focus)) {
         const attrs = graph.getNodeAttributes(focus);
         if (!isHidden(focus, attrs.degree)) {
           const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
           ctx.strokeStyle = GRAPH.hoverRing;
-          ctx.lineWidth = 2.5;
+          ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size) + 3.5, 0, Math.PI * 2);
           ctx.stroke();
@@ -864,22 +1023,77 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
         ctx.setLineDash([]);
       }
 
-      // corner vignette — the window's glass, cached per size
-      if (!vignette || vignette.w !== w || vignette.h !== h) {
-        const grad = ctx.createRadialGradient(
-          w / 2,
-          h / 2,
-          Math.min(w, h) * 0.38,
-          w / 2,
-          h / 2,
-          Math.max(w, h) * 0.75,
-        );
-        grad.addColorStop(0, GRAPH.vignetteClear);
-        grad.addColorStop(1, GRAPH.vignette);
-        vignette = { w, h, grad };
+      // labels — the paper-atlas signature: always on (relation count ≥ 3 in
+      // the overview, everyone in the focus view), ink on a paper halo so
+      // routes never strike through text, greedy collision (six candidate
+      // offsets, biggest first, overflow dropped, hovered label forced on
+      // top). 原版 view: plain ink without halo (factory comparison look).
+      const labelMinDeg = view === "orbit" ? 0 : NOISE_DEGREE;
+      const labels: { text: string; deg: number; x: number; y: number; r: number; top: boolean }[] = [];
+      graph.forEachNode((node, attrs) => {
+        if (isHidden(node, attrs.degree)) return;
+        if (attrs.degree < labelMinDeg) return;
+        if (hoverNear !== null && !hoverNear.has(node)) return; // ghosted
+        const r = sigma.scaleSize(attrs.size);
+        if (r < 6) return; // zoomed far out — read the map, not the names
+        if (labels.length >= 80 && attrs.degree < 8) return; // big-brain cap
+        const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
+        const full = String(attrs.title ?? node);
+        labels.push({
+          text: full.length > 16 ? full.slice(0, 15) + "…" : full,
+          deg: attrs.degree,
+          x: pos.x,
+          y: pos.y,
+          r,
+          top: node === hoveredRef.current,
+        });
+      });
+      labels.sort((a, b) => b.deg - a.deg || (a.top ? 1 : 0) - (b.top ? 1 : 0));
+      const placed: { x: number; y: number; w: number; h: number }[] = [];
+      const drawn: { text: string; size: number; weight: string; x: number; y: number; top: boolean }[] = [];
+      const CAND = [
+        { dx: 1, dy: 0, align: "left" },
+        { dx: -1, dy: 0, align: "right" },
+        { dx: 1, dy: 0.95, align: "left" },
+        { dx: 1, dy: -0.85, align: "left" },
+        { dx: 0, dy: 1.25, align: "center" },
+        { dx: 0, dy: -1.25, align: "center" },
+      ];
+      const overlap = (a: { x: number; y: number; w: number; h: number }, b: typeof a) =>
+        a.x < b.x + b.w + 4 && b.x < a.x + a.w + 4 && a.y < b.y + b.h + 4 && b.y < a.y + a.h + 4;
+      for (const L of labels) {
+        const size = Math.min(Math.max(10.5 + L.deg * 0.62, 11), 16.5);
+        const weight = L.deg >= 8 ? "600 " : "500 ";
+        ctx.font = weight + size.toFixed(1) + "px " + (themed ? GRAPH.labelFont : "sans-serif");
+        const lw = ctx.measureText(L.text).width;
+        for (const c of CAND) {
+          const ax = L.x + c.dx * (L.r + 6);
+          const ay = L.y + c.dy * (L.r + size * 0.75);
+          const bx = c.align === "right" ? ax - lw : c.align === "center" ? ax - lw / 2 : ax;
+          const box = { x: bx, y: ay - size * 0.5, w: lw, h: size + 2 };
+          if (box.x < 2 || box.y < 2 || box.x + box.w > w - 2 || box.y + box.h > h - 2) continue;
+          if (placed.some((p) => overlap(box, p))) continue;
+          placed.push(box);
+          drawn.push({ text: L.text, size, weight, x: bx, y: ay + size * 0.35, top: L.top });
+          break;
+        }
+        // no free slot — only the hovered page forces its label through
+        if (L.top && !drawn.some((d) => d.text === L.text && d.top)) {
+          drawn.push({ text: L.text, size, weight, x: L.x + L.r + 6, y: L.y + size * 0.35, top: true });
+        }
       }
-      ctx.fillStyle = vignette.grad;
-      ctx.fillRect(0, 0, w, h);
+      drawn.sort((a, b) => (a.top ? 1 : 0) - (b.top ? 1 : 0));
+      for (const D of drawn) {
+        ctx.font = D.weight + D.size.toFixed(1) + "px " + (themed ? GRAPH.labelFont : "sans-serif");
+        if (themed) {
+          ctx.lineJoin = "round";
+          ctx.lineWidth = 4;
+          ctx.strokeStyle = GRAPH.bg;
+          ctx.strokeText(D.text, D.x, D.y);
+        }
+        ctx.fillStyle = D.top ? GRAPH.ink : themed ? GRAPH.labelInk : GRAPH.stock.label;
+        ctx.fillText(D.text, D.x, D.y);
+      }
     }
     loop();
     return () => {
@@ -1009,14 +1223,40 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       ? viewGraph.graph.getNodeAttributes(selected)
       : null;
 
-  const typeLegend = useMemo(() => {
-    const seen = new Map<string, number>();
-    for (const n of report?.nodes ?? []) {
-      const key = n.type ?? "?";
-      seen.set(key, (seen.get(key) ?? 0) + 1);
-    }
-    return [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
-  }, [report]);
+  // community legend — groups (louvain) with ≥ washMin visible pages, named
+  // by dominant slug family; display-only (relation chips stay the filter)
+  const commLegend = useMemo(() => {
+    if (!viewGraph) return [];
+    const byComm = new Map<number, { count: number; fam: Map<string, number>; color: string }>();
+    viewGraph.graph.forEachNode((node, attrs) => {
+      if (isHidden(node, attrs.degree)) return;
+      const c = typeof attrs.community === "number" ? attrs.community : -1;
+      if (c < 0) return;
+      let entry = byComm.get(c);
+      if (!entry) {
+        entry = { count: 0, fam: new Map(), color: String(attrs.color) };
+        byComm.set(c, entry);
+      }
+      entry.count++;
+      const fam = slugFamily(node);
+      entry.fam.set(fam, (entry.fam.get(fam) ?? 0) + 1);
+    });
+    return [...byComm.entries()]
+      .filter(([, v]) => v.count >= GRAPH.washMin)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 6)
+      .map(([c, v]) => {
+        let name = "";
+        let best = 0;
+        for (const [fam, n] of v.fam) {
+          if (n > best) {
+            best = n;
+            name = fam;
+          }
+        }
+        return { c, count: v.count, color: v.color, name };
+      });
+  }, [viewGraph, isHidden, view, noise, members]);
 
   const relationLegend = useMemo(() => {
     const seen = new Map<string, number>();
@@ -1196,11 +1436,11 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
 
       {viewGraph && view !== "matrix" && view !== "plain" && (
         <div className="legend">
-          <span className="lg-cap">{t("nebula.legend.pages")}</span>
-          {typeLegend.map(([type, count]) => (
-            <span key={type} className="li">
-              <span className="sw" style={{ background: typeColor(type) }} />
-              {type} · {count}
+          <span className="lg-cap">{t("nebula.legend.groups")}</span>
+          {commLegend.map((g) => (
+            <span key={g.c} className="li">
+              <span className="sw" style={{ background: g.color }} />
+              {g.name} · {g.count}
             </span>
           ))}
           <span className="lg-cap">{t("nebula.legend.relations")}</span>

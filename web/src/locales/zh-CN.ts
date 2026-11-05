@@ -231,7 +231,7 @@ export const zhCN = {
   "nebula.hop2": "2 步",
   "nebula.legend.newEdge": "dream 新关系",
   "nebula.legend.pending": "待裁决",
-  "nebula.legend.pages": "页面类型",
+  "nebula.legend.groups": "群组",
   "nebula.legend.relations": "关系类型",
   "nebula.legend.toggle": "点击显示/隐藏这类关系",
   "nebula.drawer.caption": "页面 PAGE",

@@ -6,9 +6,9 @@
 //
 // Source of truth: internal/mockups/5-approva-audit.html :root (frozen
 // 2026-11-04, internal/mockups/README.md §7) for the DOM chrome; the GRAPH
-// canvas constants are the Deep Field skin picked in the 2026-11-04 style
-// review (candidate A; B/C kept in that session's comparison mockup). A
-// reskin swaps this module's values only.
+// canvas constants are the Paper Routes skin (2026-11-05 pick: B paper
+// atlas base × C direction particles; see internal/mockups/7-nebula-styles.html
+// and README §8). A reskin swaps this module's values only.
 
 export const PALETTE = {
   mint: "#CFE8D6",
@@ -54,62 +54,74 @@ export const FONTS = {
   mono: "'Space Mono', 'Roboto Mono', ui-monospace, Menlo, monospace",
 } as const;
 
-/** Canvas (sigma.js) palette — Deep Field skin, the owner pick (2026-11-04)
- *  from the three-candidate style review (runner-ups Paper Atlas / Blueprint
- *  live in that session's mockup only). The graph is the app's second dark
- *  material — like the terminal command block it sits inside the light Mint
- *  Audit desk as an inset observation window. Same-source with the CSS
- *  variables below; the DOM chrome around the window stays Mint Audit. */
+/** Canvas (sigma.js) palette — Paper Routes skin (2026-11-05 owner pick,
+ *  style-review follow-up: B "paper atlas" base × C directional particles).
+ *  A light material inside the Mint desk: paper canvas, community-pastel
+ *  discs (louvain — page-TYPE colors collapsed on real brains whose visible
+ *  pages share one type), always-on ink labels with a paper halo, region
+ *  washes, and relation "routes" — thin tinted tracks with flowing
+ *  direction particles (gbrain links are directed). Same-source with the
+ *  CSS variables below. */
 export const GRAPH = {
-  /** observation-window background */
-  bg: "#10151C",
+  /** paper canvas */
+  bg: "#FCFDF9",
+  ink: "#26291F",
   /** legend swatch: pages carrying pending proposals */
   red: PALETTE.stop,
-  /** luminous page-type roles (deterministic rotation by type hash) */
-  typeRoles: ["#FFB454", "#6FD9A8", "#8FB8F2", "#C792EA", "#F2779A"] as readonly string[],
-  /** untyped pages: dim slate */
-  ghost: "#5C6672",
-  /** canvas labels */
-  labelColor: "#D6DFE7",
+  /** community palette — assigned by visible-member count, largest first */
+  commColors: ["#D98A4A", "#5FA973", "#6E9BD1", "#A583C9", "#D97C8A", "#8A9B5A", "#B8775A"] as readonly string[],
+  /** communities past the palette + ungrouped pages: quiet gray */
+  ghostColor: "#C4C9BF",
+  /** region washes: communities with at least this many members */
+  washMin: 4,
+  washFill: 0.09,
+  washStroke: 0.13,
+  washLabel: "rgba(38,41,31,.5)",
+  regionFont: "'Archivo'",
+  /** overlay labels (sigma's own label renderer is off): ink on paper halo */
+  labelInk: "rgba(38,41,31,.85)",
   labelFont: FONTS.body,
   /**
-   * Per-relation-type edge colors (semantic: color = what the relation IS;
+   * Per-relation-type route colors (semantic: color = what the relation IS;
    * the amber dash stays reserved for the pending/un-adjudicated STATE).
    * Keyed by gbrain link_type; live-probed 2026-11-04. Extend when probes
    * surface new types — unknown types fall back to `edgeUnknown`.
    */
   edgeTypes: {
-    mentions: "#9FB4A8", // sage — A 提到 B (most common, neutral weight)
-    cited: "#5FD98A", // luminous green — A 引用 B
-    advises: "#E0A25E", // amber-ochre — A 建议 B (kept apart from dash=pending)
-    founded: "#8FA3E8", // periwinkle — A 创立 B
+    mentions: "#6B7A70", // sage — A 提到 B (most common, neutral weight)
+    cited: "#3F8A55", // green — A 引用 B
+    advises: "#96622C", // ochre — A 建议 B (kept apart from dash=pending)
+    founded: "#5668AC", // indigo — A 创立 B
   } as Record<string, string>,
   /** untyped / unknown relations */
-  edgeUnknown: "rgba(200,210,205,.32)",
-  /** typed-edge opacity on the dark window */
-  edgeAlpha: 0.45,
-  edgeWidth: 1.2,
-  /** dream-new edge (amber, dashed) */
+  edgeUnknown: "#9AA19B",
+  /** route track: thin tinted line under the particles */
+  trackAlpha: 0.16,
+  trackWidth: 1.1,
+  /** direction particles: dots flowing source→target with a comet tail */
+  particleSpeedMs: 2400,
+  particleSize: 2.3,
+  particleTail: [0.95, 0.5, 0.25] as readonly number[],
+  particleTailGap: 0.022,
+  /** above this many visible routes, particles degrade to static chevrons
+   *  and the overlay returns to dirty-check idle skipping */
+  maxAnimatedEdges: 400,
+  /** dream-new relation (amber, dashed) */
   edgeNew: PALETTE.warn,
   edgeNewWidth: 1.8,
-  /** hover / selection ring */
-  hoverRing: "rgba(255,255,255,.78)",
+  /** hover / selection ring: ink */
+  hoverRing: "#26291F",
   /** focus-view hop rings + their captions */
-  orbitRing: "rgba(154,170,182,.6)",
+  orbitRing: "rgba(38,41,31,.35)",
   /** pending-page ring (steady — the size pulse stays the motion cue) */
   pendingRing: PALETTE.warn,
-  /** neighborhood-focus factor: nodes/edges/labels outside the hovered
+  /** neighborhood-focus factor: pages/routes/labels outside the hovered
    *  page's 1-hop set fade to this alpha until the pointer leaves */
-  dim: 0.12,
-  /** glow sprite: radius as a multiple of node size */
-  glowRadius: 2.6,
-  /** corner vignette wash */
-  vignette: "rgba(0,0,0,.32)",
-  vignetteClear: "rgba(0,0,0,0)",
-  /** tooltip chrome — dark readout, terminal family */
-  tipBg: "#1A222D",
-  tipText: "#DCE5EC",
-  tipBorder: "rgba(255,255,255,.16)",
+  dim: 0.22,
+  /** tooltip chrome — light paper readout */
+  tipBg: "#FFFFFF",
+  tipText: "#26291F",
+  tipBorder: "rgba(38,41,31,.22)",
   /**
    * sigma factory-look preset for the 原版 (stock) comparison tab. These are
    * deliberately NOT skin values — the tab exists to show the graph exactly
