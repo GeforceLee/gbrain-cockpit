@@ -3,7 +3,7 @@ import Graph from "graphology";
 import louvain from "graphology-communities-louvain";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
-import type { EdgeProposal, GraphReport } from "@gbrain-cockpit/shared";
+import type { EdgeProposal, GraphReport, PageDetail, PageVersion } from "@gbrain-cockpit/shared";
 import { GRAPH } from "../design/tokens";
 import { ApiError, apiGet } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
@@ -35,6 +35,12 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // tick, the filters or the selection actually changed (dirty check).
 
 type ViewKind = "field" | "orbit" | "matrix" | "plain";
+
+/** drawer body payload — same shape as the Pages panel's detail fetch */
+interface PagePeek {
+  page: PageDetail;
+  versions: PageVersion[];
+}
 
 const VIEW_KEY = "cockpit.nebula.view";
 const NOISE_KEY = "cockpit.nebula.noise";
@@ -208,6 +214,14 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [locate, setLocate] = useState("");
+  // page peek: the drawer reads the selected page IN PLACE (FEATURES §4.3 —
+  // click a node → page detail opens in the side drawer). The graph never
+  // unmounts, so the exploration context (selection, camera, filters)
+  // survives every peek.
+  const [peek, setPeek] = useState<PagePeek | null>(null);
+  const [peekError, setPeekError] = useState<string | null>(null);
+  const [peekLoading, setPeekLoading] = useState(false);
+  const peekSeq = useRef(0);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
@@ -255,6 +269,40 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       })
       .catch(() => setProposalEdges([]));
   }, []);
+
+  // drawer body: fetch the selected page's detail on selection change; a seq
+  // guard drops late responses so rapid clicking can only ever show the
+  // last-selected page
+  useEffect(() => {
+    const seq = ++peekSeq.current;
+    setPeek(null);
+    setPeekError(null);
+    setPeekLoading(selected !== null);
+    if (!selected) return;
+    apiGet<PagePeek>(`/api/page?slug=${encodeURIComponent(selected)}`)
+      .then((bundle) => {
+        if (peekSeq.current !== seq) return;
+        setPeek(bundle);
+      })
+      .catch((err) => {
+        if (peekSeq.current !== seq) return;
+        setPeekError(err instanceof ApiError ? err.message : String(err));
+      })
+      .finally(() => {
+        if (peekSeq.current !== seq) return;
+        setPeekLoading(false);
+      });
+  }, [selected]);
+
+  // Esc closes the drawer — same deselect as clicking the empty stage
+  useEffect(() => {
+    if (!selected) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setSelected(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
 
   // --- base data: full graph, frozen layout, communities ----------------------
 
@@ -1382,6 +1430,12 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
                   <span className="mono">{selectedAttrs.updated_at.slice(0, 10)}</span>
                 </div>
               )}
+              {peek && (
+                <div className="kv">
+                  <span>{t("nebula.drawer.versions")}</span>
+                  <span className="mono">{String(peek.versions.length)}</span>
+                </div>
+              )}
               {viewGraph.pending.has(selected) && (
                 <p className="drawer-pending">
                   <span className="tag warn">{t("nebula.drawer.pending")}</span>
@@ -1390,6 +1444,21 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
               {Number(selectedAttrs.degree ?? 0) === 0 && (
                 <p className="muted small drawer-note">{t("nebula.drawer.noRelations")}</p>
               )}
+              <div className="drawer-body">
+                <p className="cap">{t("nebula.drawer.content")}</p>
+                {peekLoading && <p className="muted small">{t("common.loading")}</p>}
+                {peekError && (
+                  <p className="error small">
+                    {t("nebula.drawer.contentError")} — {firstLine(peekError)}
+                  </p>
+                )}
+                {/* page bodies are persistent untrusted input: plain text via a
+                    React text node only, never innerHTML (same milestone rule
+                    as the Pages panel; V1.1 swaps both to marked → DOMPurify) */}
+                {peek && !peekLoading && (
+                  <pre className="drawer-content">{peek.page.content ?? ""}</pre>
+                )}
+              </div>
               <div className="drawer-actions">
                 {view !== "orbit" && (
                   <button type="button" onClick={() => switchView("orbit")}>
@@ -1402,7 +1471,7 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
                     className="linkish"
                     onClick={() => onOpenPage(selected)}
                   >
-                    {t("nebula.drawer.openPage")}
+                    {t("nebula.drawer.edit")}
                   </button>
                 )}
               </div>

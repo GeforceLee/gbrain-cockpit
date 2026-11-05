@@ -896,6 +896,7 @@ button.batch-arm {
   gap: 8px;
   margin-top: 12px;
   align-items: flex-start;
+  flex: none; /* pinned below the scrolling peek body */
 }
 
 .drawer-open {
@@ -925,12 +926,38 @@ button.batch-arm {
   position: absolute;
   top: 14px;
   right: 14px;
-  width: 264px;
+  width: min(320px, calc(100% - 28px));
+  max-height: calc(100% - 28px);
+  display: flex;
+  flex-direction: column;
   z-index: 4;
   background: var(--paper);
   border: 3px solid var(--ink);
   box-shadow: 5px 5px 0 var(--ink);
   padding: 14px 16px;
+}
+
+/* page peek body — the card grows with content up to the graph's height;
+   metadata and actions stay pinned, the body area scrolls */
+.drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-faint);
+}
+
+.drawer-body .cap {
+  margin: 0 0 6px;
+}
+
+.drawer-content {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.65;
 }
 
 .drawer .cap {
