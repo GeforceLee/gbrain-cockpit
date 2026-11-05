@@ -21,6 +21,7 @@ tmp/
 .DS_Store
 .idea/
 .vscode/
+.zcode/
 
 # TypeScript incremental build info
 *.tsbuildinfo
