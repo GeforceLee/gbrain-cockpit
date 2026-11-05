@@ -103,8 +103,16 @@ function App() {
             >
               <span className="row">
                 <span>
-                  {t(`nav.${id}.zh` as MessageKey)}
-                  <span className="en"> {t(`nav.${id}.en` as MessageKey)}</span>
+                  {/* zh locale keeps the bilingual label (设计签名); en shows
+                      plain English — no unreadable second language */}
+                  {locale === "zh-CN" ? (
+                    <>
+                      {t(`nav.${id}.zh` as MessageKey)}
+                      <span className="en"> {t(`nav.${id}.en` as MessageKey)}</span>
+                    </>
+                  ) : (
+                    t(`nav.${id}.en` as MessageKey)
+                  )}
                 </span>
                 {id === "inbox" && inboxTotal !== null && inboxTotal > 0 ? (
                   <span className="count">{inboxTotal}</span>
@@ -142,8 +150,14 @@ function App() {
           <header className="topbar">
             <div>
               <h1>
-                {t(`nav.${panelId}.zh` as MessageKey)}
-                <span className="en">{t(`nav.${panelId}.en` as MessageKey)}</span>
+                {locale === "zh-CN" ? (
+                  <>
+                    {t(`nav.${panelId}.zh` as MessageKey)}
+                    <span className="en">{t(`nav.${panelId}.en` as MessageKey)}</span>
+                  </>
+                ) : (
+                  t(`nav.${panelId}.en` as MessageKey)
+                )}
                 {panelId === "inbox" && inboxTotal !== null && inboxTotal > 0 ? (
                   <span className="tag">
                     {inboxTotal} {t("topbar.pending")}
@@ -202,7 +216,11 @@ function App() {
                 onClick={() => setPanelId(id)}
               >
                 <span className="row">
-                  <span className="zh">{t(`nav.${id}.zh` as MessageKey)}</span>
+                  <span className="zh">
+                    {locale === "zh-CN"
+                      ? t(`nav.${id}.zh` as MessageKey)
+                      : t(`nav.${id}.en` as MessageKey)}
+                  </span>
                   {id === "inbox" && inboxTotal !== null && inboxTotal > 0 ? (
                     <span className="count">{inboxTotal}</span>
                   ) : null}
