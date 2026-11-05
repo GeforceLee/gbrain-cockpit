@@ -16,7 +16,11 @@ import type {
 } from "@gbrain-cockpit/shared";
 import { auditWrite } from "../audit";
 import { BadRequestError, envelope, readJsonBody } from "../http";
-import { CliDriver, CliValidationError } from "../drivers/cli";
+import {
+  CliDriver,
+  CliExecutionError,
+  CliValidationError,
+} from "../drivers/cli";
 import { McpError, McpDriver } from "../drivers/mcp";
 import type { PgReadonlyDriver } from "../drivers/pg-readonly";
 import { TRUST_REF_RE } from "@gbrain-cockpit/shared";
@@ -60,6 +64,17 @@ function requirePattern(value: string | undefined, name: string, re: RegExp): st
 export function mapError(err: unknown): Response {
   if (err instanceof BadRequestError || err instanceof CliValidationError) {
     return envelope(400, "E_BAD_REQUEST", err.message);
+  }
+  if (err instanceof CliExecutionError) {
+    // The gbrain CLI ran and failed (nonzero exit, ENOENT, timeout). The
+    // driver bounds the message to the first stderr line, so surfacing it
+    // lets the operator act ("No brain directory configured…") instead of
+    // staring at an opaque 500. Same envelope shape as MCP upstream errors.
+    return envelope(
+      err.timedOut ? 504 : 502,
+      "E_UPSTREAM",
+      err.message,
+    );
   }
   if (err instanceof McpError) {
     switch (err.kind) {
