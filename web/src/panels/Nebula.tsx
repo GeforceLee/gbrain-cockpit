@@ -3,10 +3,12 @@ import Graph from "graphology";
 import louvain from "graphology-communities-louvain";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
-import type { EdgeProposal, GraphReport, PageDetail, PageVersion } from "@gbrain-cockpit/shared";
+import type { EdgeProposal, GraphReport } from "@gbrain-cockpit/shared";
 import { GRAPH } from "../design/tokens";
 import { ApiError, apiGet } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
+import { usePageBundle } from "../lib/pages";
+import { firstLine } from "../lib/text";
 
 // Nebula — the whole-brain map on the read-only bypass (ARCHITECTURE §3.3/§6).
 // Human vocabulary (owner decision 2026-11-04): a node IS a page, an edge IS
@@ -35,12 +37,6 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 // tick, the filters or the selection actually changed (dirty check).
 
 type ViewKind = "field" | "orbit" | "matrix" | "plain";
-
-/** drawer body payload — same shape as the Pages panel's detail fetch */
-interface PagePeek {
-  page: PageDetail;
-  versions: PageVersion[];
-}
 
 const VIEW_KEY = "cockpit.nebula.view";
 const NOISE_KEY = "cockpit.nebula.noise";
@@ -189,13 +185,14 @@ function computeLayout(graph: Graph): void {
   });
 }
 
-/** Errors shown to the browser stay one line — full text is server-log only. */
-function firstLine(error?: string): string {
-  if (!error) return "";
-  return (error.split("\n").find((l) => l.trim()) ?? "").slice(0, 200);
-}
-
-export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) {
+export function Nebula({
+  active,
+  onOpenPage,
+}: {
+  /** keep-alive: true while this panel is the visible one */
+  active?: boolean;
+  onOpenPage?: (slug: string) => void;
+}) {
   const { t } = useI18n();
   const [report, setReport] = useState<GraphReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -215,13 +212,10 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
   const [selected, setSelected] = useState<string | null>(null);
   const [locate, setLocate] = useState("");
   // page peek: the drawer reads the selected page IN PLACE (FEATURES §4.3 —
-  // click a node → page detail opens in the side drawer). The graph never
-  // unmounts, so the exploration context (selection, camera, filters)
-  // survives every peek.
-  const [peek, setPeek] = useState<PagePeek | null>(null);
-  const [peekError, setPeekError] = useState<string | null>(null);
-  const [peekLoading, setPeekLoading] = useState(false);
-  const peekSeq = useRef(0);
+  // click a node → page detail opens in the side drawer) via the shared
+  // page fetch. The graph never unmounts, so the exploration context
+  // (selection, camera, filters) survives every peek.
+  const peek = usePageBundle(selected);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
@@ -256,6 +250,18 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
     void refresh();
   }, [refresh]);
 
+  // keep-alive: a display:none stage reports 0×0, so both canvases would
+  // paint from stale geometry on return — nudge sigma and force one overlay
+  // frame when the panel becomes visible again (the overlay loop itself
+  // no-ops at zero size, so hidden frames cost nothing)
+  useEffect(() => {
+    if (!active) return;
+    if (sigmaRef.current) {
+      sigmaRef.current.refresh();
+      overlayDirty.current++;
+    }
+  }, [active]);
+
   // dream-new relations share the Inbox queue's data (same data, two surfaces)
   const [proposalEdges, setProposalEdges] = useState<[string, string][]>([]);
   useEffect(() => {
@@ -269,30 +275,6 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
       })
       .catch(() => setProposalEdges([]));
   }, []);
-
-  // drawer body: fetch the selected page's detail on selection change; a seq
-  // guard drops late responses so rapid clicking can only ever show the
-  // last-selected page
-  useEffect(() => {
-    const seq = ++peekSeq.current;
-    setPeek(null);
-    setPeekError(null);
-    setPeekLoading(selected !== null);
-    if (!selected) return;
-    apiGet<PagePeek>(`/api/page?slug=${encodeURIComponent(selected)}`)
-      .then((bundle) => {
-        if (peekSeq.current !== seq) return;
-        setPeek(bundle);
-      })
-      .catch((err) => {
-        if (peekSeq.current !== seq) return;
-        setPeekError(err instanceof ApiError ? err.message : String(err));
-      })
-      .finally(() => {
-        if (peekSeq.current !== seq) return;
-        setPeekLoading(false);
-      });
-  }, [selected]);
 
   // Esc closes the drawer — same deselect as clicking the empty stage
   useEffect(() => {
@@ -1434,10 +1416,10 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
                   <span className="mono">{selectedAttrs.updated_at.slice(0, 10)}</span>
                 </div>
               )}
-              {peek && (
+              {peek.bundle && (
                 <div className="kv">
                   <span>{t("nebula.drawer.versions")}</span>
-                  <span className="mono">{String(peek.versions.length)}</span>
+                  <span className="mono">{String(peek.bundle.versions.length)}</span>
                 </div>
               )}
               {viewGraph.pending.has(selected) && (
@@ -1450,17 +1432,17 @@ export function Nebula({ onOpenPage }: { onOpenPage?: (slug: string) => void }) 
               )}
               <div className="drawer-body">
                 <p className="cap">{t("nebula.drawer.content")}</p>
-                {peekLoading && <p className="muted small">{t("common.loading")}</p>}
-                {peekError && (
+                {peek.loading && <p className="muted small">{t("common.loading")}</p>}
+                {peek.error && (
                   <p className="error small">
-                    {t("nebula.drawer.contentError")} — {firstLine(peekError)}
+                    {t("nebula.drawer.contentError")} — {firstLine(peek.error)}
                   </p>
                 )}
                 {/* page bodies are persistent untrusted input: plain text via a
                     React text node only, never innerHTML (same milestone rule
                     as the Pages panel; V1.1 swaps both to marked → DOMPurify) */}
-                {peek && !peekLoading && (
-                  <pre className="drawer-content">{peek.page.content ?? ""}</pre>
+                {peek.bundle && !peek.loading && (
+                  <pre className="drawer-content">{peek.bundle.page.content ?? ""}</pre>
                 )}
               </div>
               <div className="drawer-actions">

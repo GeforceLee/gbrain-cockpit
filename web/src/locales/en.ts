@@ -277,6 +277,14 @@ export const en = {
   "nebula.down": "graph data channel unavailable",
   "nebula.empty": "the graph is empty.",
 
+  // shared page drawer: page references open in place, never a panel jump.
+  "viewer.caption": "PAGE",
+  "viewer.slug": "slug",
+  "viewer.type": "type",
+  "viewer.body": "content",
+  "viewer.edit": "edit in Pages →",
+  "viewer.loadError": "failed to load content",
+
   "common.loading": "Loading…",
   "pager.prev": "previous page",
   "pager.next": "next page",

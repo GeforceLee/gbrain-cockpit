@@ -275,6 +275,14 @@ export const zhCN = {
   "nebula.down": "图数据通道不可用",
   "nebula.empty": "图数据为空。",
 
+  // 共享页面抽屉:任何面板里点开页面引用都就地查看,不切面板。
+  "viewer.caption": "页面 PAGE",
+  "viewer.slug": "页面标识",
+  "viewer.type": "类型",
+  "viewer.body": "正文",
+  "viewer.edit": "去编辑 →",
+  "viewer.loadError": "正文加载失败",
+
   "common.loading": "加载中…",
   "pager.prev": "上一页",
   "pager.next": "下一页",

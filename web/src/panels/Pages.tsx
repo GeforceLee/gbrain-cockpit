@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  PageDetail,
   PageSummary,
-  PageVersion,
   PagesFacets,
   WriteReceipt,
 } from "@gbrain-cockpit/shared";
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
+import { type PageBundle } from "../lib/pages";
 import { Pager, usePageSize } from "../components/Pager";
 
 // Pages panel: list with type facets (enum from gbrain's schema_stats — never
@@ -24,11 +23,6 @@ import { Pager, usePageSize } from "../components/Pager";
 // `updated_after_slug` taken from the last row — so every page of a brain is
 // reachable, not just the first server-limit window. "Next" past the
 // accumulated rows fetches the next chunk; "prev" walks back locally.
-
-interface PageBundle {
-  page: PageDetail;
-  versions: PageVersion[];
-}
 
 type EditorState =
   | { mode: "idle" }

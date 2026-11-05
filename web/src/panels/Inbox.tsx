@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ADJUDICATION_CHANNELS, TRUST_REF_RE } from "@gbrain-cockpit/shared";
 import type {
   AdjudicationAction,
@@ -10,6 +10,7 @@ import type {
 import { AuditBlock } from "../components/AuditBlock";
 import { ChannelMatrixCard, type ChannelRow } from "../components/ChannelMatrixCard";
 import { CopyCommand } from "../components/CopyCommand";
+import { PageDrawer } from "../components/PageDrawer";
 import { Pager, usePageSize } from "../components/Pager";
 import { StampButton } from "../components/StampButton";
 import { Tag, type TagVariant } from "../components/Tag";
@@ -19,6 +20,8 @@ import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { copyCommandText } from "../lib/clipboard";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
+import { isSlugLike } from "../lib/pages";
+import { firstLine } from "../lib/text";
 
 // Inbox — the adjudication desk, in the frozen v5 interaction model:
 // queue tabs | queue-card list | document + decision rail, with the stamp
@@ -31,6 +34,10 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 
 type QueueId = "proposals" | "held" | "facts" | "edges" | "takes" | "others";
 type TabId = "all" | Exclude<QueueId, "others">;
+
+/** keep-alive refresh threshold: re-fetch the queues once when returning to
+ *  the desk after this long away (queue verdicts elsewhere change counts) */
+const INBOX_STALE_MS = 60_000;
 
 // Queue cards are paginated (the takes queue alone can hold 500+ items per
 // dream run); the page size is user-selectable and persists per browser.
@@ -81,12 +88,6 @@ function itemSummary(item: TrustReviewItem): string {
   return "";
 }
 
-/** Errors shown to the browser stay one line — full text is server-log only. */
-function firstLine(error?: string): string {
-  if (!error) return "";
-  return (error.split("\n").find((l) => l.trim()) ?? "").slice(0, 220);
-}
-
 function stringField(item: object, key: string): string | undefined {
   const v = (item as Record<string, unknown>)[key];
   return typeof v === "string" && v.trim() ? v : undefined;
@@ -125,9 +126,12 @@ function ownerSafeCommand(cmd: string | null, fallback: string): string {
 }
 
 export function Inbox({
+  active,
   onOpenPage,
   onTotal,
 }: {
+  /** keep-alive: true while this panel is the visible one */
+  active?: boolean;
   onOpenPage?: (slug: string) => void;
   /** sidebar count chip — reported after every fetch, no extra request */
   onTotal?: (total: number) => void;
@@ -145,12 +149,19 @@ export function Inbox({
   // two-step confirm for the page-level batch reject (takes, CLI channel)
   const [batchArmed, setBatchArmed] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
+  // page reference opened in the shared in-place drawer (never a panel jump)
+  const [peekSlug, setPeekSlug] = useState<string | null>(null);
+  // keep-alive staleness: when the panel comes back into view older than
+  // this, one silent refresh re-syncs the queue (dream runs and verdicts
+  // from other surfaces change it while the desk is hidden)
+  const fetchedAtRef = useRef(0);
 
   const refresh = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
       setReport(await apiGet<InboxReport>("/api/inbox"));
+      fetchedAtRef.current = Date.now();
     } catch (err) {
       setReport(null);
       setError(err instanceof ApiError ? err.message : String(err));
@@ -162,6 +173,16 @@ export function Inbox({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (
+      active &&
+      fetchedAtRef.current > 0 &&
+      Date.now() - fetchedAtRef.current > INBOX_STALE_MS
+    ) {
+      void refresh();
+    }
+  }, [active, refresh]);
 
   const cliAvailable = report?.cliChannel.available === true;
   const trustItems = report?.trust.items ?? [];
@@ -534,7 +555,7 @@ export function Inbox({
               <>
                 <div className="doc-layout">
                   <div className={`document ${stamp ? "shake" : ""}`}>
-                    <DocumentCard entry={detail} onOpenPage={onOpenPage} />
+                    <DocumentCard entry={detail} onPeek={setPeekSlug} />
                     {stamp ? (
                       <div className={`big-stamp ${stamp.variant}`}>
                         <span className="zh">{stamp.zh}</span>
@@ -563,6 +584,15 @@ export function Inbox({
           </div>
         </div>
       )}
+
+      {/* every page reference opens here, in place — the tab / page /
+          selection you're working from never resets (jump to edit stays a
+          deliberate drawer action) */}
+      <PageDrawer
+        slug={peekSlug}
+        onClose={() => setPeekSlug(null)}
+        onEdit={onOpenPage}
+      />
     </section>
   );
 }
@@ -571,10 +601,11 @@ export function Inbox({
 
 function DocumentCard({
   entry,
-  onOpenPage,
+  onPeek,
 }: {
   entry: Entry;
-  onOpenPage?: (slug: string) => void;
+  /** open a page reference in the shared in-place drawer (never a jump) */
+  onPeek?: (slug: string) => void;
 }) {
   const { t } = useI18n();
   const item = entry.item;
@@ -589,7 +620,17 @@ function DocumentCard({
           </div>
           <div className="to">
             <div className="mono to-cap">{t("inbox.doc.target")}</div>
-            <b>{entry.target ?? "—"}</b>
+            {onPeek && isSlugLike(entry.target) ? (
+              <button
+                type="button"
+                className="linkish to-link"
+                onClick={() => onPeek(entry.target!)}
+              >
+                {entry.target}
+              </button>
+            ) : (
+              <b>{entry.target ?? "—"}</b>
+            )}
           </div>
         </div>
         <p className="cap">{t("inbox.doc.raw")}</p>
@@ -609,11 +650,11 @@ function DocumentCard({
           </div>
           <div className="to">
             <div className="mono to-cap">{t("inbox.doc.sourcePage")}</div>
-            {onOpenPage ? (
+            {onPeek ? (
               <button
                 type="button"
                 className="linkish to-link"
-                onClick={() => onOpenPage(take.page_slug)}
+                onClick={() => onPeek(take.page_slug)}
               >
                 {take.page_slug}
               </button>
@@ -665,7 +706,17 @@ function DocumentCard({
         </div>
         <div className="to">
           <div className="mono to-cap">{t("inbox.doc.target")}</div>
-          <b>{entry.target ?? t("inbox.doc.unknownTarget")}</b>
+          {onPeek && isSlugLike(entry.target) ? (
+            <button
+              type="button"
+              className="linkish to-link"
+              onClick={() => onPeek(entry.target!)}
+            >
+              {entry.target}
+            </button>
+          ) : (
+            <b>{entry.target ?? t("inbox.doc.unknownTarget")}</b>
+          )}
           {revision ? <div className="mono to-cap">rev {revision}</div> : null}
         </div>
       </div>

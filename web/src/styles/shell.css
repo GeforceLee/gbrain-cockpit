@@ -380,6 +380,18 @@
   background: var(--mint);
 }
 
+/* Panel keep-alive: panels stay mounted once visited (queue tab, pagination,
+   selection, scroll and the graph camera survive switches); inactive slots
+   are merely not laid out and contribute no height — the stage stays the
+   single scroll container. */
+.stage .panel-slot {
+  display: none;
+}
+
+.stage .panel-slot.on {
+  display: block;
+}
+
 /* --- responsive (mockup breakpoint) --- */
 
 @media (max-width: 1240px) {

@@ -8,6 +8,8 @@ The loop:
 dream proposes overnight → you adjudicate in the Inbox each morning → the Graph is always roamable
 ```
 
+Cross-panel ground rules: panels stay alive across switches (queue tab, pagination, selection, scroll and the graph camera all survive), and every page reference — Inbox document targets, Search hits, graph nodes — opens in place in the shared page drawer; "edit in Pages →" inside the drawer is the only deliberate jump.
+
 ## Inbox — the adjudication desk
 
 - **Six queue tabs**: trust proposals · held writes · facts to confirm · edge proposals · takes to resolve · other pending — each with its own one-line description, and "queue unavailable" is shown instead of "empty" when a channel is down
@@ -19,7 +21,7 @@ dream proposes overnight → you adjudicate in the Inbox each morning → the Gr
 - **Channel check card**: renders from the same compile-time channel matrix the code executes — it cannot disagree with reality
 - **Batch reject** for a page of takes (two-step confirm; terminal-confirmation actions are never batched)
 - **Session audit block + recent-verdicts table**: every action stamps itself into a fixed receipt slot — no toasts, no lost history
-- Queue cards paginate with a user-selectable page size; page slugs cross-link into the Pages panel
+- Queue cards paginate with a user-selectable page size; page references (take source page, edge/trust targets) open the shared page drawer in place — the tab, page and selection you're working from never reset
 
 ## Graph — the whole-brain map
 
@@ -34,12 +36,12 @@ dream proposes overnight → you adjudicate in the Inbox each morning → the Gr
 - Type facets straight from your brain's own `schema_stats` (nothing hardcoded), with counts
 - Deep keyset pagination on gbrain's own cursor — every page of a 10k-page brain is reachable, not just the first window
 - In-place editing on the full write-receipt protocol: optimistic-lock conflict instead of silent overwrite, idempotent request ids, receipt polling on timeout (never a re-send)
-- Detail view: type, updated, trust tier, revision, version count; jump target for every "open this page" affordance elsewhere in the UI
+- Detail view: type, updated, trust tier, revision, version count; the editing surface behind every page drawer's "edit in Pages →"
 
 ## Search
 
 - The cheap hybrid (literal + semantic) top-20 entry point — no LLM call
-- Global topbar box with `/` and ⌘K shortcuts lands here; results show score, type, and a plain-text snippet; click to open the page
+- Global topbar box with `/` and ⌘K shortcuts lands here; results show score, type, and a plain-text snippet; click to peek the page in place (the result list stays behind it)
 
 ## Health
 

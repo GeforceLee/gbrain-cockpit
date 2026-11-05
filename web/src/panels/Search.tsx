@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import type { SearchHit } from "@gbrain-cockpit/shared";
+import { PageDrawer } from "../components/PageDrawer";
 import { ApiError, apiGet } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 
 // Search panel: the cheap hybrid search (no LLM). Results are persistent
 // untrusted input — titles/snippets render as plain text, never as markup.
 // The shell's global search box (topbar) lands here with a seed query.
+// Hits open in the shared in-place drawer — the result list (query, scroll)
+// never resets behind you; "edit in Pages →" is the deliberate jump.
 
 export function Search({
   seed,
@@ -21,6 +24,8 @@ export function Search({
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // hit opened in the shared in-place drawer
+  const [peekSlug, setPeekSlug] = useState<string | null>(null);
 
   const runQuery = useCallback(async (q: string) => {
     setBusy(true);
@@ -81,7 +86,7 @@ export function Search({
             <button
               type="button"
               className="page-row"
-              onClick={() => h.slug && onOpenPage(h.slug)}
+              onClick={() => h.slug && setPeekSlug(h.slug)}
             >
               <span className="page-title">{h.title ?? h.slug}</span>
               <span className="page-meta mono">
@@ -95,6 +100,12 @@ export function Search({
           </li>
         ))}
       </ul>
+
+      <PageDrawer
+        slug={peekSlug}
+        onClose={() => setPeekSlug(null)}
+        onEdit={onOpenPage}
+      />
     </section>
   );
 }

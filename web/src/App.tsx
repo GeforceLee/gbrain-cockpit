@@ -26,6 +26,10 @@ const DEFAULT_PANEL: PanelId = "inbox";
 function App() {
   const { locale, setLocale, t } = useI18n();
   const [panelId, setPanelId] = useState<PanelId>(DEFAULT_PANEL);
+  // keep-alive: a panel mounts on first visit and stays mounted afterwards
+  // (hidden via CSS), so tab / pagination / selection / scroll / graph
+  // camera survive every switch — leaving a panel never resets it
+  const [visited, setVisited] = useState<readonly PanelId[]>([DEFAULT_PANEL]);
   const [focusSlug, setFocusSlug] = useState<string | null>(null);
   const [searchSeed, setSearchSeed] = useState<string | null>(null);
   const [tokenReady, setTokenReady] = useState(() => !!getToken());
@@ -62,10 +66,19 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const openPage = useCallback((slug: string) => {
-    setFocusSlug(slug);
-    setPanelId("pages");
+  /** switch panel + mark it mounted-for-good (keep-alive) */
+  const show = useCallback((id: PanelId) => {
+    setPanelId(id);
+    setVisited((v) => (v.includes(id) ? v : [...v, id]));
   }, []);
+
+  const openPage = useCallback(
+    (slug: string) => {
+      setFocusSlug(slug);
+      show("pages");
+    },
+    [show],
+  );
   const consumeFocus = useCallback(() => setFocusSlug(null), []);
   const consumeSeed = useCallback(() => setSearchSeed(null), []);
 
@@ -73,7 +86,7 @@ function App() {
     const value = query.trim();
     if (!value) return;
     setSearchSeed(value);
-    setPanelId("search");
+    show("search");
   }
 
   return (
@@ -99,7 +112,7 @@ function App() {
               type="button"
               className={`nav-item ${id === panelId ? "on" : ""}`}
               aria-current={id === panelId ? "page" : undefined}
-              onClick={() => setPanelId(id)}
+              onClick={() => show(id)}
             >
               <span className="row">
                 <span>
@@ -213,7 +226,7 @@ function App() {
                 type="button"
                 className={`nav-item ${id === panelId ? "on" : ""}`}
                 aria-current={id === panelId ? "page" : undefined}
-                onClick={() => setPanelId(id)}
+                onClick={() => show(id)}
               >
                 <span className="row">
                   <span className="zh">
@@ -233,23 +246,40 @@ function App() {
             {!tokenReady ? (
               <TokenGate onAuthed={() => setTokenReady(true)} />
             ) : (
-              <ErrorBoundary key={panelId}>
-                {panelId === "inbox" ? (
-                  <Inbox onOpenPage={openPage} onTotal={setInboxTotal} />
-                ) : null}
-                {panelId === "nebula" ? <Nebula onOpenPage={openPage} /> : null}
-                {panelId === "pages" ? (
-                  <Pages focusSlug={focusSlug} onConsumeFocus={consumeFocus} />
-                ) : null}
-                {panelId === "search" ? (
-                  <Search
-                    seed={searchSeed}
-                    onConsumeSeed={consumeSeed}
-                    onOpenPage={openPage}
-                  />
-                ) : null}
-                {panelId === "health" ? <Health /> : null}
-              </ErrorBoundary>
+              // keep-alive stage: every visited panel stays mounted inside
+              // its own slot (hidden via CSS when inactive); each slot owns a
+              // STABLE ErrorBoundary so one panel's render error can never
+              // reset another
+              PANELS.map((id) => (
+                <div
+                  key={id}
+                  className={`panel-slot ${id === panelId ? "on" : ""}`}
+                >
+                  <ErrorBoundary>
+                    {id === "inbox" && visited.includes(id) ? (
+                      <Inbox
+                        active={panelId === "inbox"}
+                        onOpenPage={openPage}
+                        onTotal={setInboxTotal}
+                      />
+                    ) : null}
+                    {id === "nebula" && visited.includes(id) ? (
+                      <Nebula active={panelId === "nebula"} onOpenPage={openPage} />
+                    ) : null}
+                    {id === "pages" && visited.includes(id) ? (
+                      <Pages focusSlug={focusSlug} onConsumeFocus={consumeFocus} />
+                    ) : null}
+                    {id === "search" && visited.includes(id) ? (
+                      <Search
+                        seed={searchSeed}
+                        onConsumeSeed={consumeSeed}
+                        onOpenPage={openPage}
+                      />
+                    ) : null}
+                    {id === "health" && visited.includes(id) ? <Health /> : null}
+                  </ErrorBoundary>
+                </div>
+              ))
             )}
           </main>
         </div>
