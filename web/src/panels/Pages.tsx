@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   PageDetail,
   PageSummary,
@@ -14,9 +14,10 @@ import { Pager, usePageSize } from "../components/Pager";
 // Pages panel: list with type facets (enum from gbrain's schema_stats — never
 // hardcoded), detail view, and in-place editing on the full receipt protocol
 // (expected_revision optimistic lock + request_id idempotency + polling; a
-// lost reply is never re-sent with a new id). Page bodies are persistent
-// untrusted input: rendered as plain text only in this milestone — the
-// marked → DOMPurify pipeline arrives with rich rendering (V1.1).
+// lost reply is never re-sent with a new id — a 504 keeps the id and polls).
+// Page bodies are persistent untrusted input: rendered as plain text only in
+// this milestone — the marked → DOMPurify pipeline arrives with rich
+// rendering (V1.1).
 //
 // The list paginates through gbrain's OWN keyset cursor (documented by
 // list_pages itself): sort=updated_desc + `updated_after` /
@@ -62,6 +63,8 @@ export function Pages({
   const [bundle, setBundle] = useState<PageBundle | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>({ mode: "idle" });
+  /** consecutive failed receipt polls for the current pending receipt */
+  const pollFailsRef = useRef(0);
 
   useEffect(() => {
     apiGet<PagesFacets>("/api/pages/facets")
@@ -143,6 +146,10 @@ export function Pages({
   }, [focusSlug, openPage, onConsumeFocus]);
 
   // Poll a pending write to final; same request_id, never a new send.
+  // A receipt that keeps failing to poll (server unreachable, or the write
+  // never reached gbrain) settles as "unknown" after a bounded number of
+  // tries instead of spinning forever — the conflict check on any later
+  // re-save is the safety net for a lost write.
   useEffect(() => {
     if (editor.mode !== "receipt") return;
     const receipt = editor.receipt;
@@ -154,11 +161,24 @@ export function Pages({
         const next = await apiGet<WriteReceipt>(
           `/api/write-request?request_id=${encodeURIComponent(receipt.request_id)}`,
         );
+        pollFailsRef.current = 0;
         if (next.status !== receipt.status) {
           appendAudit(`page.write ${receipt.request_id} -> ${next.status}`, metaFor(next));
         }
         setEditor({ mode: "receipt", receipt: next });
       } catch {
+        pollFailsRef.current += 1;
+        if (pollFailsRef.current >= 6) {
+          appendAudit(`page.write ${receipt.request_id} -> POLL-LOST`);
+          setEditor({
+            mode: "receipt",
+            receipt: {
+              request_id: receipt.request_id,
+              status: "unknown",
+              detail: "receipt polling failed repeatedly (channel down?)",
+            },
+          });
+        }
         // transient poll failure — keep the slot, try again next tick
       }
     }, 2500);
@@ -217,14 +237,27 @@ export function Pages({
         setBundle(fresh);
       }
     } catch (err) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      // A 504 means the upstream wait window elapsed — the write may still be
+      // sitting in gbrain's queue. Keep the SAME request_id and poll the
+      // receipt; never re-send with a fresh id (ARCHITECTURE §3.1). Any other
+      // error is a real refusal (validation / auth / rate limit): the request
+      // never queued, so a plain failed receipt with the traceable id is
+      // honest. A later manual re-save mints a new id and is protected by the
+      // expected_revision conflict check either way.
+      if (err instanceof ApiError && err.status === 504) {
+        appendAudit(`page.write ${requestId} -> TIMEOUT (polling receipt)`);
+        pollFailsRef.current = 0;
+        setEditor({
+          mode: "receipt",
+          receipt: { request_id: requestId, status: "pending", detail },
+        });
+        return;
+      }
       appendAudit(`page.write ${requestId} -> ERR`);
       setEditor({
         mode: "receipt",
-        receipt: {
-          request_id: "n/a",
-          status: "failed",
-          detail: err instanceof ApiError ? err.message : String(err),
-        },
+        receipt: { request_id: requestId, status: "failed", detail },
       });
     }
   }
@@ -290,7 +323,11 @@ export function Pages({
               />
             )}
           </div>
-          {listError && <p className="error">{listError}</p>}
+          {listError && (
+            <p className="error">
+              {t("common.errorLabel")}: {listError}
+            </p>
+          )}
           {!rows && !listError && <p className="muted">{t("common.loading")}</p>}
           {rows && rowsCount === 0 && !listError && (
             <p className="muted">{t("pages.empty")}</p>
@@ -327,7 +364,11 @@ export function Pages({
             )}
           </div>
 
-          {detailError && <p className="error">{detailError}</p>}
+          {detailError && (
+            <p className="error">
+              {t("common.errorLabel")}: {detailError}
+            </p>
+          )}
           {!bundle && !detailError && <p className="muted">{t("common.loading")}</p>}
 
           {bundle && (
@@ -390,7 +431,8 @@ export function Pages({
                   )}
                   {(editor.receipt.status === "committed" ||
                     editor.receipt.status === "failed" ||
-                    editor.receipt.status === "cancelled") && (
+                    editor.receipt.status === "cancelled" ||
+                    editor.receipt.status === "unknown") && (
                     <button type="button" onClick={() => setEditor({ mode: "idle" })}>
                       {t("common.close")}
                     </button>
