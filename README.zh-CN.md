@@ -41,6 +41,22 @@ dream 整夜提案 → 你早晨在收件箱一键裁决 → 图谱始终保持�
 
 完整说明见[功能指南](docs/features.zh-CN.md)与[架构概览](docs/architecture.zh-CN.md)。
 
+## 界面截图
+
+<p align="center">
+  <img src="docs/screenshots/zh/inbox.png" alt="收件箱——裁决台:队列卡片、文档视图、一键盖章与终端确认命令块" width="49%">
+  <img src="docs/screenshots/zh/graph.png" alt="图谱——全脑一张 canvas 地图,社区配色与关系类型图例" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/zh/pages.png" alt="页面——类型筛选、深度分页、回执协议编辑" width="49%">
+  <img src="docs/screenshots/zh/search.png" alt="搜索——混合检索,结果带相关度与摘要" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/zh/health.png" alt="健康——通道状态、延迟仪表与安全清单" width="49%">
+</p>
+
+*截图基于合成演示数据(117 页、幂律连接分布的示例 brain)——数据由构造即脱敏,界面即所发版本。*
+
 ## 快速开始
 
 前置:[Bun](https://bun.sh) ≥ 1.2,一个运行中的 `gbrain serve`(MCP 端点可达)。一键裁决还需要 cockpit **与 brain 同机**且 `gbrain` CLI 在 PATH 上——否则这些动作自动降级为复制命令块。

@@ -41,6 +41,22 @@ The official and community interfaces each cover a slice of the problem — nobo
 
 See the [feature guide](docs/features.md) and the [architecture overview](docs/architecture.md) for the full picture.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/en/inbox.png" alt="Inbox — the adjudication desk: queue cards, document view, one-key stamps and the terminal-confirmation copy block" width="49%">
+  <img src="docs/screenshots/en/graph.png" alt="Graph — the whole brain on one canvas, community-colored with a relation-type legend" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/en/pages.png" alt="Pages — type facets, deep pagination, receipt-protocol editing" width="49%">
+  <img src="docs/screenshots/en/search.png" alt="Search — hybrid results with scores and snippets" width="49%">
+</p>
+<p align="center">
+  <img src="docs/screenshots/en/health.png" alt="Health — channel status, latency gauges and the safety checklist" width="49%">
+</p>
+
+*Screenshots run on synthetic demo data (a 117-page brain with power-law link distribution) — desensitized by construction; the UI itself is what ships.*
+
 ## Quick start
 
 Prerequisites: [Bun](https://bun.sh) ≥ 1.2 and a running `gbrain serve` (MCP endpoint reachable). One-key adjudication additionally wants cockpit **on the brain host** with the `gbrain` CLI on PATH — elsewhere those actions degrade to copy-command blocks automatically.
