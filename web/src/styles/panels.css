@@ -899,30 +899,6 @@ button.batch-arm {
   flex: none; /* pinned below the scrolling peek body */
 }
 
-/* --- shared page drawer (in-place page view) --------------------------- */
-
-/* Sticky zero-size anchor: panels scroll the whole stage (unlike Nebula's
-   fixed-height graph wrap), so the drawer rides the stage viewport's
-   top-right while its panel is on screen. */
-.drawer-anchor {
-  position: sticky;
-  top: 14px;
-  height: 0;
-  width: 0;
-  margin-left: auto; /* zero-width block pushed to the content's right edge */
-  z-index: 6;
-}
-
-/* geometry overrides on the .drawer base: the anchor is zero-size, so the
-   percentage-based width/max-height of the graph drawer would collapse */
-.page-drawer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: min(340px, 46vw);
-  max-height: calc(100vh - 200px);
-}
-
 .drawer-open {
   margin-top: 0;
 }
@@ -1021,6 +997,33 @@ button.batch-arm {
 
 .drawer .close:active {
   transform: none;
+}
+
+/* --- shared page drawer (in-place page view) --------------------------- */
+
+/* Sticky zero-size anchor: panels scroll the whole stage (unlike Nebula's
+   fixed-height graph wrap), so the drawer rides the stage viewport's
+   top-right while its panel is on screen. Must be a panel's FIRST child —
+   from its natural position at the panel top it is on screen the instant
+   the drawer opens (as a last child it would sit far below the fold). */
+.drawer-anchor {
+  position: sticky;
+  top: 14px;
+  height: 0;
+  width: 0;
+  margin-left: auto; /* zero-width block pushed to the content's right edge */
+  z-index: 6;
+}
+
+/* Geometry overrides on the .drawer base — kept AFTER the .drawer family so
+   they win the cascade: the anchor is zero-size, so the graph drawer's
+   percentage width/max-height would collapse to shrink-to-fit here. */
+.page-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(340px, 46vw);
+  max-height: calc(100vh - 200px);
 }
 
 .legend {

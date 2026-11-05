@@ -408,6 +408,15 @@ export function Inbox({
 
   return (
     <section className="panel inbox">
+      {/* FIRST child on purpose: the drawer's sticky anchor pins to the
+          stage viewport from its natural position — at the panel top it is
+          on screen the instant the drawer opens; as the LAST child it would
+          render ~2000px below the fold and "nothing would happen" */}
+      <PageDrawer
+        slug={peekSlug}
+        onClose={() => setPeekSlug(null)}
+        onEdit={onOpenPage}
+      />
       <nav className="tabs" aria-label={t("panel.inbox.title")}>
         {tabs.map((tb) => (
           <button
@@ -584,15 +593,6 @@ export function Inbox({
           </div>
         </div>
       )}
-
-      {/* every page reference opens here, in place — the tab / page /
-          selection you're working from never resets (jump to edit stays a
-          deliberate drawer action) */}
-      <PageDrawer
-        slug={peekSlug}
-        onClose={() => setPeekSlug(null)}
-        onEdit={onOpenPage}
-      />
     </section>
   );
 }

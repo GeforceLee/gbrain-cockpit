@@ -57,6 +57,13 @@ export function Search({
 
   return (
     <section className="panel search-panel">
+      {/* FIRST child on purpose (same as Inbox): the sticky anchor must sit
+          at the panel top so the drawer lands inside the viewport on open */}
+      <PageDrawer
+        slug={peekSlug}
+        onClose={() => setPeekSlug(null)}
+        onEdit={onOpenPage}
+      />
       <h2>{t("panel.search.title")}</h2>
       <p className="panel-desc">{t("panel.search.desc")}</p>
       <form className="search-form" onSubmit={run}>
@@ -100,12 +107,6 @@ export function Search({
           </li>
         ))}
       </ul>
-
-      <PageDrawer
-        slug={peekSlug}
-        onClose={() => setPeekSlug(null)}
-        onEdit={onOpenPage}
-      />
     </section>
   );
 }
