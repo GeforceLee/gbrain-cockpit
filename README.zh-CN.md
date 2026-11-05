@@ -104,7 +104,7 @@ cockpit 对你的 brain 刻意保守:
 
 ## 状态
 
-早期可用(0.x):五个面板与三条通道均为可运行软件,基于 gbrain 0.60.x 验证;边角与 gbrain 版本间的 schema 漂移在预期内,且均为可见降级而非崩溃。接下来:富文本页面渲染、图谱 MCP 回落路径、`/metrics`、Docker 渠道——路线图见[架构概览](docs/architecture.zh-CN.md#路线图01-未含)。
+早期可用(0.x):五个面板与三条通道均为可运行软件,基于 gbrain 0.60.x 验证;边角与 gbrain 版本间的 schema 漂移在预期内,且均为可见降级而非崩溃。接下来:图谱 MCP 回落路径、`/metrics`、Docker 渠道——路线图见[架构概览](docs/architecture.zh-CN.md#路线图01-未含)。逐版本变更见 [CHANGELOG](CHANGELOG.md)。
 
 界面中英双语,每个面板、动作与空态都带一句话自描述。
 

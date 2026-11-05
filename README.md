@@ -104,7 +104,7 @@ The channel each action travels is a compile-time constant — no runtime rerout
 
 ## Status
 
-Early access (0.x): the five panels and all three channels are working software, verified against gbrain 0.60.x; rough edges and schema drift across gbrain releases are expected and degrade visibly rather than crash. Next up: rich page rendering, the graph's MCP fallback path, `/metrics`, and a Docker channel — see the roadmap in the [architecture overview](docs/architecture.md#roadmap-not-in-01).
+Early access (0.x): the five panels and all three channels are working software, verified against gbrain 0.60.x; rough edges and schema drift across gbrain releases are expected and degrade visibly rather than crash. Next up: the graph's MCP fallback path, `/metrics`, and a Docker channel — see the roadmap in the [architecture overview](docs/architecture.md#roadmap-not-in-01). Changes release by release: [CHANGELOG](CHANGELOG.md).
 
 The UI ships bilingually (English / 简体中文) with every panel, action and empty state carrying a one-line self-description.
 
