@@ -37,7 +37,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - Deep keyset pagination on gbrain's own cursor — every page of a 10k-page brain is reachable, not just the first window
 - In-place editing on the full write-receipt protocol: optimistic-lock conflict instead of silent overwrite, idempotent request ids, receipt polling on timeout (never a re-send)
 - Detail view: type, updated, trust tier, revision, version count; the editing surface behind every page drawer's "edit in Pages →"
-- Page bodies render as markdown through the marked → DOMPurify pipeline everywhere (detail view, page drawer, graph peek) — gbrain stores pages as markdown (its repo-of-Markdown design), and imported content is persistent untrusted input: scripts/images/forms are stripped, external links open hardened (`_blank` + `noopener`)
+- Page bodies render as markdown through the marked → DOMPurify pipeline everywhere (detail view, page drawer, graph peek) — gbrain stores pages as markdown (its repo-of-Markdown design), and imported content is persistent untrusted input: scripts/images/forms are stripped, external links open hardened (`_blank` + `noopener`). Pages stored inside the conversation-ingest wrapper (a quoted-excerpt line plus a text fence around the whole body) are unwrapped at render time; any other shape renders exactly as stored
 
 ## Search
 

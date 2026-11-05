@@ -981,6 +981,7 @@ button.batch-arm {
 
 .drawer .kv span {
   opacity: 0.6;
+  overflow-wrap: anywhere; /* long values (uuid revisions) must not overflow */
 }
 
 .drawer .close {

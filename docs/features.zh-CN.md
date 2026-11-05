@@ -37,7 +37,7 @@ dream 整夜提案 → 你早晨在收件箱一键裁决 → 图谱始终保持�
 - 基于 gbrain 自有游标的深度 keyset 分页——上万页的 brain 每一页都可达,不止第一窗口
 - 全写回执协议的在线编辑:乐观锁冲突而非静默覆盖、幂等 request_id、超时轮询收据(绝不重发)
 - 详情视图:类型、更新时间、信任层级、修订号、版本数;页面抽屉里「去编辑 →」的编辑落地页
-- 页面正文按 markdown 渲染,全站(详情视图、页面抽屉、图谱速览)走同一条 marked → DOMPurify 管线——gbrain 的页面本就是 markdown(仓库即 Markdown 的设计);导入内容属持久化不可信输入:script/图片/表单一律剥离,外链加固(`_blank` + `noopener`)
+- 页面正文按 markdown 渲染,全站(详情视图、页面抽屉、图谱速览)走同一条 marked → DOMPurify 管线——gbrain 的页面本就是 markdown(仓库即 Markdown 的设计);导入内容属持久化不可信输入:script/图片/表单一律剥离,外链加固(`_blank` + `noopener`)。对话导入包装的页面(引文标记行 + 裹住整个正文的 text 围栏)在渲染时解包;其他形状按原样渲染
 
 ## 搜索
 

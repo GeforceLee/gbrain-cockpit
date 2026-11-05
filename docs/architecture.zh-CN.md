@@ -68,7 +68,7 @@ CLI 通道不可用时(cockpit 不在 brain 主机上),一键 CLI 动作降级�
 - **fail-closed 启动**:缺 `COCKPIT_TOKEN` 或 `GBRAIN_MCP_TOKEN` 拒绝启动;`GBRAIN_BIN` 设了但不可执行也拒绝启动
 - **令牌卫生**:令牌只走 `Authorization` 头——query 参数里出现令牌形态的值直接 400;浏览器侧令牌存 localStorage、仅以请求头发送、绝不进 URL;比较为常数时间
 - **Host/Origin 防线**:Host 白名单(防 DNS rebinding)+ 非 GET 请求的 Origin/`Sec-Fetch-Site` 校验 + 写请求仅接受 JSON body
-- **不可信内容渲染**:brain 内容(导入的页面/邮件/聊天记录)是持久化不可信输入。页面正文是 markdown(gbrain 仓库即 Markdown 的设计,已对上游文档与真实 brain 实证),只经唯一一条管线渲染——`marked → DOMPurify`(`lib/markdown.ts` + `components/PageBody.tsx`;script/图片/表单剥离,外链加固为 `_blank`+`noopener`);该 `dangerouslySetInnerHTML` 是全站唯一一处,其余一律纯文本,图谱标签用 canvas 绘制
+- **不可信内容渲染**:brain 内容(导入的页面/邮件/聊天记录)是持久化不可信输入。页面正文是 markdown(gbrain 仓库即 Markdown 的设计,已对上游文档与真实 brain 实证),只经唯一一条管线渲染——`marked → DOMPurify`(`lib/markdown.ts` + `components/PageBody.tsx`;script/图片/表单剥离,外链加固为 `_blank`+`noopener`);对话导入包装(引文标记行 + 裹住正文的 text 围栏)在渲染前解包,严格形状匹配、不匹配按原样渲染;该 `dangerouslySetInnerHTML` 是全站唯一一处,其余一律纯文本,图谱标签用 canvas 绘制
 - **SQL 面**:只读旁路只跑三条模块级常量 SELECT(pages/links 两表,专用只读账号);用户输入到不了 SQL
 - **错误信封**:浏览器只看得到 `{error: 概要, code}`;子进程 stderr 只进服务端日志
 - **审计留痕**:写动作追加到程序目录之外的 `~/.cockpit-audit/YYYY-MM-DD.jsonl`
