@@ -45,17 +45,17 @@ See the [feature guide](docs/features.md) and the [architecture overview](docs/a
 
 <p align="center">
   <img src="docs/screenshots/en/inbox.png" alt="Inbox — the adjudication desk: queue cards, document view, one-key stamps and the terminal-confirmation copy block" width="49%">
-  <img src="docs/screenshots/en/graph.png" alt="Graph — the whole brain on one canvas, community-colored with a relation-type legend" width="49%">
+  <img src="docs/screenshots/en/graph.png" alt="Graph — the whole brain on one canvas, source-colored with a legend; cross-source relations render dashed" width="49%">
 </p>
 <p align="center">
   <img src="docs/screenshots/en/pages.png" alt="Pages — type facets, deep pagination, receipt-protocol editing" width="49%">
-  <img src="docs/screenshots/en/search.png" alt="Search — hybrid results with scores and snippets" width="49%">
+  <img src="docs/screenshots/en/search.png" alt="Search — hybrid results with scores, snippets and per-source chips (same-slug pages in two sources both list, with a jump between them)" width="49%">
 </p>
 <p align="center">
   <img src="docs/screenshots/en/health.png" alt="Health — channel status, latency gauges and the safety checklist" width="49%">
 </p>
 
-*Screenshots run on synthetic demo data (a 117-page brain with power-law link distribution) — desensitized by construction; the UI itself is what ships.*
+*Screenshots run on synthetic demo data (a 133-page two-source brain — 117 live pages + a 16-page federated archive, including one same-slug pair — with power-law link distribution) — desensitized by construction; the UI itself is what ships.*
 
 ## Quick start
 
