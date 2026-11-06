@@ -92,6 +92,8 @@ cd server && bun start              # 在 :8787 提供构建后的界面
 
 共十个环境变量,全部带注释见 [`.env.example`](.env.example);完整表格在[架构概览](docs/architecture.zh-CN.md#配置)。其中两个必填(fail-closed):`COCKPIT_TOKEN` 与 `GBRAIN_MCP_TOKEN`。
 
+多脑:把 `COCKPIT_PROFILES_FILE` 指向一个 profiles JSON(每个 gbrain 部署一条——MCP 端点+凭证、可选只读 DSN、可选 CLI 命令名以支持 `gbrain-bip` 这类包装脑)。顶栏会出现切换器;不设该文件时旧变量继续工作。详见[多 brain(多实例)](docs/architecture.zh-CN.md#多-brain多实例)与[多 source 联邦](docs/architecture.zh-CN.md#多-source-联邦)。
+
 ## 安全设计
 
 cockpit 对你的 brain 刻意保守:

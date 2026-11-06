@@ -90,7 +90,9 @@ For a long-running host use the systemd unit template at [`server/deploy/cockpit
 
 ## Configuration
 
-Ten environment variables, all annotated in [`.env.example`](.env.example); the full table lives in the [architecture overview](docs/architecture.md#configuration). Two are required (fail-closed): `COCKPIT_TOKEN` and `GBRAIN_MCP_TOKEN`.
+Single brain: ten environment variables, all annotated in [`.env.example`](.env.example); the full table lives in the [architecture overview](docs/architecture.md#configuration). Two are required (fail-closed): `COCKPIT_TOKEN` and `GBRAIN_MCP_TOKEN`.
+
+Multiple brains: point `COCKPIT_PROFILES_FILE` at a profiles JSON (one entry per gbrain deployment — MCP endpoint + credential, optional read-only DSN, optional CLI command name for wrapper brains like `gbrain-bip`). The top bar grows a switcher; the legacy variables keep working when the file is unset. See [Multi-brain profiles](docs/architecture.md#multi-brain-profiles) and [Source federation](docs/architecture.md#source-federation).
 
 ## Safety design
 

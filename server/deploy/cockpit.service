@@ -1,7 +1,9 @@
 [Unit]
 Description=gbrain-cockpit — adjudication inbox for gbrain (dream outputs)
 Documentation=https://github.com/GeforceLee/gbrain-cockpit
-# Same-host full-featured form: after gbrain serve (MCP endpoint + cli-socket)
+# Same-host full-featured form: after gbrain serve (MCP endpoint + cli-socket).
+# Multi-brain hosts: add every serve unit (gbrain-bip-serve.service …) — Wants
+# is best-effort ordering, not a hard requirement.
 Wants=gbrain-serve.service
 After=network-online.target gbrain-serve.service
 

@@ -54,6 +54,8 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 
 - **Bilingual zh-CN / English**, from the first release: every panel, action, empty state and error carries a one-line self-description; the language switch persists per browser
 - **Token gate**: one `COCKPIT_TOKEN`, stored client-side only, sent as a header only
+- **Brain switcher** (multi-profile hosts): the top bar swaps which gbrain deployment every call targets — panels remount on switch, so one brain's queues never render as another's; single-profile hosts see no switcher
+- **Source axis** (federated brains): pages, search hits, graph nodes and takes carry their source; Pages/Search filter by it server-side (narrow-only — the grant stays the enforcement point); the graph can color nodes by source with cross-source relations in dashed ink; the Inbox groups takes by source
 - Keyboard affordances: `⌘K` / `/` search · `⌘⌫` one-key drop · `⌘↵` copy the terminal command
 - Untrusted-content discipline: imported brain content only ever enters the DOM through the one marked → DOMPurify pipeline (PageBody); graph labels draw on canvas, everything else stays plain text
 

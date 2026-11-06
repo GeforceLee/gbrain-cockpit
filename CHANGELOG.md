@@ -8,6 +8,20 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+### Added
+- Multi-brain profiles: `COCKPIT_PROFILES_FILE` (JSON) configures several gbrain deployments — MCP endpoint + credential (static bearer **or** OAuth client-credentials handoff with driver-side renewal), optional read-only DSN, optional CLI command name for wrapper brains. Top-bar switcher, per-request `x-brain-profile` routing, per-profile health/audit; legacy single-instance env keeps working unchanged.
+- Source axis (federated brains): page identity is `(source_id, slug)` everywhere — Pages/Search filter by source server-side (narrow-only), same-slug twins are visible and clickable (「same slug in other sources」), the graph colors nodes by source with dashed-ink cross-source relations, the Inbox groups takes by source, `GET /api/sources` lists grant-scoped sources.
+- Read-grant profiles degrade visibly: the editor and one-key fact confirm disable with a note when the token lacks `write` / `memory_confirm`.
+
+### Changed
+- Owner copy-commands render the profile's CLI command name (wrapper brains like `gbrain-bip`); upstream's literal `gbrain …` text is gated out on wrapper brains (wrong-brain paste guard).
+- Graph fingerprints gain an `s` schema marker when `pages.source_id` is present — frozen Nebula layouts invalidate exactly once across this upgrade.
+- CLI status probes are stale-while-revalidate (cold-start CLIs no longer block inbox refresh); wrapper stderr banners no longer mask real CLI errors.
+
+### Fixed
+- Two brains with identical graph fingerprints can no longer share a frozen Nebula layout (layouts are namespaced per profile and guarded by a node-key hash).
+- Pages list no longer deduplicates same-slug pages by slug (cross-source twins both list); the pending-proposal overlay survives the key-based node identity.
+
 ## [0.1.1] - 2026-11-05
 
 The adjudication-desk release: pages open where you are, panels keep their

@@ -84,6 +84,7 @@ Environment variables (see [`.env.example`](../.env.example) for the annotated v
 | `COCKPIT_TOKEN` | **yes** | browser access token (fail-closed) |
 | `COCKPIT_ALLOWED_HOSTS` | no | extra allowed Host values behind a proxy/tunnel |
 | `COCKPIT_DIST_DIR` | no | static web root override (compiled-binary deployments) |
+| `COCKPIT_PROFILES_FILE` | no | multi-brain profiles JSON (see [Multi-brain profiles](#multi-brain-profiles)); unset = single-instance via the `GBRAIN_*` vars below |
 | `GBRAIN_MCP_URL` | no (default `http://127.0.0.1:3131/mcp`) | gbrain serve MCP endpoint |
 | `GBRAIN_MCP_TOKEN` | **yes** | token minted via `gbrain auth create` (`read,write,memory_confirm` scopes) |
 | `GBRAIN_TAKES_HOLDERS` | no | full holder list used at mint time (startup self-check; takes visibility is fail-closed to `world` by default) |
@@ -109,6 +110,100 @@ cockpit is verified against gbrain 0.60.x. The coupling strategy:
 1. depend only on (a) documented MCP tool names/parameters, (b) the whitelisted CLI subcommands with `--json` output, (c) the two read-only tables — never parse human-readable CLI output, never touch internals
 2. MCP tool calls that fail or change shape degrade visibly (queues report "unavailable", the graph reports "down") instead of crashing
 3. the read-only bypass presence-checks its column expectations against `information_schema` at startup and disables itself on drift
+
+## Multi-brain profiles
+
+A brain is a deployment: one `gbrain serve` + one database. Thin clients cannot
+select a brain over one connection (upstream rejects `--brain` remotely), so
+"multi-brain" in cockpit means **switching deployments**, never merging them —
+each profile is one brain's three channels (MCP endpoint, CLI command, optional
+read-only DSN), and every `/api/*` call carries the selected profile via the
+`x-brain-profile` header (absent = the default profile; unknown ids are 400s,
+never a silent fallback to the wrong brain).
+
+Configuration is a JSON file pointed at by `COCKPIT_PROFILES_FILE`:
+
+```json
+[
+  {
+    "id": "atlas",
+    "name": "atlas-brain",
+    "mcpUrl": "http://127.0.0.1:3131/mcp",
+    "mcpToken": "…",
+    "pgReadonlyDsn": "postgresql://cockpit_ro:…@host/gbrain",
+    "cliBin": "gbrain",
+    "takesHolders": ["world", "analyst"]
+  },
+  {
+    "id": "bip",
+    "name": "bip-brain",
+    "mcpUrl": "http://127.0.0.1:3132/mcp",
+    "mcpCredentials": "/etc/gbrain-cockpit/bip-credentials.json",
+    "cliBin": "gbrain-bip"
+  }
+]
+```
+
+- One credential per profile, either `mcpToken` (a static bearer from
+  `gbrain auth create`) or `mcpCredentials` (an OAuth client-credentials
+  handoff from `gbrain mcp grant --credentials-out` — the driver renews the
+  access token itself; the secret never leaves the process). The file is a
+  secrets artifact: `0600`, outside the repo (`brains.json` is gitignored).
+- `cliBin` is a bare command name (resolved via PATH — wrapper brains like
+  `gbrain-bip` are the endorsed shape for isolated `GBRAIN_HOME`s) or an
+  absolute path. It names argv[0] of CLI execs **and** the prefix of every
+  owner copy-command: on a wrapper brain, upstream's literal `gbrain …`
+  command text would run against the default brain, so cockpit always
+  renders its own validated template.
+- Fail-closed: unreadable/invalid file, duplicate or malformed ids, a
+  missing per-profile credential — all fatal at startup. A profile whose
+  explicit `cliBin` cannot be resolved degrades **that profile's** CLI
+  channel to copy-command; the other brains keep serving.
+- Unset `COCKPIT_PROFILES_FILE` falls back to the legacy single-instance
+  `GBRAIN_*` variables wrapped as one `default` profile — a 0.1
+  configuration upgrades with zero changes. When both are set, the file wins
+  and the ignored legacy variables are named in the startup log.
+- The top bar shows a switcher only when more than one profile exists.
+  Switching remounts the panels: one brain's data, caches and audit trail
+  never render as another's. `/healthz` (the unauthenticated uptime view)
+  always reflects the default profile.
+- **Trust boundary**: one `COCKPIT_TOKEN` commands every configured brain
+  (V1 single-token decision; per-profile browser tokens are future work),
+  and `GET /api/profiles` enumerates ids/names inside that boundary —
+  it carries no secrets.
+- A read-grant profile (no `write` / `memory_confirm` scopes) degrades the
+  editor and the one-key fact confirm with a visible note; the host-side CLI
+  adjudication channel is a different credential and stays active — the UI
+  says so explicitly.
+
+## Source federation
+
+Within one brain, a source is the server-enforced write boundary: a grant
+pins one write source plus a `federated_read` list, and page identity is
+`(source_id, slug)` — a slug is unique per source only, and an unscoped
+`get_page` resolves same-slug collisions **silently** (verified 0.60.558).
+cockpit's rules:
+
+- Every read surface carries the source: list rows, search hits, graph nodes
+  and takes show their source; the Pages/Search source filters pass
+  `source_id` to gbrain as a pure **narrowing** parameter — the grant stays
+  the enforcement point, and `permission_denied` from an out-of-grant pick
+  is relayed as an upstream error, never cockpit's own verdict. The filter's
+  option list (`sources_list`) is grant-scoped with no "withheld" marker,
+  and its tooltip says so.
+- Disambiguation is cockpit's job: opening a bare slug shows「same slug in
+  other sources」with a clickable jump when twins exist; every open path
+  that knows the source (rows, hits, graph nodes) pins it.
+- The graph's read-only SELECT includes `pages.source_id` when present
+  (presence-checked; older schemas degrade to slug keys). Node identity
+  becomes `source_id/slug`, same-slug twins render as two nodes, and
+  cross-source relations — an upstream ranking signal — get a distinct
+  dashed-ink style. The `s` schema marker in the fingerprint invalidates
+  frozen layouts exactly once across the upgrade.
+- Writes never target a source directly (`put_page` has no source param —
+  the grant's write source decides); the editor shows the page's source and
+  warns when the slug exists in several. Version history follows the bare
+  -slug resolution upstream, so twins carry a note instead.
 
 ## Roadmap (not in 0.1)
 
