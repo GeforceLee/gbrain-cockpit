@@ -70,7 +70,20 @@ export const GRAPH = {
   red: PALETTE.stop,
   /** community palette — assigned by visible-member count, largest first */
   commColors: ["#D98A4A", "#5FA973", "#6E9BD1", "#A583C9", "#D97C8A", "#8A9B5A", "#B8775A"] as readonly string[],
-  /** communities past the palette + ungrouped pages: quiet gray */
+  /**
+   * Source palette (按源着色 mode) — same pastel register as commColors;
+   * the two modes live behind a toggle and never show at once. Sources are
+   * CATEGORICAL (not quantitative): a 100/17 split SHOULD read as two
+   * colored worlds. Sources past the palette collapse to ghostColor under
+   * one "其他来源" legend aggregate (the page-TYPE collapse lesson,
+   * 2026-11-05, applied to the source axis).
+   */
+  sourceColors: ["#5F8FB0", "#C98B45", "#7D9C5C", "#A0709E", "#C9697C", "#6E8FA5"] as readonly string[],
+  /** cross-source relations (a ranking signal upstream): dashed ink, distinct
+   *  from both the amber pending dash and the typed route colors */
+  crossSource: "#4A4F44",
+  crossSourceDash: [2, 4] as readonly number[],
+  /** communities/sources past the palette + ungrouped pages: quiet gray */
   ghostColor: "#C4C9BF",
   /** region washes: communities with at least this many members */
   washMin: 4,

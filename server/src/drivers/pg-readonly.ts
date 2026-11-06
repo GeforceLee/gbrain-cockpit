@@ -1,4 +1,4 @@
-import type { GraphEdge, GraphNode } from "@gbrain-cockpit/shared";
+import { buildGraphKey, type GraphEdge, type GraphNode } from "@gbrain-cockpit/shared";
 
 // Read-only graph bypass (ARCHITECTURE §3.3, channel ③). The whole SQL
 // surface of this driver is the four FIXED statements below — identifiers are
@@ -36,8 +36,14 @@ const SQL_COLUMNS =
   "SELECT table_name, column_name FROM information_schema.columns " +
   "WHERE table_schema = 'public' AND table_name IN ('pages', 'links')";
 
-/** pages columns we consume; presence-checked against information_schema */
-const PAGES_WANT = ["id", "slug", "title", "type", "updated_at"] as const;
+/**
+ * Pages columns we consume; presence-checked against information_schema.
+ * `source_id` (gbrain 0.60.558: TEXT NOT NULL DEFAULT 'default', with
+ * UNIQUE(source_id, slug)) upgrades node identity from bare slug to
+ * `source_id/slug` — its absence (older brains) degrades to slug keys,
+ * where upstream's global slug uniqueness then holds.
+ */
+const PAGES_WANT = ["id", "slug", "title", "type", "updated_at", "source_id"] as const;
 /** candidate endpoint column pairs for links, most likely first */
 const LINK_ENDPOINT_PAIRS: readonly (readonly [string, string])[] = [
   // live-probed gbrain 0.60.558 shape (integer FKs into pages.id)
@@ -161,7 +167,12 @@ export class PgReadonlyDriver {
       this.#query(SQL_PROBE_PAGES),
       this.#query(SQL_PROBE_LINKS),
     ]);
-    return `p${String(pages[0]?.n ?? "?")}/${String(pages[0]?.m ?? "?")}/l${String(links[0]?.n ?? "?")}`;
+    // The "s" schema marker (source column present) must appear in BOTH the
+    // probe and the snapshot fingerprint or the two formats never compare
+    // equal and every TTL cycle would full-load. The column map is cached
+    // from the first full load; before that there is no cache to compare.
+    const s = this.#columns?.get("pages")?.has("source_id") ? "s" : "";
+    return `p${String(pages[0]?.n ?? "?")}${s}/${String(pages[0]?.m ?? "?")}/l${String(links[0]?.n ?? "?")}`;
   }
 
   async #ensureColumns(): Promise<Map<string, Set<string>>> {
@@ -205,21 +216,35 @@ export class PgReadonlyDriver {
       this.#query(sqlLinks),
     ]);
 
-    // Resolve every endpoint through the id→slug map; a value that already
-    // IS a slug passes through, anything else (dangling ref) drops the edge.
-    const idToSlug = new Map<string, string>();
-    const slugSet = new Set<string>();
+    // Node identity is (source_id, slug) when the source column exists:
+    // keys are `source_id/slug` (buildGraphKey). Endpoints resolve through
+    // the id→key map; a value that already IS a slug passes through ONLY
+    // when that slug is unique across sources — an ambiguous slug endpoint
+    // names no single page, so the edge drops (visible degradation, never a
+    // silent wrong-node link).
+    const hasSource = pagesCols.includes("source_id");
+    const idToKey = new Map<string, string>();
+    const slugCount = new Map<string, number>();
+    const slugToKey = new Map<string, string>();
     for (const row of pagesRows) {
       const slug = String(row.slug ?? "");
       if (!slug) continue;
-      slugSet.add(slug);
+      const sourceId =
+        hasSource && typeof row.source_id === "string" && row.source_id
+          ? row.source_id
+          : undefined;
+      const key = buildGraphKey(sourceId, slug);
+      slugCount.set(slug, (slugCount.get(slug) ?? 0) + 1);
+      slugToKey.set(slug, key);
       const id = row.id;
-      if (id !== undefined && id !== null) idToSlug.set(String(id), slug);
+      if (id !== undefined && id !== null) idToKey.set(String(id), key);
     }
     const resolve = (value: unknown): string | null => {
       const raw = value === undefined || value === null ? "" : String(value);
       if (!raw) return null;
-      return idToSlug.get(raw) ?? (slugSet.has(raw) ? raw : null);
+      if (idToKey.has(raw)) return idToKey.get(raw)!;
+      if (slugCount.get(raw) === 1) return slugToKey.get(raw)!;
+      return null;
     };
 
     const degree = new Map<string, number>();
@@ -239,6 +264,7 @@ export class PgReadonlyDriver {
     }
 
     const nodes: GraphNode[] = [];
+    const emitted = new Set<string>();
     // epoch seconds, matching the probe's extract(epoch …) so both sides of
     // the fingerprint comparison speak the same unit regardless of how the
     // driver serializes timestamptz values
@@ -246,9 +272,19 @@ export class PgReadonlyDriver {
     for (const row of pagesRows) {
       const slug = String(row.slug ?? "");
       if (!slug) continue;
-      // P0 placeholder key: without the source column (Phase 6) the slug IS
-      // the identity this SELECT produces — same uniqueness as 0.1.1.
-      const node: GraphNode = { key: slug, slug, degree: degree.get(slug) ?? 0 };
+      const sourceId =
+        hasSource && typeof row.source_id === "string" && row.source_id
+          ? row.source_id
+          : undefined;
+      const key = buildGraphKey(sourceId, slug);
+      if (emitted.has(key)) continue; // defensive: identity is unique per schema
+      emitted.add(key);
+      const node: GraphNode = {
+        key,
+        slug,
+        degree: degree.get(key) ?? 0,
+        ...(sourceId ? { source_id: sourceId } : {}),
+      };
       if (typeof row.title === "string" && row.title) node.title = row.title;
       if (typeof row.type === "string" && row.type) node.type = row.type;
       const updated = row.updated_at;
@@ -263,10 +299,12 @@ export class PgReadonlyDriver {
       nodes.push(node);
     }
 
+    // The trailing schema marker ("s" = source column present) renames every
+    // node key, so it must invalidate clients' frozen layouts exactly once.
     return {
       nodes,
       edges,
-      fingerprint: `p${nodes.length}/${maxUpdatedEpoch}/l${edges.length}`,
+      fingerprint: `p${nodes.length}${hasSource ? "s" : ""}/${maxUpdatedEpoch}/l${edges.length}`,
     };
   }
 }

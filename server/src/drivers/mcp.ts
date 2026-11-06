@@ -7,6 +7,7 @@ import {
   type PageVersion,
   type PagesFacets,
   type SearchHit,
+  type SourceSummary,
   type TakeItem,
   type WriteReceipt,
   type WriteStatus,
@@ -24,7 +25,15 @@ export type McpErrorKind =
   | "timeout"
   | "http"
   | "protocol"
-  | "network";
+  | "network"
+  /**
+   * gbrain's opError 'permission_denied' / 'insufficient_scope' — the grant
+   * refuses this call (e.g. a source outside federated_read). Distinct from
+   * "auth" (HTTP 401/403) so the web can explain it in user language.
+   */
+  | "denied"
+  /** gbrain's opError 'unknown_source' — the named source no longer exists. */
+  | "unknown-source";
 
 export class McpError extends Error {
   constructor(
@@ -122,10 +131,26 @@ export class McpDriver {
       throw new McpError("protocol", `tools/call ${name} returned no payload`);
     }
     if (payload.isError) {
-      const text = payload.content
-        ?.map((c) => c.text ?? "")
-        .join("\n")
-        .trim();
+      const text =
+        payload.content
+          ?.map((c) => c.text ?? "")
+          .join("\n")
+          .trim() ?? "";
+      // gbrain opErrors arrive as one JSON content block: {error, code,
+      // message, suggestion, …} (agent contract v1, verified 0.60.558).
+      // Classify the two scope-related codes so routes can answer in user
+      // language instead of a bare 502; everything else stays protocol.
+      const envelope = parseErrorEnvelope(text);
+      if (envelope) {
+        const code = envelope.code ?? envelope.error ?? "";
+        const message = envelope.message ?? text;
+        if (code === "permission_denied" || code === "insufficient_scope") {
+          throw new McpError("denied", message);
+        }
+        if (code === "unknown_source") {
+          throw new McpError("unknown-source", message);
+        }
+      }
       throw new McpError("protocol", `tool ${name} errored: ${text || "n/a"}`);
     }
     // Prefer the structured payload; fall back to parsing the first text part.
@@ -185,6 +210,13 @@ export class McpDriver {
      *  row (its updated_at + slug) — the upstream-native way to page deeper */
     updatedAfter?: string;
     updatedAfterSlug?: string;
+    /**
+     * Narrow to one source (list_pages accepts source_id/source_ids on
+     * 0.60.558 — narrow-only against the grant). Attached ONLY when the
+     * caller explicitly picked a source, so unfiltered traffic stays
+     * byte-identical for older gbrain versions.
+     */
+    sourceId?: string;
   }): Promise<PageSummary[]> {
     return this.#cached<PageSummary[]>(30_000, "list_pages", {
       ...(params.type ? { type: params.type } : {}),
@@ -194,6 +226,7 @@ export class McpDriver {
       ...(params.updatedAfterSlug
         ? { updated_after_slug: params.updatedAfterSlug }
         : {}),
+      ...(params.sourceId ? { source_id: params.sourceId } : {}),
     });
   }
 
@@ -201,19 +234,50 @@ export class McpDriver {
     return this.#cached<PagesFacets>(60_000, "schema_stats", {});
   }
 
-  getPage(slug: string): Promise<PageDetail> {
+  /**
+   * Page identity is (source_id, slug): a bare slug with same-slug pages in
+   * two sources is resolved server-side by source_id ASC LIMIT 1 — SILENTLY
+   * (verified 0.60.558). Pass sourceId whenever the caller knows it.
+   */
+  getPage(slug: string, sourceId?: string): Promise<PageDetail> {
     return this.#cached<PageDetail>(10_000, "get_page", {
       slug,
       include_content: true,
+      ...(sourceId ? { source_id: sourceId } : {}),
     });
   }
 
   versions(slug: string): Promise<PageVersion[]> {
+    // NOTE: get_versions' source_id only pairs with known_as_of upstream —
+    // never send it bare (invalid_params). Version history follows the
+    // bare-slug resolution; the drawer flags that when siblings exist.
     return this.#cached<PageVersion[]>(10_000, "get_versions", { slug });
   }
 
-  search(query: string): Promise<SearchHit[]> {
-    return this.#cached<SearchHit[]>(30_000, "search", { query });
+  search(query: string, sourceId?: string): Promise<SearchHit[]> {
+    return this.#cached<SearchHit[]>(30_000, "search", {
+      query,
+      ...(sourceId ? { source_id: sourceId } : {}),
+    });
+  }
+
+  /**
+   * Registered sources with page counts (grant-scoped upstream — the list
+   * carries no "rows withheld" marker, so the UI must not present it as
+   * "every source in this brain").
+   */
+  async sourcesList(): Promise<SourceSummary[]> {
+    const result = await this.#cached<{ sources?: unknown }>(
+      60_000,
+      "sources_list",
+      {},
+    );
+    const raw = result?.sources;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (s): s is SourceSummary =>
+        s !== null && typeof s === "object" && typeof (s as SourceSummary).id === "string",
+    );
   }
 
   takesList(params: { active?: boolean } = {}): Promise<TakeItem[]> {
@@ -499,6 +563,26 @@ export class McpDriver {
         `MCP endpoint returned a non-JSON body (content-type ${contentType || "unknown"})`,
       );
     }
+  }
+}
+
+/** Parse a gbrain agent-contract error envelope from a tool-error text block. */
+function parseErrorEnvelope(
+  text: string,
+): { error?: string; code?: string; message?: string } | null {
+  if (!text.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (typeof parsed.error !== "string" && typeof parsed.code !== "string") {
+      return null;
+    }
+    return {
+      ...(typeof parsed.error === "string" ? { error: parsed.error } : {}),
+      ...(typeof parsed.code === "string" ? { code: parsed.code } : {}),
+      ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
+    };
+  } catch {
+    return null;
   }
 }
 

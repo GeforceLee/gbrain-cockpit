@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   PageSummary,
   PagesFacets,
+  SourcesReport,
   WriteReceipt,
 } from "@gbrain-cockpit/shared";
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { currentProfile } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
-import { type PageBundle } from "../lib/pages";
+import { pageRefQuery, useSlugSiblings, type PageBundle, type PageRef } from "../lib/pages";
 import { PageBody } from "../components/PageBody";
 import { Pager, usePageSize } from "../components/Pager";
 
@@ -38,10 +39,10 @@ interface Cursor {
 }
 
 export function Pages({
-  focusSlug,
+  focusPage,
   onConsumeFocus,
 }: {
-  focusSlug: string | null;
+  focusPage: PageRef | null;
   onConsumeFocus: () => void;
 }) {
   const { t } = useI18n();
@@ -55,7 +56,11 @@ export function Pages({
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = usePageSize("cockpit.pagesize.pages");
   const [listError, setListError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<PageRef | null>(null);
+  // source filter: "" = all. Server-side narrowing (list_pages source_id);
+  // options from /api/sources with an observed-source fallback.
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [sources, setSources] = useState<string[] | null>(null);
   const [bundle, setBundle] = useState<PageBundle | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>({ mode: "idle" });
@@ -66,6 +71,11 @@ export function Pages({
     apiGet<PagesFacets>("/api/pages/facets")
       .then(setFacets)
       .catch(() => setFacets(null));
+    apiGet<SourcesReport>("/api/sources")
+      .then((r) =>
+        setSources(r.status === "ok" && r.items ? r.items.map((x) => x.id) : null),
+      )
+      .catch(() => setSources(null));
   }, []);
 
   const fetchRows = useCallback(
@@ -75,6 +85,7 @@ export function Pages({
       try {
         const query = new URLSearchParams({ limit: String(pageSize) });
         if (typeFilter) query.set("type", typeFilter);
+        if (sourceFilter) query.set("source_id", sourceFilter);
         if (cursor) {
           query.set("updated_after", cursor.after);
           query.set("updated_after_slug", cursor.slug);
@@ -82,9 +93,13 @@ export function Pages({
         const batch = await apiGet<PageSummary[]>(`/api/pages?${query}`);
         setRows((prev) => {
           if (replace) return batch;
-          // keyset ties can overlap one row; dedupe by slug on append
-          const seen = new Set((prev ?? []).map((p) => p.slug));
-          return [...(prev ?? []), ...batch.filter((p) => !seen.has(p.slug))];
+          // keyset ties can overlap one row; dedupe by the page identity
+          // (source_id, slug) on append — slug alone swallows same-slug twins
+          const seen = new Set((prev ?? []).map((p) => `${p.source_id ?? ""}/${p.slug}`));
+          return [
+            ...(prev ?? []),
+            ...batch.filter((p) => !seen.has(`${p.source_id ?? ""}/${p.slug}`)),
+          ];
         });
         const last = batch[batch.length - 1];
         setMoreCursor(
@@ -99,7 +114,7 @@ export function Pages({
         setFetching(false);
       }
     },
-    [typeFilter, pageSize],
+    [typeFilter, sourceFilter, pageSize],
   );
 
   // filter / page-size changes restart from the first page
@@ -120,26 +135,24 @@ export function Pages({
     setPage(Math.max(0, next));
   }
 
-  const openPage = useCallback(async (slug: string) => {
-    setSelected(slug);
+  const openPage = useCallback(async (ref: PageRef) => {
+    setSelected(ref);
     setDetailError(null);
     setBundle(null);
     setEditor({ mode: "idle" });
     try {
-      setBundle(
-        await apiGet<PageBundle>(`/api/page?slug=${encodeURIComponent(slug)}`),
-      );
+      setBundle(await apiGet<PageBundle>(`/api/page?${pageRefQuery(ref)}`));
     } catch (err) {
       setDetailError(err instanceof ApiError ? err.message : String(err));
     }
   }, []);
 
   useEffect(() => {
-    if (focusSlug) {
-      void openPage(focusSlug);
+    if (focusPage) {
+      void openPage(focusPage);
       onConsumeFocus();
     }
-  }, [focusSlug, openPage, onConsumeFocus]);
+  }, [focusPage, openPage, onConsumeFocus]);
 
   // Poll a pending write to final; same request_id, never a new send.
   // A receipt that keeps failing to poll (server unreachable, or the write
@@ -228,7 +241,10 @@ export function Pages({
       if (receipt.status === "committed") {
         // refresh the detail view behind the receipt slot
         const fresh = await apiGet<PageBundle>(
-          `/api/page?slug=${encodeURIComponent(bundle.page.slug)}`,
+          `/api/page?${pageRefQuery({
+            slug: bundle.page.slug,
+            ...(bundle.page.source_id ? { sourceId: bundle.page.source_id } : {}),
+          })}`,
         );
         setBundle(fresh);
       }
@@ -259,6 +275,10 @@ export function Pages({
   }
 
   const inDetail = selected !== null;
+  const slugSiblings = useSlugSiblings(
+    inDetail ? (selected?.slug ?? null) : null,
+    bundle?.page.source_id ?? selected?.sourceId,
+  );
 
   // pager math: the true total comes from facets (per-type when filtered);
   // without facets it grows as keyset chunks accumulate
@@ -309,6 +329,22 @@ export function Pages({
             <span className="muted">
               {t("pages.listCaption")} · {filterTotal ?? rowsCount}
             </span>
+            {((sources ?? []).length > 0 || sourceFilter !== "") && (
+              <select
+                className="source-filter"
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                aria-label={t("pages.filterBySource")}
+                title={t("pages.sourceScope")}
+              >
+                <option value="">{t("pages.allSources")}</option>
+                {(sources ?? []).map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            )}
             {rowsCount > 0 && totalPages > 1 && (
               <Pager
                 page={safePage}
@@ -333,9 +369,23 @@ export function Pages({
           )}
           <ul className="page-list">
             {currentRows.map((p) => (
-              <li key={p.slug}>
-                <button type="button" className="page-row" onClick={() => void openPage(p.slug)}>
+              <li key={`${p.source_id ?? ""}/${p.slug}`}>
+                <button
+                  type="button"
+                  className="page-row"
+                  onClick={() =>
+                    void openPage({
+                      slug: p.slug,
+                      ...(p.source_id ? { sourceId: p.source_id } : {}),
+                    })
+                  }
+                >
                   <span className="page-title">{p.title ?? p.slug}</span>
+                  {p.source_id ? (
+                    <span className="src-chip mono" title={t("pages.source")}>
+                      {p.source_id}
+                    </span>
+                  ) : null}
                   <span className="page-meta mono">
                     {p.type ?? "?"} · {p.slug} · {(p.updated_at ?? "").slice(0, 10)}
                   </span>
@@ -351,7 +401,7 @@ export function Pages({
               <button type="button" className="linkish" onClick={() => setSelected(null)}>
                 ← {t("pages.back")}
               </button>
-              <h2 className="mono small">{selected}</h2>
+              <h2 className="mono small">{selected?.slug}</h2>
             </div>
             {bundle && editor.mode === "idle" && (
               // Read-grant profile (no write scope): a save could only ever
@@ -380,6 +430,9 @@ export function Pages({
             <>
               <p className="page-title-lg">{bundle.page.title ?? bundle.page.slug}</p>
               <dl className="kv">
+                {bundle.page.source_id !== undefined && (
+                  <Row label={t("pages.source")} value={bundle.page.source_id} />
+                )}
                 <Row label={t("pages.type")} value={bundle.page.type ?? "?"} />
                 <Row
                   label={t("pages.updated")}
@@ -394,6 +447,26 @@ export function Pages({
                 />
                 <Row label={t("pages.versions")} value={String(bundle.versions.length)} />
               </dl>
+
+              {slugSiblings.length > 0 && (
+                // same-slug pages exist in other sources: upstream resolved
+                // this bare slug SILENTLY — show the split and offer the jump
+                <div className="sibling-note">
+                  <span>{t("viewer.sameSlug")}</span>
+                  {slugSiblings.map((x) => (
+                    <button
+                      key={x.source_id ?? x.slug}
+                      type="button"
+                      className="linkish mono"
+                      onClick={() =>
+                        void openPage({ slug: bundle.page.slug, sourceId: x.source_id })
+                      }
+                    >
+                      {x.source_id ?? "?"}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {editor.mode === "idle" && (
                 <PageBody
@@ -419,6 +492,9 @@ export function Pages({
                     </button>
                   </div>
                   <p className="hint">{t("pages.editHint")}</p>
+                  {slugSiblings.length > 0 && (
+                    <p className="hint">{t("pages.editSameSlug")}</p>
+                  )}
                 </div>
               )}
 
@@ -433,7 +509,14 @@ export function Pages({
                     ) : null}
                   </p>
                   {editor.receipt.status === "conflict" && (
-                    <button type="button" onClick={() => void openPage(bundle.page.slug)}>
+                    <button type="button" onClick={() =>
+                      void openPage({
+                        slug: bundle.page.slug,
+                        ...(bundle.page.source_id
+                          ? { sourceId: bundle.page.source_id }
+                          : {}),
+                      })
+                    }>
                       {t("receipt.reloadAfterConflict")}
                     </button>
                   )}

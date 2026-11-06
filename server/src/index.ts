@@ -19,6 +19,7 @@ import {
   handlePages,
   handleProfiles,
   handleSearch,
+  handleSources,
   handleTakePropose,
   handleTrustDrop,
   handleWriteRequest,
@@ -158,6 +159,8 @@ const server = Bun.serve({
             return await handlePage(channels, url);
           case "GET /api/search":
             return await handleSearch(channels, url);
+          case "GET /api/sources":
+            return await handleSources(channels);
           case "GET /api/inbox":
             return await handleInbox(channels);
           case "POST /api/inbox/trust/drop":

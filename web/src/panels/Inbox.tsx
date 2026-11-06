@@ -30,7 +30,7 @@ import { copyCommandText } from "../lib/clipboard";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { currentProfile } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
-import { isSlugLike } from "../lib/pages";
+import { isSlugLike, useSlugSiblings, type PageRef } from "../lib/pages";
 import { firstLine } from "../lib/text";
 
 // Inbox — the adjudication desk, in the frozen v5 interaction model:
@@ -63,6 +63,9 @@ interface Entry {
   sub?: string;
   /** TARGET block in the document head (page slug / edge endpoint) */
   target?: string;
+  /** the item's source, when it carries one (takes do; 0.60.558 trust/edge
+   *  items don't — read defensively, absent means "not grouped") */
+  sourceId?: string;
   tags: { variant: TagVariant; text: string }[];
   srcLines: string[];
   item: TrustReviewItem | EdgeProposal | TakeProposal;
@@ -150,7 +153,7 @@ export function Inbox({
 }: {
   /** keep-alive: true while this panel is the visible one */
   active?: boolean;
-  onOpenPage?: (slug: string) => void;
+  onOpenPage?: (ref: PageRef) => void;
   /** sidebar count chip — reported after every fetch, no extra request */
   onTotal?: (total: number) => void;
 }) {
@@ -168,7 +171,8 @@ export function Inbox({
   const [batchArmed, setBatchArmed] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
   // page reference opened in the shared in-place drawer (never a panel jump)
-  const [peekSlug, setPeekSlug] = useState<string | null>(null);
+  const [peek, setPeek] = useState<PageRef | null>(null);
+  const slugSiblings = useSlugSiblings(peek?.slug ?? null, peek?.sourceId);
   // keep-alive staleness: when the panel comes back into view older than
   // this, one silent refresh re-syncs the queue (dream runs and verdicts
   // from other surfaces change it while the desk is hidden)
@@ -279,6 +283,9 @@ export function Inbox({
         stringField(item, "page") ??
         stringField(item, "page_slug") ??
         stringField(item, "path"),
+      ...(stringField(item, "source_id")
+        ? { sourceId: stringField(item, "source_id") }
+        : {}),
       tags: [
         { variant: "soft", text: t(`inbox.queue.${queueId}` as MessageKey) },
         ...(stringField(item, "kind")
@@ -305,6 +312,7 @@ export function Inbox({
       title: `${from} → ${to}`,
       sub: rel,
       target: to,
+      ...(stringField(p, "source_id") ? { sourceId: stringField(p, "source_id") } : {}),
       tags: [
         { variant: "soft", text: t("inbox.queue.edges") },
         ...(rel ? [{ variant: "plain" as TagVariant, text: rel }] : []),
@@ -323,6 +331,7 @@ export function Inbox({
       title: take.claim_text,
       sub: take.kind,
       target: take.page_slug,
+      ...(take.source_id ? { sourceId: take.source_id } : {}),
       tags: [
         { variant: "soft", text: t("inbox.queue.takes") },
         ...(take.kind ? [{ variant: "plain" as TagVariant, text: take.kind }] : []),
@@ -341,8 +350,54 @@ export function Inbox({
     ...takes.map(takeEntry),
     ...others.map((i) => trustEntry("others", i)),
   ];
+  /** inbox source filter: null = all sources (observed ids are the options —
+   *  the inbox groups by what its items actually carry, not the page axis) */
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
+  const observedSources = new Set(
+    allEntries.flatMap((e) => (e.sourceId ? [e.sourceId] : [])),
+  );
+  const entriesWithSource = allEntries.filter(
+    (e) => sourceFilter === null || e.sourceId === sourceFilter,
+  );
   const visibleEntries =
-    tab === "all" ? allEntries : allEntries.filter((e) => e.queueId === tab);
+    tab === "all"
+      ? entriesWithSource
+      : entriesWithSource.filter((e) => e.queueId === tab);
+
+  /**
+   * Takes group by source (upstream: proposals are per-source rows; dream
+   * runs per source). A head line renders before each source's first take
+   * on the current page — when several sources share the page.
+   */
+  function groupHeads(pageEntries: Entry[]): ReactNode[] {
+    const out: ReactNode[] = [];
+    let lastSource: string | null | undefined;
+    let multiOnPage = false;
+    const seen = new Set<string>();
+    for (const e of pageEntries) {
+      if (e.queueId !== "takes") continue;
+      if (e.sourceId) {
+        seen.add(e.sourceId);
+        if (seen.size > 1) multiOnPage = true;
+      }
+    }
+    if (!multiOnPage) return out;
+    for (const e of pageEntries) {
+      if (e.queueId !== "takes" || !e.sourceId) continue;
+      if (e.sourceId === lastSource) continue;
+      lastSource = e.sourceId;
+      const n = pageEntries.filter(
+        (x) => x.queueId === "takes" && x.sourceId === e.sourceId,
+      ).length;
+      out.push(
+        <p key={`src-head-${e.sourceId}`} className="src-group-head">
+          <span className="src-chip mono">{e.sourceId}</span>
+          <span>{t("inbox.group.source").replace("{name}", e.sourceId).replace("{n}", String(n))}</span>
+        </p>,
+      );
+    }
+    return out;
+  }
 
   const totalPages = Math.max(1, Math.ceil(visibleEntries.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
@@ -435,9 +490,11 @@ export function Inbox({
           on screen the instant the drawer opens; as the LAST child it would
           render ~2000px below the fold and "nothing would happen" */}
       <PageDrawer
-        slug={peekSlug}
-        onClose={() => setPeekSlug(null)}
+        page={peek}
+        onClose={() => setPeek(null)}
         onEdit={onOpenPage}
+        siblings={slugSiblings.map((x) => ({ slug: peek!.slug, sourceId: x.source_id }))}
+        onOpenSibling={(ref) => setPeek(ref)}
       />
       <nav className="tabs" aria-label={t("panel.inbox.title")}>
         {tabs.map((tb) => (
@@ -494,6 +551,22 @@ export function Inbox({
               <span className="muted">
                 {t("inbox.listCaption")} · {visibleEntries.length}
               </span>
+              {observedSources.size > 0 ? (
+                <select
+                  className="source-filter"
+                  value={sourceFilter ?? ""}
+                  onChange={(e) => setSourceFilter(e.target.value || null)}
+                  aria-label={t("inbox.filter.source")}
+                  title={t("inbox.filter.source")}
+                >
+                  <option value="">{t("pages.allSources")}</option>
+                  {[...observedSources].map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
               {tab === "takes" && cliAvailable && pagedEntries.length > 0 && (
                 <button
                   type="button"
@@ -544,6 +617,10 @@ export function Inbox({
             {visibleEntries.length === 0 && downNotices(tab).length === 0 && (
               <p className="muted empty-note">{t("inbox.empty")}</p>
             )}
+            {(tab === "takes" || tab === "all") &&
+              observedSources.size > 1 &&
+              sourceFilter === null &&
+              groupHeads(pagedEntries).map((head) => head)}
             {pagedEntries.map((entry) => (
               <button
                 key={entry.key}
@@ -590,7 +667,7 @@ export function Inbox({
               <>
                 <div className="doc-layout">
                   <div className={`document ${stamp ? "shake" : ""}`}>
-                    <DocumentCard entry={detail} onPeek={setPeekSlug} />
+                    <DocumentCard entry={detail} onPeek={setPeek} />
                     {stamp ? (
                       <div className={`big-stamp ${stamp.variant}`}>
                         <span className="zh">{stamp.zh}</span>
@@ -633,7 +710,7 @@ function DocumentCard({
 }: {
   entry: Entry;
   /** open a page reference in the shared in-place drawer (never a jump) */
-  onPeek?: (slug: string) => void;
+  onPeek?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
   const item = entry.item;
@@ -652,7 +729,14 @@ function DocumentCard({
               <button
                 type="button"
                 className="linkish to-link"
-                onClick={() => onPeek(entry.target!)}
+                onClick={() =>
+                  onPeek({
+                    slug: entry.target!,
+                    ...(stringField(entry.item, "source_id")
+                      ? { sourceId: stringField(entry.item, "source_id") }
+                      : {}),
+                  })
+                }
               >
                 {entry.target}
               </button>
@@ -682,7 +766,12 @@ function DocumentCard({
               <button
                 type="button"
                 className="linkish to-link"
-                onClick={() => onPeek(take.page_slug)}
+                onClick={() =>
+                  onPeek({
+                    slug: take.page_slug,
+                    ...(take.source_id ? { sourceId: take.source_id } : {}),
+                  })
+                }
               >
                 {take.page_slug}
               </button>
@@ -738,7 +827,14 @@ function DocumentCard({
             <button
               type="button"
               className="linkish to-link"
-              onClick={() => onPeek(entry.target!)}
+              onClick={() =>
+                onPeek({
+                  slug: entry.target!,
+                  ...(stringField(entry.item, "source_id")
+                    ? { sourceId: stringField(entry.item, "source_id") }
+                    : {}),
+                })
+              }
             >
               {entry.target}
             </button>

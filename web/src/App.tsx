@@ -3,6 +3,7 @@ import { COCKPIT_VERSION } from "@gbrain-cockpit/shared";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TokenGate } from "./components/TokenGate";
 import { getToken } from "./lib/api";
+import type { PageRef } from "./lib/pages";
 import { useI18n, type MessageKey } from "./lib/i18n";
 import {
   bootstrapProfiles,
@@ -38,7 +39,7 @@ function App() {
   // (hidden via CSS), so tab / pagination / selection / scroll / graph
   // camera survive every switch — leaving a panel never resets it
   const [visited, setVisited] = useState<readonly PanelId[]>([DEFAULT_PANEL]);
-  const [focusSlug, setFocusSlug] = useState<string | null>(null);
+  const [focusPage, setFocusPage] = useState<PageRef | null>(null);
   const [searchSeed, setSearchSeed] = useState<string | null>(null);
   const [tokenReady, setTokenReady] = useState(() => !!getToken());
   // Pending-item count for the sidebar chip — reported by the Inbox panel
@@ -63,7 +64,7 @@ function App() {
   useEffect(() => {
     if (!brain.loaded) return;
     setInboxTotal(null);
-    setFocusSlug(null);
+    setFocusPage(null);
     setSearchSeed(null);
     clearAudit();
   }, [profileId, brain.loaded]);
@@ -106,13 +107,13 @@ function App() {
   }, []);
 
   const openPage = useCallback(
-    (slug: string) => {
-      setFocusSlug(slug);
+    (ref: PageRef) => {
+      setFocusPage(ref);
       show("pages");
     },
     [show],
   );
-  const consumeFocus = useCallback(() => setFocusSlug(null), []);
+  const consumeFocus = useCallback(() => setFocusPage(null), []);
   const consumeSeed = useCallback(() => setSearchSeed(null), []);
 
   function submitSearch() {
@@ -333,7 +334,7 @@ function App() {
                       <Nebula active={panelId === "nebula"} onOpenPage={openPage} />
                     ) : null}
                     {id === "pages" && visited.includes(id) ? (
-                      <Pages focusSlug={focusSlug} onConsumeFocus={consumeFocus} />
+                      <Pages focusPage={focusPage} onConsumeFocus={consumeFocus} />
                     ) : null}
                     {id === "search" && visited.includes(id) ? (
                       <Search

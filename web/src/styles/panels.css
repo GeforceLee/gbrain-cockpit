@@ -1372,3 +1372,43 @@ button.batch-arm {
   border: 2px dashed var(--warn, #b8860b);
   padding: 4px 8px;
 }
+
+/* Source axis chips & filters (P1). */
+.src-chip {
+  font-size: 10px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  padding: 1px 6px;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+.source-filter {
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.sibling-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  border: 2px dashed var(--warn, #b8860b);
+  padding: 6px 10px;
+  margin: 8px 0;
+}
+.src-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  opacity: 0.85;
+  margin: 14px 0 6px;
+  border-top: 1.5px solid var(--ink);
+  padding-top: 10px;
+}

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useI18n } from "../lib/i18n";
-import { usePageBundle } from "../lib/pages";
+import { usePageBundle, type PageRef } from "../lib/pages";
 import { firstLine } from "../lib/text";
 import { PageBody } from "./PageBody";
 
@@ -12,30 +12,43 @@ import { PageBody } from "./PageBody";
 // write channel lives in the Pages editor, never here.
 
 export function PageDrawer({
-  slug,
+  page,
   onClose,
   onEdit,
+  /** other same-slug pages found in other sources (bare-slug disambiguation) */
+  siblings,
+  onOpenSibling,
 }: {
-  slug: string | null;
+  page: PageRef | null;
   onClose: () => void;
   /** "edit in Pages →" — the panel's own openPage (a deliberate jump) */
-  onEdit?: (slug: string) => void;
+  onEdit?: (ref: PageRef) => void;
+  /**
+   * Sibling pages sharing this slug in OTHER sources, when known. Upstream
+   * resolves a bare slug SILENTLY (source_id ASC LIMIT 1) — cockpit converts
+   * that silent pick into a visible, clickable disambiguation.
+   */
+  siblings?: PageRef[];
+  onOpenSibling?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
-  const { bundle, error, loading } = usePageBundle(slug);
+  const { bundle, error, loading } = usePageBundle(page);
 
   // Esc closes — same key contract as the Nebula drawer
   useEffect(() => {
-    if (!slug) return;
+    if (!page) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [slug, onClose]);
+  }, [page, onClose]);
 
-  if (!slug) return null;
-  const page = bundle?.page;
+  if (!page) return null;
+  const slug = page.slug;
+  const shown = bundle?.page;
+  // the page the server actually resolved (its source wins over the ref's)
+  const sourceId = shown?.source_id ?? page.sourceId;
 
   return (
     // sticky zero-size anchor: panels scroll the whole stage (unlike
@@ -52,8 +65,8 @@ export function PageDrawer({
           ✕
         </button>
         <p className="cap">{t("viewer.caption")}</p>
-        <h5>{String(page?.title ?? slug)}</h5>
-        {(page?.title ?? "") !== slug && (
+        <h5>{String(shown?.title ?? slug)}</h5>
+        {(shown?.title ?? "") !== slug && (
           <div className="kv">
             <span>{t("viewer.slug")}</span>
             <span className="mono">{slug}</span>
@@ -61,26 +74,32 @@ export function PageDrawer({
         )}
         {bundle && (
           <>
+            {sourceId !== undefined && (
+              <div className="kv">
+                <span>{t("viewer.source")}</span>
+                <span className="mono">{sourceId}</span>
+              </div>
+            )}
             <div className="kv">
               <span>{t("viewer.type")}</span>
-              <span className="mono">{String(page?.type ?? "?")}</span>
+              <span className="mono">{String(shown?.type ?? "?")}</span>
             </div>
-            {typeof page?.updated_at === "string" && page.updated_at && (
+            {typeof shown?.updated_at === "string" && shown.updated_at && (
               <div className="kv">
                 <span>{t("pages.updated")}</span>
-                <span className="mono">{page.updated_at.slice(0, 10)}</span>
+                <span className="mono">{shown.updated_at.slice(0, 10)}</span>
               </div>
             )}
-            {page?.trust_tier !== undefined && (
+            {shown?.trust_tier !== undefined && (
               <div className="kv">
                 <span>{t("pages.trust")}</span>
-                <span className="mono">{String(page.trust_tier)}</span>
+                <span className="mono">{String(shown.trust_tier)}</span>
               </div>
             )}
-            {page?.revision !== undefined && (
+            {shown?.revision !== undefined && (
               <div className="kv">
                 <span>{t("pages.revision")}</span>
-                <span className="mono">{String(page.revision)}</span>
+                <span className="mono">{String(shown.revision)}</span>
               </div>
             )}
             <div className="kv">
@@ -88,6 +107,23 @@ export function PageDrawer({
               <span className="mono">{String(bundle.versions.length)}</span>
             </div>
           </>
+        )}
+        {siblings && siblings.length > 0 && onOpenSibling && (
+          // the same-slug siblings: a bare slug is one of several pages —
+          // say so and offer the jump instead of resolving silently
+          <div className="sibling-note">
+            <span>{t("viewer.sameSlug")}</span>
+            {siblings.map((s) => (
+              <button
+                key={s.sourceId ?? s.slug}
+                type="button"
+                className="linkish mono"
+                onClick={() => onOpenSibling(s)}
+              >
+                {s.sourceId ?? "?"}
+              </button>
+            ))}
+          </div>
         )}
         <div className="drawer-body">
           <p className="cap">{t("viewer.body")}</p>
@@ -99,8 +135,8 @@ export function PageDrawer({
           )}
           {/* page bodies are markdown + persistent untrusted input: they
               render through the marked → DOMPurify pipeline only (PageBody) */}
-          {page && !loading && (
-            <PageBody className="drawer-content" content={page.content ?? ""} />
+          {shown && !loading && (
+            <PageBody className="drawer-content" content={shown.content ?? ""} />
           )}
         </div>
         {onEdit && (
@@ -108,7 +144,7 @@ export function PageDrawer({
             <button
               type="button"
               className="linkish"
-              onClick={() => onEdit(slug)}
+              onClick={() => onEdit(page)}
             >
               {t("viewer.edit")}
             </button>

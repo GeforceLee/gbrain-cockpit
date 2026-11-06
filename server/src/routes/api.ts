@@ -10,17 +10,18 @@ import type {
   PagesFacets,
   ProfilesResponse,
   SearchHit,
+  SourcesReport,
   TakeProposal,
   TrustReviewEnvelope,
   TrustReviewItem,
   WriteReceipt,
 } from "@gbrain-cockpit/shared";
+import { isValidSourceId, TRUST_REF_RE } from "@gbrain-cockpit/shared";
 import { auditWrite } from "../audit";
 import type { BrainRegistry, BrainChannels } from "../brains";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
 import { McpError } from "../drivers/mcp";
-import { TRUST_REF_RE } from "@gbrain-cockpit/shared";
 
 // API surface (core-loop milestone). Every handler receives an already
 // authenticated request routed to ONE brain's channels (the x-brain-profile
@@ -76,6 +77,13 @@ export function mapError(err: unknown): Response {
     switch (err.kind) {
       case "auth":
         return envelope(502, "E_UPSTREAM_AUTH", err.message);
+      case "denied":
+        // gbrain's grant refused the call (source outside federated_read) —
+        // upstream's denial relayed verbatim, never cockpit's own verdict.
+        return envelope(502, "E_UPSTREAM_AUTH", err.message);
+      case "unknown-source":
+        // the named source is gone (removed/archived) — the caller's problem
+        return envelope(400, "E_BAD_REQUEST", err.message);
       case "rate-limit":
         return envelope(429, "E_RATE_LIMITED", err.message, {
           ...(err.retryAfterMs
@@ -151,12 +159,14 @@ export async function handlePages(
   if (updatedAfterSlug !== undefined) {
     requirePattern(updatedAfterSlug, "updated_after_slug", SLUG_RE);
   }
+  const sourceId = requireSourceId(url);
   const pages = await ctx.mcp.listPages({
     ...(type ? { type } : {}),
     limit,
     sort: "updated_desc",
     ...(updatedAfter ? { updatedAfter } : {}),
     ...(updatedAfterSlug ? { updatedAfterSlug } : {}),
+    ...(sourceId ? { sourceId } : {}),
   });
   return Response.json(pages satisfies PageSummary[]);
 }
@@ -182,8 +192,12 @@ export async function handlePage(
   url: URL,
 ): Promise<Response> {
   const slug = requirePattern(param(url, "slug"), "slug", SLUG_RE);
+  // (source_id, slug) is the page identity: with same-slug pages in two
+  // sources, a bare slug is resolved SILENTLY server-side — pass the source
+  // whenever the caller has it (list/search/graph entries all carry it).
+  const sourceId = requireSourceId(url);
   const [page, versions] = await Promise.all([
-    ctx.mcp.getPage(slug),
+    ctx.mcp.getPage(slug, sourceId),
     ctx.mcp.versions(slug).catch(() => [] as PageVersion[]),
   ]);
   return Response.json({ page: page satisfies PageDetail, versions });
@@ -199,8 +213,39 @@ export async function handleSearch(
   }
   // strip control characters; the rest is passed verbatim as a search term
   const q = raw.replace(/[\x00-\x1f\x7f]/g, "");
-  const hits = await ctx.mcp.search(q);
+  const sourceId = requireSourceId(url);
+  const hits = await ctx.mcp.search(q, sourceId);
   return Response.json(hits satisfies SearchHit[]);
+}
+
+/**
+ * GET /api/sources — the source axis' option list. In-band degraded like
+ * every other channel report: an older gbrain without sources_list (or a
+ * dead MCP) yields a non-ok status and the UI falls back to observed ids.
+ */
+export async function handleSources(ctx: ApiContext): Promise<Response> {
+  try {
+    const items = await ctx.mcp.sourcesList();
+    const report: SourcesReport = { status: "ok", items };
+    return Response.json(report);
+  } catch (err) {
+    const report: SourcesReport = {
+      status:
+        err instanceof McpError && err.kind === "protocol" ? "degraded" : "down",
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+/** source_id param: valid charset, never the reserved '__all__' wildcard. */
+function requireSourceId(url: URL): string | undefined {
+  const raw = param(url, "source_id");
+  if (raw === undefined) return undefined;
+  if (!isValidSourceId(raw)) {
+    throw new BadRequestError("invalid source_id");
+  }
+  return raw;
 }
 
 // --- inbox ------------------------------------------------------------------

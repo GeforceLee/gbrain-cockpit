@@ -209,3 +209,96 @@ describe("PgReadonlyDriver", () => {
     expect(log).toEqual([SQL_PROBE_PAGES]);
   });
 });
+
+// --- multi-source identity (Phase 6): (source_id, slug) keys -----------------
+
+const COLUMNS_WITH_SOURCE: Script = {
+  ...COLUMNS,
+  rows: [...COLUMNS.rows, { table_name: "pages", column_name: "source_id" }],
+};
+const SQL_PAGES_SRC =
+  "SELECT id, slug, title, type, updated_at, source_id FROM pages";
+
+describe("PgReadonlyDriver multi-source identity", () => {
+  test("same-slug pages in two sources become TWO nodes; edges key on source/slug", async () => {
+    const pages = [
+      { id: "u1", slug: "kb/migration0007", source_id: "main", updated_at: new Date("2026-11-04T08:00:00Z") },
+      { id: "u2", slug: "kb/migration0007", source_id: "archive", updated_at: new Date("2026-11-05T08:00:00Z") },
+      { id: "u3", slug: "yon-bip", source_id: "main", updated_at: new Date("2026-11-05T09:00:00Z") },
+    ];
+    const links = [
+      { from: "u1", to: "u3", link_type: "relates" }, // same-source edge
+      { from: "u2", to: "u3", link_type: "relates" }, // cross-source edge
+    ];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgres://x",
+      query: makeQuery([
+        COLUMNS_WITH_SOURCE,
+        { text: SQL_PAGES_SRC, rows: pages },
+        { text: SQL_LINKS, rows: links },
+      ]),
+    });
+    const { snapshot } = await driver.getGraph();
+    expect(snapshot.nodes.map((n) => n.key).sort()).toEqual([
+      "archive/kb/migration0007",
+      "main/kb/migration0007",
+      "main/yon-bip",
+    ]);
+    const same = snapshot.nodes.find((n) => n.key === "main/kb/migration0007");
+    expect(same?.slug).toBe("kb/migration0007"); // slug stays the label
+    expect(same?.source_id).toBe("main");
+    expect(snapshot.edges).toHaveLength(2);
+    expect(snapshot.edges).toContainEqual({
+      source: "archive/kb/migration0007",
+      target: "main/yon-bip",
+      link_type: "relates",
+    });
+    // schema marker present in the fingerprint (one-time layout invalidation)
+    expect(snapshot.fingerprint).toMatch(/^p3s\//);
+  });
+
+  test("an ambiguous slug endpoint drops its edge instead of guessing a node", async () => {
+    const pages = [
+      { id: "u1", slug: "dup", source_id: "main", updated_at: new Date("2026-11-04T08:00:00Z") },
+      { id: "u2", slug: "dup", source_id: "archive", updated_at: new Date("2026-11-04T08:00:00Z") },
+      { id: "u3", slug: "solo", source_id: "main", updated_at: new Date("2026-11-04T08:00:00Z") },
+    ];
+    const links = [
+      { from: "dup", to: "solo" }, // slug endpoint, ambiguous
+      { from: "solo", to: "u1" }, // id endpoint, fine
+    ];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgres://x",
+      query: makeQuery([
+        COLUMNS_WITH_SOURCE,
+        { text: SQL_PAGES_SRC, rows: pages },
+        { text: SQL_LINKS, rows: links },
+      ]),
+    });
+    const { snapshot } = await driver.getGraph();
+    expect(snapshot.edges).toHaveLength(1);
+    expect(snapshot.edges[0]!.source).toBe("main/solo");
+  });
+
+  test("schema without the source column stays on slug keys (degraded mode)", async () => {
+    const pages = [
+      { id: "u1", slug: "alpha", updated_at: new Date("2026-11-04T08:00:00Z") },
+      { id: "u2", slug: "beta", updated_at: new Date("2026-11-04T08:00:00Z") },
+    ];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgres://x",
+      query: makeQuery([
+        COLUMNS,
+        {
+          text: "SELECT id, slug, title, type, updated_at FROM pages",
+          rows: pages,
+        },
+        { text: SQL_LINKS, rows: [] },
+      ]),
+    });
+    const { snapshot } = await driver.getGraph();
+    expect(snapshot.nodes.map((n) => n.key)).toEqual(["alpha", "beta"]);
+    expect(snapshot.nodes[0]!.source_id).toBeUndefined();
+    expect(snapshot.fingerprint).toMatch(/^p2\//); // no "s" marker
+  });
+});

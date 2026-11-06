@@ -321,3 +321,127 @@ describe("McpDriver oauth renewal", () => {
     expect(calls.every((c) => c.url !== "http://unit/token")).toBe(true);
   });
 });
+
+describe("McpDriver opError classification (agent contract v1)", () => {
+  function errToolFetch(code: string, error: string) {
+    const fetchFn = (async (_input: unknown, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: number;
+      };
+      if (parsed.method === "initialize") {
+        return jsonRes({ jsonrpc: "2.0", id: parsed.id, result: {} });
+      }
+      if (parsed.method === "tools/call") {
+        return jsonRes({
+          jsonrpc: "2.0",
+          id: parsed.id,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: code,
+                  code,
+                  message: "Requested source is outside your granted sources",
+                  suggestion: "re-mint the grant",
+                }),
+              },
+            ],
+            isError: true,
+          },
+        });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    return fetchFn;
+  }
+
+  test("permission_denied → kind 'denied' with the upstream message", async () => {
+    const driver = new McpDriver({
+      url: "http://unit/mcp",
+      token: "t",
+      fetchFn: errToolFetch("permission_denied", "permission_denied"),
+    });
+    try {
+      await driver.search("x", "other-source");
+      throw new Error("expected McpError");
+    } catch (err) {
+      const e = err as McpError;
+      expect(e.kind).toBe("denied");
+      expect(e.message).toContain("outside your granted sources");
+    }
+  });
+
+  test("insufficient_scope classifies the same way; unknown_source maps to its own kind", async () => {
+    const a = new McpDriver({
+      url: "http://unit/mcp",
+      token: "t",
+      fetchFn: errToolFetch("insufficient_scope", "insufficient_scope"),
+    });
+    await expect(a.search("x")).rejects.toMatchObject({ kind: "denied" });
+    const b = new McpDriver({
+      url: "http://unit/mcp",
+      token: "t",
+      fetchFn: errToolFetch("unknown_source", "unknown_source"),
+    });
+    await expect(b.search("x")).rejects.toMatchObject({
+      kind: "unknown-source",
+    });
+  });
+});
+
+describe("source params attach only when a source is picked", () => {
+  function recordingFetch() {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchFn = (async (_input: unknown, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: number;
+        params?: { arguments?: Record<string, unknown> };
+      };
+      if (parsed.method === "initialize") {
+        return jsonRes({ jsonrpc: "2.0", id: parsed.id, result: {} });
+      }
+      if (parsed.method === "tools/call") {
+        bodies.push(parsed.params?.arguments ?? {});
+        return jsonRes({
+          jsonrpc: "2.0",
+          id: parsed.id,
+          result: { content: [{ type: "text", text: "[]" }] },
+        });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    return { fetchFn, bodies };
+  }
+
+  test("no source → byte-identical args for older gbrains", async () => {
+    const { fetchFn, bodies } = recordingFetch();
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    await driver.getPage("a");
+    await driver.search("q");
+    await driver.listPages({ limit: 50 });
+    expect(bodies[0]).toEqual({ slug: "a", include_content: true });
+    expect(bodies[1]).toEqual({ query: "q" });
+    expect(bodies[2]).toEqual({ limit: 50 });
+  });
+
+  test("picked source → attached to get_page / search / list_pages; cache keys split", async () => {
+    const { fetchFn, bodies } = recordingFetch();
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    await driver.getPage("a", "main");
+    await driver.search("q", "main");
+    await driver.listPages({ limit: 50, sourceId: "main" });
+    // same args again hit the TTL cache (no new tool calls)
+    await driver.getPage("a", "main");
+    expect(bodies).toHaveLength(3);
+    expect(bodies[0]).toEqual({ slug: "a", include_content: true, source_id: "main" });
+    expect(bodies[1]).toEqual({ query: "q", source_id: "main" });
+    expect(bodies[2]).toEqual({ limit: 50, source_id: "main" });
+    // a different source is a different cache entry → a real new call
+    await driver.getPage("a", "archive");
+    expect(bodies).toHaveLength(4);
+    expect(bodies[3]).toEqual({ slug: "a", include_content: true, source_id: "archive" });
+  });
+});

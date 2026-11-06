@@ -8,7 +8,7 @@ import { GRAPH } from "../design/tokens";
 import { ApiError, apiGet } from "../lib/api";
 import { currentProfileId } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
-import { usePageBundle } from "../lib/pages";
+import { usePageBundle, type PageRef } from "../lib/pages";
 import { firstLine } from "../lib/text";
 import { PageBody } from "../components/PageBody";
 
@@ -42,6 +42,7 @@ type ViewKind = "field" | "orbit" | "matrix" | "plain";
 
 const VIEW_KEY = "cockpit.nebula.view";
 const NOISE_KEY = "cockpit.nebula.noise";
+const COLOR_MODE_KEY = "cockpit.nebula.colormode";
 /**
  * Frozen FA2 layouts are scoped PER PROFILE, not just per fingerprint: two
  * brains can produce identical fingerprint strings (same page/link counts —
@@ -136,7 +137,14 @@ function hops(graph: Graph, start: string, maxHops: number): Map<string, number>
 }
 
 /** read an edge-proposal endpoint pair defensively (shape varies by version) */
-function proposalPair(p: EdgeProposal): [string, string] | null {
+/**
+ * An edge proposal's endpoints, plus their source ids when the item carries
+ * them (defensive — 0.60.558 items don't): [fromSlug, toSlug, fromSource?,
+ * toSource?]. Slugs alone name EVERY same-slug page; a source id pins one.
+ */
+function proposalPair(
+  p: EdgeProposal,
+): [string, string, string?, string?] | null {
   const candidates: [string, string][] = [
     ["from_slug", "to_slug"],
     ["from", "to"],
@@ -145,7 +153,16 @@ function proposalPair(p: EdgeProposal): [string, string] | null {
   for (const [a, b] of candidates) {
     const va = p[a];
     const vb = p[b];
-    if (typeof va === "string" && typeof vb === "string" && va && vb) return [va, vb];
+    if (typeof va === "string" && typeof vb === "string" && va && vb) {
+      const sa = p["from_source_id"];
+      const sb = p["to_source_id"];
+      return [
+        va,
+        vb,
+        typeof sa === "string" ? sa : undefined,
+        typeof sb === "string" ? sb : undefined,
+      ];
+    }
   }
   return null;
 }
@@ -238,7 +255,7 @@ export function Nebula({
 }: {
   /** keep-alive: true while this panel is the visible one */
   active?: boolean;
-  onOpenPage?: (slug: string) => void;
+  onOpenPage?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
   const [report, setReport] = useState<GraphReport | null>(null);
@@ -256,13 +273,19 @@ export function Nebula({
   });
   /** relation types the owner toggled off in the legend (themed views) */
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set());
+  /**
+   * Node coloring mode. "source" (按源着色) is the default the moment the
+   * brain actually has ≥2 sources — a categorical split that SHOULD read as
+   * colored worlds; single-source brains keep the community pastels. Region
+   * washes are community semantics and hide in source mode.
+   */
+  const [colorMode, setColorMode] = useState<"community" | "source">(() =>
+    localStorage.getItem(COLOR_MODE_KEY) === "community" ? "community" : "source",
+  );
+  /** sources the owner toggled off in the legend (source mode) */
+  const [hiddenSources, setHiddenSources] = useState<Set<string>>(() => new Set());
   const [selected, setSelected] = useState<string | null>(null);
   const [locate, setLocate] = useState("");
-  // page peek: the drawer reads the selected page IN PLACE (FEATURES §4.3 —
-  // click a node → page detail opens in the side drawer) via the shared
-  // page fetch. The graph never unmounts, so the exploration context
-  // (selection, camera, filters) survives every peek.
-  const peek = usePageBundle(selected);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
@@ -310,14 +333,18 @@ export function Nebula({
   }, [active]);
 
   // dream-new relations share the Inbox queue's data (same data, two surfaces)
-  const [proposalEdges, setProposalEdges] = useState<[string, string][]>([]);
+  const [proposalEdges, setProposalEdges] = useState<
+    [string, string, string?, string?][]
+  >([]);
   useEffect(() => {
     apiGet<{ edgeProposals?: { items?: EdgeProposal[] } }>("/api/inbox")
       .then((inbox) => {
         setProposalEdges(
           (inbox.edgeProposals?.items ?? [])
             .map(proposalPair)
-            .filter((p): p is [string, string] => p !== null),
+            .filter(
+              (p): p is [string, string, string?, string?] => p !== null,
+            ),
         );
       })
       .catch(() => setProposalEdges([]));
@@ -341,24 +368,56 @@ export function Nebula({
     const fingerprint = report?.fingerprint;
     if (nodes.length === 0 || !fingerprint) return null;
 
-    const slugSet = new Set(nodes.map((n) => n.slug));
-    const newEdgeSet = new Set(
-      proposalEdges
-        .filter(([a, b]) => slugSet.has(a) && slugSet.has(b))
-        .map(([a, b]) => (a < b ? `${a}||${b}` : `${b}||${a}`)),
-    );
+    // Node identity is GraphNode.key (`source_id/slug`, bare slug in the
+    // degraded no-source mode) — slugs may repeat across sources, so every
+    // graph index below speaks keys. slug stays the display label; nodeRef
+    // maps keys back to (slug, sourceId) for peeks and jumps.
+    const nodeRef = new Map<string, PageRef>();
+    const keySet = new Set<string>();
+    const slugToKeys = new Map<string, string[]>();
+    const sourceCount = new Set<string>();
+    for (const n of nodes) {
+      keySet.add(n.key);
+      nodeRef.set(n.key, {
+        slug: n.slug,
+        ...(n.source_id ? { sourceId: n.source_id } : {}),
+      });
+      if (n.source_id) sourceCount.add(n.source_id);
+      const list = slugToKeys.get(n.slug) ?? [];
+      list.push(n.key);
+      slugToKeys.set(n.slug, list);
+    }
+    /** proposal endpoints arrive as (defensive) (slug[, source]) pairs — a
+     *  slug matching several sources names ALL of them (visible, not guessed) */
+    const expandProposal = (slug: string, sourceId?: string): string[] => {
+      if (sourceId) {
+        const exact = `${sourceId}/${slug}`;
+        if (keySet.has(exact)) return [exact];
+      }
+      return slugToKeys.get(slug) ?? [];
+    };
+
+    const newEdgeSet = new Set<string>();
     const pending = new Set<string>();
-    for (const [a, b] of proposalEdges) {
-      if (slugSet.has(a)) pending.add(a);
-      if (slugSet.has(b)) pending.add(b);
+    for (const [a, b, sa, sb] of proposalEdges) {
+      const ka = expandProposal(a, sa);
+      const kb = expandProposal(b, sb);
+      for (const x of ka) {
+        pending.add(x);
+        for (const y of kb) {
+          if (x === y) continue;
+          newEdgeSet.add(x < y ? `${x}||${y}` : `${y}||${x}`);
+        }
+      }
+      for (const y of kb) pending.add(y);
     }
 
     // structural graph for layout + community detection (view-independent)
     const full = new Graph({ multi: false, type: "undirected" });
-    for (const n of nodes) full.addNode(n.slug, {});
+    for (const n of nodes) full.addNode(n.key, { label: n.slug });
     const seen = new Set<string>();
     for (const e of edges) {
-      if (!slugSet.has(e.source) || !slugSet.has(e.target)) continue;
+      if (!keySet.has(e.source) || !keySet.has(e.target)) continue;
       const key = e.source < e.target ? `${e.source}||${e.target}` : `${e.target}||${e.source}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -427,8 +486,16 @@ export function Nebula({
 
     const degree = new Map<string, number>();
     full.forEachNode((node) => degree.set(node, full.degree(node)));
-    return { nodes, edges, fingerprint, full, degree, pending, newEdgeSet };
+    return {
+      nodes, edges, fingerprint, full, degree, pending, newEdgeSet,
+      nodeRef, sourceCount: sourceCount.size,
+    };
   }, [report, proposalEdges]);
+
+  // selected is a node KEY; the drawer needs (slug, sourceId) — never parse
+  // the key (slugs contain slashes), read the node's own fields via nodeRef
+  const peekRef = selected ? (baseData?.nodeRef.get(selected) ?? null) : null;
+  const peek = usePageBundle(peekRef);
 
   // --- view filtering (nodeReducer — no graph rebuild, no sigma remount) -------
 
@@ -439,31 +506,45 @@ export function Nebula({
     return new Set(hops(baseData.full, selected, 2).keys());
   }, [baseData, view, selected]);
 
+  // effective coloring: source mode needs an actual split to color by
+  const effColorMode =
+    colorMode === "source" && (baseData?.sourceCount ?? 0) >= 2 ? "source" : "community";
+
   const filterRef = useRef<{
     view: ViewKind;
     noise: boolean;
     members: Set<string> | null;
     pending: Set<string>;
+    /** sources toggled off via the legend (source mode) */
+    sourceHidden: Set<string> | null;
     /** hovered page + its 1-hop neighbors (null when not hovering) */
     hoverNear: Set<string> | null;
-  }>({ view, noise, members, pending: new Set(), hoverNear: null });
+  }>({ view, noise, members, pending: new Set(), sourceHidden: null, hoverNear: null });
   filterRef.current = {
     view,
     noise,
     members,
     pending: baseData?.pending ?? new Set(),
+    sourceHidden: effColorMode === "source" ? hiddenSources : null,
     // hoverNear is event-driven state — carry it across the reassignment
     hoverNear: filterRef.current.hoverNear,
   };
 
   /** the single visibility predicate — sigma's nodeReducer AND the overlay
-   *  both call it, so DOM and canvas can never disagree */
-  const isHidden = useCallback((node: string, degree: number): boolean => {
-    const f = filterRef.current;
-    if (f.view === "orbit") return f.members !== null && !f.members.has(node);
-    if (f.view === "matrix") return false;
-    return f.noise && degree < NOISE_DEGREE && !f.pending.has(node);
-  }, []);
+   *  both call it, so DOM and canvas can never disagree. Source visibility
+   *  (legend chips, source mode) applies in every view. */
+  const isHidden = useCallback(
+    (node: string, degree: number, sourceId?: string): boolean => {
+      const f = filterRef.current;
+      if (f.sourceHidden !== null && sourceId !== undefined && f.sourceHidden.has(sourceId)) {
+        return true;
+      }
+      if (f.view === "orbit") return f.members !== null && !f.members.has(node);
+      if (f.view === "matrix") return false;
+      return f.noise && degree < NOISE_DEGREE && !f.pending.has(node);
+    },
+    [],
+  );
 
   // --- the one graphology instance sigma mounts (data-only deps) ----------------
 
@@ -479,9 +560,9 @@ export function Nebula({
     // diversify (style-review lesson, 2026-11-05).
     const commSize = new Map<number, number>();
     for (const n of nodes) {
-      const deg = degree.get(n.slug) ?? n.degree ?? 0;
-      if (deg < NOISE_DEGREE && !pending.has(n.slug)) continue;
-      const c = full.getNodeAttribute(n.slug, "community");
+      const deg = degree.get(n.key) ?? n.degree ?? 0;
+      if (deg < NOISE_DEGREE && !pending.has(n.key)) continue;
+      const c = full.getNodeAttribute(n.key, "community");
       if (typeof c === "number") commSize.set(c, (commSize.get(c) ?? 0) + 1);
     }
     const commColor = new Map<number, string>();
@@ -489,19 +570,42 @@ export function Nebula({
       .sort((a, b) => b[1] - a[1])
       .forEach(([c], i) => commColor.set(c, GRAPH.commColors[i] ?? GRAPH.ghostColor));
 
+    // source colors — same ranking discipline as communities (largest
+    // first, palette caps, overflow to ghost). Source is CATEGORICAL: a
+    // 100/17 split should read as two colored worlds (the type-collapse
+    // lesson applied to the source axis).
+    const srcSize = new Map<string, number>();
     for (const n of nodes) {
-      const slug = n.slug;
-      const deg = degree.get(slug) ?? n.degree ?? 0;
-      const pos = full.getNodeAttributes(slug);
-      const community = full.getNodeAttribute(slug, "community");
-      graph.addNode(slug, {
-        label: slug,
+      if (!n.source_id) continue;
+      const deg = degree.get(n.key) ?? n.degree ?? 0;
+      if (deg < NOISE_DEGREE && !pending.has(n.key)) continue;
+      srcSize.set(n.source_id, (srcSize.get(n.source_id) ?? 0) + 1);
+    }
+    const srcColor = new Map<string, string>();
+    [...srcSize.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([id], i) => srcColor.set(id, GRAPH.sourceColors[i] ?? GRAPH.ghostColor));
+
+    for (const n of nodes) {
+      const deg = degree.get(n.key) ?? n.degree ?? 0;
+      const pos = full.getNodeAttributes(n.key);
+      const community = full.getNodeAttribute(n.key, "community");
+      const commPainted =
+        (typeof community === "number" ? commColor.get(community) : undefined) ??
+        GRAPH.ghostColor;
+      graph.addNode(n.key, {
+        label: n.slug,
+        slug: n.slug,
+        sourceId: n.source_id,
         type: n.type,
         title: n.title,
         updated_at: n.updated_at,
         degree: deg,
         community,
-        color: (typeof community === "number" ? commColor.get(community) : undefined) ?? GRAPH.ghostColor,
+        color:
+          effColorMode === "source" && n.source_id
+            ? (srcColor.get(n.source_id) ?? GRAPH.ghostColor)
+            : commPainted,
         size: nodeRadius(deg, view === "orbit"),
         x: pos.x,
         y: pos.y,
@@ -511,25 +615,38 @@ export function Nebula({
     // with sigma's own edge program; themed views hide them via edgeReducer
     // and the overlay draws them typed/dashed instead — sigma cannot dash).
     // allEdges mirrors them for the overlay + proximity hover.
-    const allEdges: { source: string; target: string; link_type?: string; isNew: boolean }[] = [];
+    const allEdges: {
+      source: string;
+      target: string;
+      link_type?: string;
+      isNew: boolean;
+      crossSource: boolean;
+    }[] = [];
     for (const e of edges) {
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
       if (graph.hasEdge(e.source, e.target)) continue;
       const key = e.source < e.target ? `${e.source}||${e.target}` : `${e.target}||${e.source}`;
       const isNew = newEdgeSet.has(key);
+      // a cross-source relation (an upstream ranking signal) gets its own
+      // dashed-ink style — distinct from typed routes AND the amber pending
+      const sa = graph.getNodeAttribute(e.source, "sourceId");
+      const sb = graph.getNodeAttribute(e.target, "sourceId");
+      const crossSource = sa !== undefined && sb !== undefined && sa !== sb;
       graph.addEdge(e.source, e.target, {
         link_type: e.link_type,
         isNew,
+        crossSource,
         color: GRAPH.edgeUnknown,
         size: GRAPH.trackWidth,
       });
-      allEdges.push({ source: e.source, target: e.target, link_type: e.link_type, isNew });
+      allEdges.push({ source: e.source, target: e.target, link_type: e.link_type, isNew, crossSource });
     }
-    return { graph, pending, allEdges, fingerprint };
+    return { graph, pending, allEdges, fingerprint, srcColor };
     // view intentionally NOT a dep: node size bumps for focus view are
-    // applied by the selection effect below; filtering is reducer-side
+    // applied by the selection effect below; filtering is reducer-side.
+    // effColorMode IS a dep: colors swap with the toggle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseData]);
+  }, [baseData, effColorMode]);
 
   // --- sigma lifecycle: mount once per data, unmount only for the matrix -------
   // sigma needs a laid-out container (it reads offsetWidth at construction and
@@ -559,7 +676,11 @@ export function Nebula({
 
     const sigma = new Sigma(graph, mountRef.current, {
       nodeReducer: (node, data) => {
-        const shown = isHidden(node, graph.getNodeAttribute(node, "degree") ?? 0)
+        const shown = isHidden(
+          node,
+          graph.getNodeAttribute(node, "degree") ?? 0,
+          graph.getNodeAttribute(node, "sourceId"),
+        )
           ? { ...data, hidden: true }
           : data;
         // 原版 stock view: strip the Paper Routes skin (factory colors) while
@@ -717,7 +838,7 @@ export function Nebula({
       let y1 = -Infinity;
       let any = false;
       graph.forEachNode((node, attrs) => {
-        if (isHidden(node, attrs.degree ?? 0)) return;
+        if (isHidden(node, attrs.degree ?? 0, graph.getNodeAttribute(node, "sourceId"))) return;
         any = true;
         x0 = Math.min(x0, attrs.x);
         x1 = Math.max(x1, attrs.x);
@@ -805,7 +926,7 @@ export function Nebula({
       { pts: [number, number][]; fam: Map<string, number>; color: string }
     >();
     graph.forEachNode((node, attrs) => {
-      if (isHidden(node, attrs.degree)) return;
+      if (isHidden(node, attrs.degree, graph.getNodeAttribute(node, "sourceId"))) return;
       const c = typeof attrs.community === "number" ? attrs.community : -1;
       if (c < 0) return;
       let entry = byCommunity.get(c);
@@ -845,7 +966,7 @@ export function Nebula({
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
       const a = graph.getNodeAttributes(e.source);
       const b = graph.getNodeAttributes(e.target);
-      if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+      if (isHidden(e.source, a.degree, graph.getNodeAttribute(e.source, "sourceId")) || isHidden(e.target, b.degree, graph.getNodeAttribute(e.target, "sourceId"))) continue;
       routeCount++;
     }
     const reduced = document.documentElement.classList.contains("rm");
@@ -930,9 +1051,10 @@ export function Nebula({
       ctx.clearRect(0, 0, w, h);
       const hoverNear = filterRef.current.hoverNear;
 
-      // region washes — communities ≥ washMin pages get a tinted hull + name
+      // region washes — community semantics; source mode colors nodes by a
+      // DIFFERENT partition, so hulls would muddy two groupings at once
       // (overview only: a focus view of ≤2 hops renders slivers, not regions)
-      if (themed && view === "field") {
+      if (themed && view === "field" && effColorMode === "community") {
         for (const r of regions) {
           if (r.hull.length < 3) continue;
           ctx.beginPath();
@@ -972,7 +1094,7 @@ export function Nebula({
           if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
           const a = graph.getNodeAttributes(e.source);
           const b = graph.getNodeAttributes(e.target);
-          if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+          if (isHidden(e.source, a.degree, graph.getNodeAttribute(e.source, "sourceId")) || isHidden(e.target, b.degree, graph.getNodeAttribute(e.target, "sourceId"))) continue;
           (e.isNew ? pendingEdges : solid).push(e);
         }
         const nearEdge = (e: (typeof allEdges)[number]): boolean =>
@@ -1040,6 +1162,18 @@ export function Nebula({
           }
         };
         for (const e of solid) {
+          if (e.crossSource) {
+            // cross-source relations: dashed ink, thicker than a track,
+            // distinct from both the typed routes and the amber pending dash
+            drawRoute(
+              e,
+              GRAPH.crossSource,
+              [...GRAPH.crossSourceDash],
+              GRAPH.trackWidth * 1.6,
+              GRAPH.crossSource,
+            );
+            continue;
+          }
           drawRoute(e, edgeTypeColor(e.link_type), [], GRAPH.trackWidth, edgeTypeColor(e.link_type));
         }
         for (const e of pendingEdges) {
@@ -1055,7 +1189,7 @@ export function Nebula({
       for (const node of pending) {
         if (!graph.hasNode(node)) continue;
         const attrs = graph.getNodeAttributes(node);
-        if (isHidden(node, attrs.degree)) continue;
+        if (isHidden(node, attrs.degree, graph.getNodeAttribute(node, "sourceId"))) continue;
         const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, sigma.scaleSize(attrs.size) + 4, 0, Math.PI * 2);
@@ -1067,7 +1201,7 @@ export function Nebula({
       const focus = hoveredRef.current ?? selected;
       if (focus && graph.hasNode(focus)) {
         const attrs = graph.getNodeAttributes(focus);
-        if (!isHidden(focus, attrs.degree)) {
+        if (!isHidden(focus, attrs.degree, graph.getNodeAttribute(focus, "sourceId"))) {
           const pos = sigma.graphToViewport({ x: attrs.x, y: attrs.y });
           ctx.strokeStyle = GRAPH.hoverRing;
           ctx.lineWidth = 2;
@@ -1108,7 +1242,7 @@ export function Nebula({
       const labelMinDeg = view === "orbit" ? 0 : NOISE_DEGREE;
       const labels: { text: string; deg: number; x: number; y: number; r: number; top: boolean }[] = [];
       graph.forEachNode((node, attrs) => {
-        if (isHidden(node, attrs.degree)) return;
+        if (isHidden(node, attrs.degree, graph.getNodeAttribute(node, "sourceId"))) return;
         if (attrs.degree < labelMinDeg) return;
         if (hoverNear !== null && !hoverNear.has(node)) return; // ghosted
         const r = sigma.scaleSize(attrs.size);
@@ -1216,7 +1350,7 @@ export function Nebula({
       if (!graph.hasNode(e.source) || !graph.hasNode(e.target)) continue;
       const a = graph.getNodeAttributes(e.source);
       const b = graph.getNodeAttributes(e.target);
-      if (isHidden(e.source, a.degree) || isHidden(e.target, b.degree)) continue;
+      if (isHidden(e.source, a.degree, graph.getNodeAttribute(e.source, "sourceId")) || isHidden(e.target, b.degree, graph.getNodeAttribute(e.target, "sourceId"))) continue;
       const va = sigma.graphToViewport({ x: a.x, y: a.y });
       const vb = sigma.graphToViewport({ x: b.x, y: b.y });
       const dist = pointSegmentDistance(m.x, m.y, va.x, va.y, vb.x, vb.y);
@@ -1226,6 +1360,7 @@ export function Nebula({
           dist,
           text:
             `${e.link_type ?? "?"} · ${e.source} → ${e.target}` +
+            (e.crossSource ? ` · ${t("nebula.legend.crossSource")}` : "") +
             (e.isNew ? ` · ${t("nebula.tipPending")}` : ""),
         };
       }
@@ -1244,7 +1379,13 @@ export function Nebula({
   function runLocate() {
     const q = locate.trim().toLowerCase();
     if (!q || !baseData) return;
-    const hit = baseData.full.nodes().find((n) => n.toLowerCase().includes(q));
+    // match against the slug label (keys carry a source prefix the owner
+    // rarely types), then resolve the matching node's key
+    const hit = baseData.full.nodes().find((n) => {
+      if (n.toLowerCase().includes(q)) return true;
+      const label = baseData.full.getNodeAttribute(n, "label");
+      return typeof label === "string" && label.toLowerCase().includes(q);
+    });
     if (!hit) return;
     setSelected(hit);
     // search is an explicit "find this page" action — going straight to the
@@ -1300,13 +1441,60 @@ export function Nebula({
       ? viewGraph.graph.getNodeAttributes(selected)
       : null;
 
+  // source legend — sources ranked by visible count; palette overflow
+  // collapses to ghost under one aggregate entry (never a color soup)
+  const sourceLegend = useMemo(() => {
+    if (!viewGraph) return [];
+    const bySrc = new Map<string, { count: number; color: string }>();
+    viewGraph.graph.forEachNode((node, attrs) => {
+      if (
+        isHidden(
+          node,
+          attrs.degree,
+          viewGraph.graph.getNodeAttribute(node, "sourceId"),
+        )
+      )
+        return;
+      const id = attrs.sourceId;
+      if (typeof id !== "string") return;
+      let entry = bySrc.get(id);
+      if (!entry) {
+        entry = { count: 0, color: GRAPH.ghostColor };
+        bySrc.set(id, entry);
+      }
+      entry.count++;
+      const painted = viewGraph.srcColor.get(id);
+      if (painted) entry.color = painted;
+    });
+    const ranked = [...bySrc.entries()].sort((a, b) => b[1].count - a[1].count);
+    const colored = ranked.slice(0, GRAPH.sourceColors.length);
+    const rest = ranked.slice(GRAPH.sourceColors.length);
+    const entries = colored.map(([id, v]) => ({ id, count: v.count, color: v.color }));
+    if (rest.length > 0) {
+      entries.push({
+        id: t("nebula.legend.otherSources"),
+        count: rest.reduce((n, [, v]) => n + v.count, 0),
+        color: GRAPH.ghostColor,
+      });
+    }
+    return entries;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewGraph, hiddenSources, t]);
+
   // community legend — groups (louvain) with ≥ washMin visible pages, named
   // by dominant slug family; display-only (relation chips stay the filter)
   const commLegend = useMemo(() => {
     if (!viewGraph) return [];
     const byComm = new Map<number, { count: number; fam: Map<string, number>; color: string }>();
     viewGraph.graph.forEachNode((node, attrs) => {
-      if (isHidden(node, attrs.degree)) return;
+      if (
+        isHidden(
+          node,
+          attrs.degree,
+          viewGraph.graph.getNodeAttribute(node, "sourceId"),
+        )
+      )
+        return;
       const c = typeof attrs.community === "number" ? attrs.community : -1;
       if (c < 0) return;
       let entry = byComm.get(c);
@@ -1365,6 +1553,24 @@ export function Nebula({
               </button>
             ))}
           </div>
+          {(baseData?.sourceCount ?? 0) >= 2 ? (
+            <button
+              type="button"
+              className="noise-btn"
+              aria-pressed={effColorMode === "source"}
+              onClick={() => {
+                const next = effColorMode === "source" ? "community" : "source";
+                setColorMode(next);
+                localStorage.setItem(COLOR_MODE_KEY, next);
+                setHiddenSources(new Set());
+              }}
+              title={t("nebula.colorModeHint")}
+            >
+              {effColorMode === "source"
+                ? t("nebula.colorMode.source")
+                : t("nebula.colorMode.community")}
+            </button>
+          ) : null}
           <button
             type="button"
             className={`noise-btn ${noise ? "on" : ""}`}
@@ -1442,11 +1648,17 @@ export function Nebula({
                 ✕
               </button>
               <p className="cap">{t("nebula.drawer.caption")}</p>
-              <h5>{String(selectedAttrs.title ?? selected)}</h5>
-              {String(selectedAttrs.title ?? "") !== selected && (
+              <h5>{String(selectedAttrs.title ?? selectedAttrs.label ?? selected)}</h5>
+              {String(selectedAttrs.title ?? "") !== String(selectedAttrs.label ?? selected) && (
                 <div className="kv">
                   <span>{t("nebula.drawer.slug")}</span>
-                  <span className="mono">{selected}</span>
+                  <span className="mono">{String(selectedAttrs.label ?? selected)}</span>
+                </div>
+              )}
+              {typeof selectedAttrs.sourceId === "string" && (
+                <div className="kv">
+                  <span>{t("viewer.source")}</span>
+                  <span className="mono">{selectedAttrs.sourceId}</span>
                 </div>
               )}
               <div className="kv">
@@ -1500,11 +1712,11 @@ export function Nebula({
                     {t("nebula.drawer.focus")}
                   </button>
                 )}
-                {onOpenPage && (
+                {onOpenPage && peekRef && (
                   <button
                     type="button"
                     className="linkish"
-                    onClick={() => onOpenPage(selected)}
+                    onClick={() => onOpenPage(peekRef)}
                   >
                     {t("nebula.drawer.edit")}
                   </button>
@@ -1540,13 +1752,41 @@ export function Nebula({
 
       {viewGraph && view !== "matrix" && view !== "plain" && (
         <div className="legend">
-          <span className="lg-cap">{t("nebula.legend.groups")}</span>
-          {commLegend.map((g) => (
-            <span key={g.c} className="li">
-              <span className="sw" style={{ background: g.color }} />
-              {g.name} · {g.count}
-            </span>
-          ))}
+          {effColorMode === "source" ? (
+            <>
+              <span className="lg-cap">{t("nebula.legend.sources")}</span>
+              {sourceLegend.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  className={`li chip-li ${hiddenSources.has(g.id) ? "off" : ""}`}
+                  aria-pressed={!hiddenSources.has(g.id)}
+                  title={t("nebula.legend.toggle")}
+                  onClick={() =>
+                    setHiddenSources((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(g.id)) next.delete(g.id);
+                      else next.add(g.id);
+                      return next;
+                    })
+                  }
+                >
+                  <span className="sw" style={{ background: g.color }} />
+                  {g.id} · {g.count}
+                </button>
+              ))}
+            </>
+          ) : (
+            <>
+              <span className="lg-cap">{t("nebula.legend.groups")}</span>
+              {commLegend.map((g) => (
+                <span key={g.c} className="li">
+                  <span className="sw" style={{ background: g.color }} />
+                  {g.name} · {g.count}
+                </span>
+              ))}
+            </>
+          )}
           <span className="lg-cap">{t("nebula.legend.relations")}</span>
           {relationLegend.map(([type, count]) => (
             <button
@@ -1572,6 +1812,15 @@ export function Nebula({
             <span className="sw-line dashed" style={{ borderColor: GRAPH.edgeNew }} />
             {t("nebula.legend.newEdge")}
           </span>
+          {effColorMode === "source" ? (
+            <span className="li">
+              <span
+                className="sw-line dashed"
+                style={{ borderColor: GRAPH.crossSource }}
+              />
+              {t("nebula.legend.crossSource")}
+            </span>
+          ) : null}
           <span className="li">
             <span className="sw" style={{ background: GRAPH.red }} />
             {t("nebula.legend.pending")}
