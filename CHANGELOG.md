@@ -8,6 +8,14 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-06
+
+### Fixed
+- The Inbox CLI banner no longer blames "not the brain host" for every unavailable probe. `/api/inbox`'s `cliChannel` now carries the Health panel's reason vocabulary: a missing binary keeps the conditional host guess, a found-but-unverified binary (probe failure) gets neutral copy pointing at Health, and the chip tooltip shows the probe error's first line. On dual-brain hosts the profile's `cliNote` (which `cliBin` failed to resolve) surfaces instead of the generic message.
+
+### Changed
+- Queue-level CLI-down notices drop the "on this host" attribution — the three queues share one string, consistent with the banner's new precision.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
