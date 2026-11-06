@@ -6,6 +6,7 @@ import type {
 } from "@gbrain-cockpit/shared";
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
+import { currentProfile } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { type PageBundle } from "../lib/pages";
 import { PageBody } from "../components/PageBody";
@@ -353,9 +354,18 @@ export function Pages({
               <h2 className="mono small">{selected}</h2>
             </div>
             {bundle && editor.mode === "idle" && (
-              <button type="button" onClick={() => setEditor({ mode: "editing", draft: bundle.page.content ?? "" })}>
-                {t("pages.edit")}
-              </button>
+              // Read-grant profile (no write scope): a save could only ever
+              // fail upstream — show the reason instead of an impossible
+              // button. The server stays the enforcer; UX narrowing only.
+              currentProfile()?.readOnly === true ? (
+                <span className="readonly-note" title={t("pages.readOnly")}>
+                  {t("pages.readOnly")}
+                </span>
+              ) : (
+                <button type="button" onClick={() => setEditor({ mode: "editing", draft: bundle.page.content ?? "" })}>
+                  {t("pages.edit")}
+                </button>
+              )
             )}
           </div>
 

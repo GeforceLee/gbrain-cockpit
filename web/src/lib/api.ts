@@ -2,16 +2,11 @@
 // server's error envelope, and maps errors to user-language copy at call
 // sites. Timeouts/backoff grow here in V1.0 (ARCHITECTURE §7).
 
-const TOKEN_KEY = "cockpit.token";
+// Token storage lives in lib/token (shared with lib/brain without a cycle).
+export { getToken, setToken } from "./token";
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-export function setToken(token: string | null): void {
-  if (token) localStorage.setItem(TOKEN_KEY, token);
-  else localStorage.removeItem(TOKEN_KEY);
-}
+import { getToken } from "./token";
+import { currentProfileId, healAfterUnknownProfile } from "./brain";
 
 export class ApiError extends Error {
   constructor(
@@ -34,10 +29,14 @@ export async function apiGet<T>(path: string): Promise<T> {
   if (!token) throw new ApiError("no token stored", "E_NO_TOKEN", 0);
 
   const res = await fetch(path, {
-    headers: { authorization: `Bearer ${token}` },
+    headers: withProfile({ authorization: `Bearer ${token}` }),
   });
   const body = (await res.json().catch(() => null)) as (Envelope & T) | null;
   if (!res.ok) {
+    if (res.status === 400 && mentionsProfile(body)) {
+      // the persisted profile vanished server-side — heal once, then fail
+      void healAfterUnknownProfile();
+    }
     throw new ApiError(
       body?.error ?? `HTTP ${res.status}`,
       body?.code ?? "E_HTTP",
@@ -57,14 +56,17 @@ export async function apiSend<T>(
 
   const res = await fetch(path, {
     method,
-    headers: {
+    headers: withProfile({
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
-    },
+    }),
     body: JSON.stringify(payload),
   });
   const body = (await res.json().catch(() => null)) as (Envelope & T) | null;
   if (!res.ok) {
+    if (res.status === 400 && mentionsProfile(body)) {
+      void healAfterUnknownProfile();
+    }
     throw new ApiError(
       body?.error ?? `HTTP ${res.status}`,
       body?.code ?? "E_HTTP",
@@ -72,4 +74,16 @@ export async function apiSend<T>(
     );
   }
   return body as T;
+}
+
+/** Attach the brain-routing header whenever a non-default profile is active. */
+function withProfile(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const id = currentProfileId();
+  return id ? { ...headers, "x-brain-profile": id } : headers;
+}
+
+function mentionsProfile(body: Envelope | null): boolean {
+  return (body?.error ?? "").includes("brain profile");
 }

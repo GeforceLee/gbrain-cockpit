@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import { promisify } from "node:util";
-import type {
-  CliChannelStatus,
-  EdgeProposal,
-  TakeProposal,
-  TrustReviewEnvelope,
+import {
+  TRUST_REF_RE,
+  type CliChannelStatus,
+  type EdgeProposal,
+  type TakeProposal,
+  type TrustReviewEnvelope,
 } from "@gbrain-cockpit/shared";
 
 // The narrow CLI channel (ARCHITECTURE §3.2): the only gbrain subcommands
@@ -66,7 +67,10 @@ interface SubcommandSpec {
   json: boolean;
 }
 
-const REF_RE = /^(tp|h|f|a|t)\d{1,18}$/;
+// Trust refs use the ONE shared pattern (shared/src TRUST_REF_RE) — the same
+// constant the route layer and the web's copy-command builder use, so the
+// three can never drift apart.
+const REF_RE = TRUST_REF_RE;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LIMIT_RE = /^\d{1,4}$/;
@@ -233,15 +237,27 @@ export class CliDriver {
   }
 
   /**
-   * Channel availability (cached briefly). Available means: the binary runs
-   * AND `trust review --json` succeeds against THIS host's brain. A dev Mac
-   * with its own unrelated gbrain install fails here; the same-host identity
-   * check hardens with the warm/cold canary work (ARCHITECTURE §11-3).
+   * Channel availability, stale-while-revalidate. Available means: the binary
+   * runs AND `trust review --json` succeeds against THIS host's brain. A dev
+   * Mac with its own unrelated gbrain install fails here. The probe is a real
+   * CLI exec — on hosts without a warm cli-socket that is a multi-second cold
+   * run, so a cached-but-stale answer returns immediately and the refresh
+   * happens in the background; `force` awaits a fresh probe.
    */
   async status(force = false): Promise<CliChannelStatus> {
-    if (!force && this.#probe && Date.now() - this.#probe.at < PROBE_TTL_MS) {
+    if (!force && this.#probe) {
+      if (Date.now() - this.#probe.at < PROBE_TTL_MS) {
+        return this.#probe.result;
+      }
+      void this.#refresh().catch(() => {
+        // background refresh failure keeps the stale entry; logged inside
+      });
       return this.#probe.result;
     }
+    return this.#refresh();
+  }
+
+  async #refresh(): Promise<CliChannelStatus> {
     let result: CliChannelStatus;
     try {
       await this.trustReview();
@@ -366,10 +382,13 @@ export class CliDriver {
         if (e.killed || e.signal === "SIGTERM") {
           throw new CliExecutionError(`${key}: timed out`, undefined, true);
         }
-        // execFile rejects with stderr attached for nonzero exits.
+        // execFile rejects with stderr attached for nonzero exits. Wrapper
+        // scripts banner to stderr on EVERY run (e.g. "[gbrain-bip] → …");
+        // those lines are noise here, not the failure — skip them so the
+        // operator sees gbrain's own error instead of the banner.
         const stderrFirstLine = String(e.stderr ?? "")
           .split("\n")
-          .find((l) => l.trim())?.slice(0, 200);
+          .find((l) => l.trim() && !WRAPPER_BANNER_RE.test(l))?.slice(0, 200);
         throw new CliExecutionError(
           stderrFirstLine
             ? `${key} failed: ${stderrFirstLine}`
@@ -398,19 +417,16 @@ export class CliDriver {
   }
 }
 
-export async function locateGbrainBin(
-  explicit?: string | null,
-): Promise<string | null> {
-  if (explicit) {
-    try {
-      await access(explicit, constants.X_OK);
-      return explicit;
-    } catch {
-      return null;
-    }
-  }
+/**
+ * Banner lines wrapper scripts print to stderr on every invocation, e.g.
+ * `[gbrain-bip] → postgres://…/bip`. Bracketed tag prefix, nothing else —
+ * gbrain's own errors never start with a bracketed tag.
+ */
+const WRAPPER_BANNER_RE = /^\[[a-z0-9][a-z0-9 _-]*\]/i;
+
+async function defaultWhich(name: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileP("which", ["gbrain"]);
+    const { stdout } = await execFileP("which", [name]);
     const first = stdout.trim().split("\n")[0];
     return first ? first : null;
   } catch {
@@ -418,15 +434,40 @@ export async function locateGbrainBin(
   }
 }
 
-export async function inspectCli(gbrainBin: string | null): Promise<{
-  status: "ok" | "degraded" | "down";
-  bin: string | null;
-  reason: "binary-found-unverified" | "binary-not-found";
-  error?: string;
-}> {
-  const bin = await locateGbrainBin(gbrainBin);
-  if (!bin) {
-    return { status: "down", bin: null, reason: "binary-not-found" };
+async function defaultAccessX(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
-  return { status: "degraded", bin, reason: "binary-found-unverified" };
+}
+
+export interface LocateDeps {
+  /** injectable for tests: resolve a command NAME to an absolute path */
+  which?: (name: string) => Promise<string | null>;
+  /** injectable for tests: absolute-path executability check */
+  accessX?: (path: string) => Promise<boolean>;
+}
+
+/**
+ * Resolve the CLI executable for one brain. `explicit` is the profile's
+ * cliBin — either an absolute path (checked for X_OK) or a bare command
+ * name (resolved via PATH, so isolated-brain wrappers like `gbrain-bip`
+ * work). Unset means the conventional `gbrain` on PATH. The charset of
+ * `explicit` is OWNER_BIN_RE-validated at the config layer already.
+ */
+export async function locateGbrainBin(
+  explicit?: string | null,
+  deps: LocateDeps = {},
+): Promise<string | null> {
+  const which = deps.which ?? defaultWhich;
+  const accessX = deps.accessX ?? defaultAccessX;
+  if (explicit) {
+    if (explicit.includes("/")) {
+      return (await accessX(explicit)) ? explicit : null;
+    }
+    return which(explicit);
+  }
+  return which("gbrain");
 }

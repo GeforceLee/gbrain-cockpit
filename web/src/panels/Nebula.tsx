@@ -6,6 +6,7 @@ import Sigma from "sigma";
 import type { EdgeProposal, GraphReport } from "@gbrain-cockpit/shared";
 import { GRAPH } from "../design/tokens";
 import { ApiError, apiGet } from "../lib/api";
+import { currentProfileId } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { usePageBundle } from "../lib/pages";
 import { firstLine } from "../lib/text";
@@ -41,6 +42,13 @@ type ViewKind = "field" | "orbit" | "matrix" | "plain";
 
 const VIEW_KEY = "cockpit.nebula.view";
 const NOISE_KEY = "cockpit.nebula.noise";
+/**
+ * Frozen FA2 layouts are scoped PER PROFILE, not just per fingerprint: two
+ * brains can produce identical fingerprint strings (same page/link counts —
+ * the real dual-brain window reloads the same corpus twice), and a count-only
+ * guard would then silently apply brain A's coordinates to brain B's nodes.
+ * view/noise stay shared: they're preferences, not data.
+ */
 const LAYOUT_PREFIX = "cockpit.nebula.layout.";
 const NOISE_DEGREE = 3;
 const MATRIX_MAX = 24;
@@ -142,11 +150,43 @@ function proposalPair(p: EdgeProposal): [string, string] | null {
   return null;
 }
 
-function loadLayout(fingerprint: string): Record<string, [number, number]> | null {
+/** Cheap FNV-1a over the sorted node ids — a layout blob's signature. */
+function keysHash(keys: readonly string[]): number {
+  let h = 0x811c9dc5;
+  for (const k of keys) {
+    for (let i = 0; i < k.length; i++) {
+      h ^= k.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+  }
+  return h >>> 0;
+}
+
+function layoutScope(): string {
+  // read at call time: the profile can change mid-session and the stage
+  // remount re-runs these on the fresh mount
+  return currentProfileId() ?? "default";
+}
+
+function loadLayout(
+  fingerprint: string,
+): Record<string, [number, number]> | null {
   try {
-    const raw = localStorage.getItem(LAYOUT_PREFIX + fingerprint);
-    const parsed = raw ? (JSON.parse(raw) as { positions?: Record<string, [number, number]> }) : null;
-    return parsed?.positions ?? null;
+    const raw = localStorage.getItem(
+      `${LAYOUT_PREFIX}${layoutScope()}.${fingerprint}`,
+    );
+    const parsed = raw
+      ? (JSON.parse(raw) as {
+          positions?: Record<string, [number, number]>;
+          kh?: number;
+        })
+      : null;
+    if (!parsed?.positions) return null;
+    // Count is checked by the caller; the key-set hash here rejects blobs
+    // frozen for a different node population with a coincidental count.
+    const kh = keysHash(Object.keys(parsed.positions).sort());
+    if (parsed.kh !== undefined && parsed.kh !== kh) return null;
+    return parsed.positions;
   } catch {
     return null;
   }
@@ -158,7 +198,13 @@ function saveLayout(fingerprint: string, graph: Graph): void {
     positions[node] = [attrs.x, attrs.y];
   });
   try {
-    localStorage.setItem(LAYOUT_PREFIX + fingerprint, JSON.stringify({ positions }));
+    localStorage.setItem(
+      `${LAYOUT_PREFIX}${layoutScope()}.${fingerprint}`,
+      JSON.stringify({
+        positions,
+        kh: keysHash(Object.keys(positions).sort()),
+      }),
+    );
   } catch {
     // storage full/blocked — layout just won't freeze; refetch recomputes
   }

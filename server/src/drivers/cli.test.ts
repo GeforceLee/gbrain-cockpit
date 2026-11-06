@@ -4,6 +4,7 @@ import {
   CliDriver,
   CliExecutionError,
   CliValidationError,
+  locateGbrainBin,
 } from "./cli";
 
 describe("buildArgv (whitelist discipline)", () => {
@@ -246,5 +247,60 @@ describe("CliDriver", () => {
     const status = await driver.status();
     expect(status.available).toBe(false);
     expect(status.error).toBeTruthy();
+  });
+});
+
+describe("locateGbrainBin (per-profile CLI resolution)", () => {
+  test("bare command name resolves via PATH (wrapper brains like gbrain-bip)", async () => {
+    const bin = await locateGbrainBin("gbrain-bip", {
+      which: async (name) =>
+        name === "gbrain-bip" ? "/usr/local/bin/gbrain-bip" : null,
+      accessX: async () => false,
+    });
+    expect(bin).toBe("/usr/local/bin/gbrain-bip");
+  });
+
+  test("absolute path is X_OK-checked, never PATH-resolved", async () => {
+    const bin = await locateGbrainBin("/opt/wrapper", {
+      which: async () => "/should-not-be-used",
+      accessX: async (p) => p === "/opt/wrapper",
+    });
+    expect(bin).toBe("/opt/wrapper");
+    expect(await locateGbrainBin("/nope", {
+      which: async () => null,
+      accessX: async () => false,
+    })).toBeNull();
+  });
+
+  test("unset falls back to the conventional gbrain on PATH", async () => {
+    expect(
+      await locateGbrainBin(null, { which: async (n) => `/usr/bin/${n}`, accessX: async () => true }),
+    ).toBe("/usr/bin/gbrain");
+    expect(
+      await locateGbrainBin(null, { which: async () => null, accessX: async () => true }),
+    ).toBeNull();
+  });
+});
+
+describe("wrapper stderr banners", () => {
+  test("the banner line is skipped when surfacing the real error", async () => {
+    const { driver } = makeDriver(async () => {
+      const err = new Error("exit 2") as Error & {
+        code?: number | string;
+        stderr?: string;
+      };
+      err.code = 2;
+      err.stderr = "[gbrain-bip] → postgresql://…/bip\nError: no brain directory configured";
+      throw err;
+    });
+    try {
+      await driver.trustReview();
+      expect.unreachable();
+    } catch (err) {
+      expect((err as CliExecutionError).message).toContain(
+        "no brain directory configured",
+      );
+      expect((err as CliExecutionError).message).not.toContain("[gbrain-bip]");
+    }
   });
 });

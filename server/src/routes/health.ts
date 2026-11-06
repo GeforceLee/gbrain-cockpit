@@ -9,38 +9,39 @@ import {
   type McpWhoami,
   type PgCheck,
 } from "@gbrain-cockpit/shared";
-import type { Config } from "../config";
-import { inspectCli, type CliDriver } from "../drivers/cli";
-import { McpDriver, McpError } from "../drivers/mcp";
+import type { BrainChannels } from "../brains";
+import type { CliDriver } from "../drivers/cli";
+import { McpError, type McpDriver } from "../drivers/mcp";
 import type { PgReadonlyDriver } from "../drivers/pg-readonly";
 
 // /healthz assembly (ARCHITECTURE §5-11). The MCP probe doubles as the
 // startup canary: if gbrain is unreachable we say so instead of guessing.
-// Results are cached briefly so uptime pollers (the brain host runs
+// Reports are cached PER PROFILE (a module-level single cache used to hand
+// one brain's whoami to the other — the exact bleed multi-profile exists to
+// prevent), and cached briefly so uptime pollers (the brain host runs
 // uptime-kuma) can't eat gbrain's 60 req/min token budget.
 
 const CACHE_TTL_MS = 10_000;
 const PROCESS_STARTED_AT = Date.now();
 
-let cache: { at: number; report: HealthReport } | null = null;
+const reports = new Map<string, { at: number; report: HealthReport }>();
 
 export async function getHealthReport(
-  cfg: Config,
-  mcp: McpDriver,
-  pg: PgReadonlyDriver | null = null,
-  opts: { force?: boolean; cli?: CliDriver | null } = {},
+  ch: BrainChannels,
+  opts: { force?: boolean } = {},
 ): Promise<HealthReport> {
-  if (!opts.force && cache && Date.now() - cache.at < CACHE_TTL_MS) {
-    return cache.report;
+  const cached = reports.get(ch.id);
+  if (!opts.force && cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.report;
   }
 
-  const mcpCheck = await checkMcp(mcp);
+  const mcpCheck = await checkMcp(ch.mcp);
   const brainCheck: BrainCheck =
     mcpCheck.status === "down"
       ? { status: "down", error: mcpCheck.error }
-      : await checkBrain(mcp);
-  const cliCheck = await checkCli(cfg.gbrainBin, opts.cli ?? null);
-  const pgCheck = await checkPg(pg);
+      : await checkBrain(ch.mcp);
+  const cliCheck = await checkCli(ch.cliBinResolved, ch.cli, ch.cliNote);
+  const pgCheck = await checkPg(ch.pg);
 
   const report: HealthReport = {
     status: worstStatus(
@@ -52,9 +53,15 @@ export async function getHealthReport(
     cockpitVersion: COCKPIT_VERSION,
     uptimeMs: Date.now() - PROCESS_STARTED_AT,
     generatedAt: new Date().toISOString(),
-    checks: { mcp: mcpCheck, brain: brainCheck, cli: cliCheck, ...(pgCheck ? { pg: pgCheck } : {}) },
+    profile: { id: ch.id, name: ch.profile.name },
+    checks: {
+      mcp: mcpCheck,
+      brain: brainCheck,
+      cli: cliCheck,
+      ...(pgCheck ? { pg: pgCheck } : {}),
+    },
   };
-  cache = { at: Date.now(), report };
+  reports.set(ch.id, { at: Date.now(), report });
   return report;
 }
 
@@ -78,6 +85,22 @@ export function toCoarse(report: HealthReport): {
   };
 }
 
+/**
+ * Normalize whoami across gbrain 0.60.558's per-transport shapes: legacy
+ * bearers name the caller `token_name`; OAuth grants return `client_name`
+ * (falling back to `client_id`) and never `client` or `token_name`. Scopes
+ * arrive top-level in both (OAuth spreads its capabilities in).
+ */
+export function normalizeWhoami(raw: McpWhoami): McpWhoami {
+  const client =
+    (typeof raw.client === "string" && raw.client) ||
+    (typeof raw.client_name === "string" && raw.client_name) ||
+    (typeof raw.client_id === "string" && raw.client_id) ||
+    (typeof raw.token_name === "string" && raw.token_name) ||
+    undefined;
+  return { ...raw, ...(client ? { client } : {}) };
+}
+
 function mcpErrorToStatus(kind: McpError["kind"]): CheckStatus {
   // Rate limiting means gbrain is alive but throttling — degraded, not down.
   return kind === "rate-limit" || kind === "protocol" ? "degraded" : "down";
@@ -87,18 +110,10 @@ async function checkMcp(mcp: McpDriver): Promise<McpCheck> {
   const started = performance.now();
   try {
     const raw = (await mcp.whoami()) ?? {};
-    // 0.60.558 names the caller `token_name`; normalize so the UI shows
-    // whichever field the gbrain version provides.
-    const tokenName =
-      typeof raw.token_name === "string" ? raw.token_name : undefined;
-    const whoami: McpWhoami = {
-      ...raw,
-      client: raw.client ?? tokenName,
-    };
     return {
       status: "ok",
       latencyMs: Math.round(performance.now() - started),
-      whoami,
+      whoami: normalizeWhoami(raw),
     };
   } catch (err) {
     if (err instanceof McpError) {
@@ -131,24 +146,44 @@ async function checkBrain(mcp: McpDriver): Promise<BrainCheck> {
 }
 
 /**
- * CLI channel check. With a live driver, availability is decided by the real
- * probe (`trust review --json` succeeding against THIS host's brain) — the
- * same truth the Inbox chip shows. Without a driver (binary not found), it
- * degrades to the filesystem inspection alone.
+ * CLI channel check for one profile. The registry resolved the bin at
+ * startup (absolute path or PATH hit — a bare `which` fallback here would
+ * find the WRONG brain's gbrain on a dual-brain host); with a live driver,
+ * availability is decided by the real probe (`trust review --json`
+ * succeeding against THIS host's brain) — the same truth the Inbox chip
+ * shows. The probe result is stale-while-revalidate cached inside the
+ * driver, so only the first health call per TTL window pays a cold run.
  */
-async function checkCli(gbrainBin: string | null, cli: CliDriver | null): Promise<CliCheck> {
-  const found = await inspectCli(gbrainBin);
-  if (found.status === "down") return found;
-  if (!cli) return found;
+async function checkCli(
+  resolvedBin: string | null,
+  cli: CliDriver | null,
+  note?: string,
+): Promise<CliCheck> {
+  if (!resolvedBin) {
+    return {
+      status: "down",
+      bin: null,
+      reason: "binary-not-found",
+      ...(note ? { error: note } : {}),
+    };
+  }
+  if (!cli) {
+    return {
+      status: "down",
+      bin: resolvedBin,
+      reason: "binary-not-found",
+      ...(note ? { error: note } : {}),
+    };
+  }
   const probe = await cli.status();
   if (probe.available) {
-    return { status: "ok", bin: found.bin ?? null, reason: "binary-verified" };
+    return { status: "ok", bin: resolvedBin, reason: "binary-verified" };
   }
   return {
     status: "degraded",
-    bin: found.bin ?? null,
+    bin: resolvedBin,
     reason: "binary-found-unverified",
-    error: probe.error,
+    ...(probe.error ? { error: probe.error } : {}),
   };
 }
 
@@ -159,6 +194,9 @@ async function checkPg(pg: PgReadonlyDriver | null): Promise<PgCheck | null> {
     const latencyMs = await pg.ping();
     return { status: "ok", latencyMs };
   } catch (err) {
-    return { status: "down", error: err instanceof Error ? err.message : String(err) };
+    return {
+      status: "down",
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }

@@ -49,6 +49,15 @@ export function appendAudit(text: string, meta?: AuditMeta): void {
   emit();
 }
 
+/**
+ * Drop every line — called when the operator switches brain profile: one
+ * brain's verdict history must never render as another brain's decisions.
+ */
+export function clearAudit(): void {
+  lines = [];
+  emit();
+}
+
 export function getAuditLines(): readonly AuditLine[] {
   return lines;
 }

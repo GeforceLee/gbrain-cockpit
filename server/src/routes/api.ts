@@ -8,6 +8,7 @@ import type {
   PageSummary,
   PageVersion,
   PagesFacets,
+  ProfilesResponse,
   SearchHit,
   TakeProposal,
   TrustReviewEnvelope,
@@ -15,25 +16,20 @@ import type {
   WriteReceipt,
 } from "@gbrain-cockpit/shared";
 import { auditWrite } from "../audit";
+import type { BrainRegistry, BrainChannels } from "../brains";
 import { BadRequestError, envelope, readJsonBody } from "../http";
-import {
-  CliDriver,
-  CliExecutionError,
-  CliValidationError,
-} from "../drivers/cli";
-import { McpError, McpDriver } from "../drivers/mcp";
-import type { PgReadonlyDriver } from "../drivers/pg-readonly";
+import { CliExecutionError, CliValidationError } from "../drivers/cli";
+import { McpError } from "../drivers/mcp";
 import { TRUST_REF_RE } from "@gbrain-cockpit/shared";
 
 // API surface (core-loop milestone). Every handler receives an already
-// authenticated request; param validation is regex-whitelisted before it
-// reaches any driver (AGENTS.md #6), and errors map to the envelope.
+// authenticated request routed to ONE brain's channels (the x-brain-profile
+// header picked the profile in index.ts); param validation is
+// regex-whitelisted before it reaches any driver (AGENTS.md #6), and errors
+// map to the envelope.
 
-export interface ApiContext {
-  mcp: McpDriver;
-  cli: CliDriver | null;
-  pg: PgReadonlyDriver | null;
-}
+/** One brain's three channels — what every handler below operates on. */
+export type ApiContext = BrainChannels;
 
 // --- validation patterns (single place, no scattered regexes) --------------
 
@@ -282,11 +278,29 @@ export async function handleInbox(ctx: ApiContext): Promise<Response> {
     edgeQueue(ctx),
     takesQueue(ctx),
   ]);
+  // The command name comes from the profile config (wrapper brains like
+  // `gbrain-bip` exist); it is present even when the CLI driver itself is
+  // down — copy-commands are the fallback, they must never go blank.
   const cliChannel = ctx.cli
-    ? await ctx.cli.status()
-    : { available: false, error: "gbrain binary not found" };
+    ? {
+        ...(await ctx.cli.status()),
+        command: ctx.profile.cliBin ?? "gbrain",
+      }
+    : {
+        available: false,
+        command: ctx.profile.cliBin ?? "gbrain",
+        error: "gbrain binary not found",
+      };
   const report: InboxReport = { trust, edgeProposals, takes, cliChannel };
   return Response.json(report);
+}
+
+/** GET /api/profiles — the switcher's data: ids, labels, zero secrets. */
+export async function handleProfiles(
+  registry: BrainRegistry,
+): Promise<Response> {
+  const body: ProfilesResponse = await registry.profileInfos();
+  return Response.json(body);
 }
 
 // --- adjudication actions ---------------------------------------------------
@@ -310,7 +324,11 @@ export async function handleTrustDrop(
   }
   const result = await ctx.cli.trustDrop(ref);
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", { action: "trust.drop", detail: { ref } });
+  await auditWrite("owner", {
+    action: "trust.drop",
+    profile: ctx.id,
+    detail: { ref },
+  });
   return Response.json({ ok: true, output: result.output });
 }
 
@@ -357,7 +375,11 @@ export async function handleEdgeAction(
       throw new BadRequestError("op must be accept|reject|undo|date");
   }
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", { action: `edge-proposals.${op}`, detail: { id } });
+  await auditWrite("owner", {
+    action: `edge-proposals.${op}`,
+    profile: ctx.id,
+    detail: { id },
+  });
   return Response.json({ ok: true, output: result.output });
 }
 
@@ -389,6 +411,7 @@ export async function handleTakePropose(
   ctx.mcp.invalidateAll();
   await auditWrite("owner", {
     action: `takes.propose.${op}`,
+    profile: ctx.id,
     detail: { id },
   });
   return Response.json({ ok: true, output: result.output });
@@ -406,7 +429,11 @@ export async function handleConfirm(
   );
   const result = await ctx.mcp.confirmMemory({ ref });
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", { action: "memory.confirm", detail: { ref } });
+  await auditWrite("owner", {
+    action: "memory.confirm",
+    profile: ctx.id,
+    detail: { ref },
+  });
   return Response.json({ ok: true, result });
 }
 
@@ -456,6 +483,7 @@ export async function handlePageWrite(
   if (receipt.status === "committed") ctx.mcp.invalidateAll();
   await auditWrite("owner", {
     action: "page.write",
+    profile: ctx.id,
     detail: { slug, request_id: requestId, status: receipt.status },
   });
   return Response.json(receipt satisfies WriteReceipt);

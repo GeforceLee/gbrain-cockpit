@@ -316,6 +316,39 @@
   flex-wrap: wrap;
 }
 
+/* Brain profile switcher: only rendered when more than one profile exists.
+   Owner-authored names can be long — cap and ellipsis so the topbar wraps
+   predictably below 1240px (mobile is an explicit V1 non-goal). */
+.profile-select {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-mono);
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.profile-notice {
+  border: 2px dashed var(--warn, #b8860b);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.stage-boot {
+  padding: 24px;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  opacity: 0.6;
+}
+
 .search {
   border: 3px solid var(--ink);
   box-shadow: 4px 4px 0 var(--ink);

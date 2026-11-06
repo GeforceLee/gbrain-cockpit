@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ADJUDICATION_CHANNELS, TRUST_REF_RE } from "@gbrain-cockpit/shared";
+import {
+  ADJUDICATION_CHANNELS,
+  TRUST_REF_RE,
+  edgeAcceptCommand,
+  takesAcceptCommand,
+  trustConfirmCommand,
+  trustDropCommand,
+  trustExplainCommand,
+  trustReleaseCommand,
+} from "@gbrain-cockpit/shared";
 import type {
   AdjudicationAction,
   EdgeProposal,
@@ -19,6 +28,7 @@ import { VerdictHistory } from "../components/VerdictHistory";
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { copyCommandText } from "../lib/clipboard";
 import { ApiError, apiGet, apiSend } from "../lib/api";
+import { currentProfile } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { isSlugLike } from "../lib/pages";
 import { firstLine } from "../lib/text";
@@ -110,14 +120,22 @@ function safeId(id: string | undefined): string {
 }
 
 /**
- * Gate gbrain's own command text before it reaches a copy block: it must be a
- * gbrain invocation free of shell metacharacters. Anything else falls back to
- * the command cockpit builds from validated parts.
+ * Gate gbrain's own command text before it reaches a copy block: it must be
+ * an invocation of THIS brain's command (the profile's bin — on a wrapper
+ * brain like `gbrain-bip`, upstream's literal `gbrain …` text would run
+ * against the DEFAULT brain: a wrong-brain mutation, so it must fall back)
+ * and free of shell metacharacters. The fallback is always the command
+ * cockpit builds from validated parts. Do NOT "fix" this back to a bare
+ * `gbrain ` prefix — that reintroduces the wrong-brain paste.
  */
-function ownerSafeCommand(cmd: string | null, fallback: string): string {
+function ownerSafeCommand(
+  cmd: string | null,
+  fallback: string,
+  bin: string,
+): string {
   if (
     cmd !== null &&
-    cmd.startsWith("gbrain ") &&
+    cmd.startsWith(`${bin} `) &&
     !/[;&|><$`"'\n]/.test(cmd)
   ) {
     return cmd;
@@ -185,6 +203,10 @@ export function Inbox({
   }, [active, refresh]);
 
   const cliAvailable = report?.cliChannel.available === true;
+  // The profile's owner command name — wrapper brains (gbrain-bip) print
+  // THEIR name in every copy-command; "gbrain" when unset.
+  const cliCommand = report?.cliChannel.command ?? "gbrain";
+  const canConfirm = currentProfile()?.canConfirm;
   const trustItems = report?.trust.items ?? [];
   const proposals = trustItems.filter((i) => (i.ref ?? "").startsWith("tp"));
   const heldWrites = trustItems.filter((i) => (i.ref ?? "").startsWith("h"));
@@ -441,7 +463,10 @@ export function Inbox({
       <div className="inbox-meta">
         <p className="panel-desc">{t("panel.inbox.desc")}</p>
         <div className="list-tools">
-          <span className={`chip ${cliAvailable ? "chip-ok" : "chip-degraded"}`}>
+          <span
+            className={`chip ${cliAvailable ? "chip-ok" : "chip-degraded"}`}
+            title={cliAvailable ? t("inbox.cliCold") : undefined}
+          >
             {cliAvailable ? t("inbox.cliOk") : t("inbox.cliDegraded")}
           </span>
           <button type="button" onClick={() => void refresh()} disabled={busy}>
@@ -474,6 +499,7 @@ export function Inbox({
                   type="button"
                   className={batchArmed ? "batch-arm" : ""}
                   disabled={batchBusy}
+                  title={t("inbox.cliCold")}
                   onClick={() => {
                     if (batchArmed) {
                       void batchRejectPage(pagedEntries);
@@ -577,6 +603,8 @@ export function Inbox({
                   <DecisionRail
                     entry={detail}
                     cliAvailable={cliAvailable}
+                    cliCommand={cliCommand}
+                    canConfirm={canConfirm}
                     act={act}
                   />
                 </div>
@@ -769,10 +797,16 @@ function DocumentCard({
 function DecisionRail({
   entry,
   cliAvailable,
+  cliCommand,
+  canConfirm,
   act,
 }: {
   entry: Entry;
   cliAvailable: boolean;
+  /** the profile's command name for copy-command templates */
+  cliCommand: string;
+  /** live whoami capability; undefined = unknown (never guessed) */
+  canConfirm?: boolean;
   act: (
     path: string,
     body: unknown,
@@ -877,8 +911,9 @@ function DecisionRail({
           ? itemCommand(trust, ["trust confirm"])
           : itemCommand(trust, ["trust release"]),
         entry.queueId === "proposals"
-          ? `gbrain trust confirm ${ref}`
-          : `gbrain trust release ${ref}`,
+          ? trustConfirmCommand(cliCommand, ref)
+          : trustReleaseCommand(cliCommand, ref),
+        cliCommand,
       );
       dropRun = cliAvailable
         ? () =>
@@ -897,7 +932,7 @@ function DecisionRail({
             : null}
           {!cliAvailable ? (
             // degrade: one-key drop becomes a copy-command block too
-            <CopyCommand command={`gbrain trust drop ${ref}`} />
+            <CopyCommand command={trustDropCommand(cliCommand, ref)} />
           ) : null}
           {copyStamp(acceptCmd)}
           <CopyCommand command={acceptCmd} />
@@ -926,14 +961,20 @@ function DecisionRail({
       const ref = safeRef(trust.ref);
       rail = (
         <>
-          {stampOk("inbox.factConfirm", "stamp.en.confirm", t("inbox.via.mcp"), () =>
-            act(
-              "/api/inbox/confirm",
-              { ref: trust.ref },
-              `memory.confirm ${trust.ref}`,
-              confirmedStamp,
-              metaFor("ok", t("verdict.confirmed"), trust.ref ?? "?"),
-            ),
+          {canConfirm === false ? (
+            // known-missing memory_confirm scope: the stamp would only ever
+            // 502 — show why instead of a button that cannot succeed
+            <p className="confirm-readonly">{t("inbox.confirmReadOnly")}</p>
+          ) : (
+            stampOk("inbox.factConfirm", "stamp.en.confirm", t("inbox.via.mcp"), () =>
+              act(
+                "/api/inbox/confirm",
+                { ref: trust.ref },
+                `memory.confirm ${trust.ref}`,
+                confirmedStamp,
+                metaFor("ok", t("verdict.confirmed"), trust.ref ?? "?"),
+              ),
+            )
           )}
           {cliAvailable ? (
             stampDrop(
@@ -950,7 +991,7 @@ function DecisionRail({
                 )),
             )
           ) : (
-            <CopyCommand command={`gbrain trust drop ${ref}`} />
+            <CopyCommand command={trustDropCommand(cliCommand, ref)} />
           )}
         </>
       );
@@ -958,8 +999,14 @@ function DecisionRail({
         {
           label: t("channel.row.confirm"),
           channel: ch("memory.confirm"),
-          verdict: "yes",
-          note: t("channel.onekey"),
+          // A read-grant profile (no memory_confirm scope) can never one-key
+          // confirm — say na, and the note below explains the asymmetry:
+          // this gates the MCP credential only, never the host CLI.
+          verdict: canConfirm === false ? "na" : "yes",
+          note:
+            canConfirm === false
+              ? t("inbox.confirmReadOnly")
+              : t("channel.onekey"),
         },
         {
           label: t("channel.row.discard"),
@@ -1000,7 +1047,7 @@ function DecisionRail({
         </>
       ) : (
         <CopyCommand
-          command={`gbrain edge-proposals accept ${id}`}
+          command={edgeAcceptCommand(cliCommand, id)}
           hint={t("inbox.edgeHint")}
         />
       );
@@ -1051,7 +1098,7 @@ function DecisionRail({
         </>
       ) : (
         <CopyCommand
-          command={`gbrain takes propose --accept ${id}`}
+          command={takesAcceptCommand(cliCommand, id)}
           hint={t("inbox.takeHint")}
         />
       );
@@ -1076,7 +1123,9 @@ function DecisionRail({
       // others: explain only — read path, no adjudication surface here
       const trust = entry.item as TrustReviewItem;
       rail = (
-        <CopyCommand command={`gbrain trust explain ${safeRef(trust.ref)}`} />
+        <CopyCommand
+          command={trustExplainCommand(cliCommand, safeRef(trust.ref))}
+        />
       );
       rows = [
         { label: t("channel.row.explain"), channel: "cli-whitelist", verdict: "na", note: t("channel.terminal") },

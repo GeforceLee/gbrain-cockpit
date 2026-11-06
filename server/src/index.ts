@@ -1,13 +1,12 @@
-import type { ErrorCode } from "@gbrain-cockpit/shared";
+import { PROFILE_ID_RE, type ErrorCode } from "@gbrain-cockpit/shared";
 import { COCKPIT_VERSION } from "@gbrain-cockpit/shared";
 import { existsSync } from "node:fs";
 import { TokenVerifier } from "./auth";
+import { BrainRegistry } from "./brains";
 import { loadConfig, ConfigError, type Config } from "./config";
-import { locateGbrainBin, CliDriver } from "./drivers/cli";
-import { McpDriver } from "./drivers/mcp";
-import { PgReadonlyDriver } from "./drivers/pg-readonly";
 import { loadRootEnv } from "./env";
 import { envelope, guardRequest } from "./http";
+import { loadProfiles } from "./profiles";
 import { serveStatic } from "./static";
 import {
   handleConfirm,
@@ -18,12 +17,12 @@ import {
   handlePageFacets,
   handlePageWrite,
   handlePages,
+  handleProfiles,
   handleSearch,
   handleTakePropose,
   handleTrustDrop,
   handleWriteRequest,
   mapError,
-  type ApiContext,
 } from "./routes/api";
 import { getHealthReport, toCoarse } from "./routes/health";
 
@@ -41,8 +40,29 @@ try {
   throw err;
 }
 
+// Brain connection profiles: COCKPIT_PROFILES_FILE (multi-brain) or the
+// legacy single-instance GBRAIN_* env wrapped as one "default" profile.
+// Startup logs profile ids and channel availability ONLY — never tokens,
+// DSNs or file contents (AGENTS.md non-negotiable #7).
+const brainsConfig = (() => {
+  try {
+    return loadProfiles();
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(`[cockpit] profiles error: ${err.message}`);
+      console.error(`[cockpit] ${err.hint}`);
+      process.exit(1);
+    }
+    throw err;
+  }
+})();
+for (const v of brainsConfig.ignoredLegacyVars) {
+  console.warn(
+    `[cockpit] ${v} is set but COCKPIT_PROFILES_FILE wins — the legacy value is ignored`,
+  );
+}
+
 const verifier = new TokenVerifier(cfg.cockpitToken);
-const mcp = new McpDriver({ url: cfg.gbrainMcpUrl, token: cfg.gbrainMcpToken });
 
 // Static web root: explicit env wins (compiled-binary deployments), then the
 // repo checkout layout; absent both (dev loop via vite) static stays off.
@@ -55,30 +75,33 @@ function resolveDistRoot(): string | null {
 }
 const distRoot = resolveDistRoot();
 
-const gbrainBin = await locateGbrainBin(cfg.gbrainBin);
-const cli = gbrainBin ? new CliDriver(gbrainBin) : null;
-if (cfg.gbrainBin && !gbrainBin) {
-  console.error(`[cockpit] GBRAIN_BIN is set but not executable: ${cfg.gbrainBin}`);
-  process.exit(1);
-}
+const registry = await BrainRegistry.create(brainsConfig);
 
-// Read-only graph bypass: optional channel — unset DSN (PGLite engines)
-// simply means Nebula reports "down"; never fatal (ARCHITECTURE §3.3, §11-3).
-const pg = new PgReadonlyDriver({ dsn: cfg.pgReadonlyDsn });
-if (cfg.pgReadonlyDsn) {
-  try {
-    const latency = await pg.ping();
-    console.log(`[cockpit] graph bypass: read-only Postgres reachable (${latency}ms)`);
-  } catch (err) {
-    console.warn(
-      `[cockpit] graph bypass: Postgres probe failed — Nebula degrades to cached/stale (${err instanceof Error ? err.message : String(err)})`,
+// Startup banner: one line per profile, availability only.
+for (const p of brainsConfig.profiles) {
+  const ch = registry.resolve(p.id)!;
+  console.log(
+    `[cockpit] profile ${p.id} (${p.name}) mcp:ok cli:${ch.cliBinResolved ?? "-"} pg:${p.pgReadonlyDsn ? "set" : "unset"}`,
+  );
+}
+if (brainsConfig.mode === "legacy-env") {
+  const legacy = brainsConfig.profiles[0]!;
+  console.log(`[cockpit] gbrain MCP endpoint: ${legacy.mcpUrl}`);
+  console.log(
+    registry.resolve(legacy.id)?.cli
+      ? `[cockpit] CLI channel: ${registry.resolve(legacy.id)?.cliBinResolved} (availability probed on first use)`
+      : "[cockpit] CLI channel: no gbrain binary — adjudication actions degrade to copy-command",
+  );
+  if (!legacy.takesHolders) {
+    console.log(
+      "[cockpit] note: GBRAIN_TAKES_HOLDERS is unset — takes queues may look empty if the token was minted with default holders (see .env.example)",
     );
   }
 } else {
-  console.log("[cockpit] graph bypass: PG_READONLY_DSN unset — Nebula will report the channel as down");
+  console.log(
+    `[cockpit] ${brainsConfig.profiles.length} brain profile(s) from COCKPIT_PROFILES_FILE — switch with the x-brain-profile header`,
+  );
 }
-
-const api: ApiContext = { mcp, cli, pg };
 
 const server = Bun.serve({
   hostname: cfg.bind,
@@ -87,11 +110,14 @@ const server = Bun.serve({
     const url = new URL(req.url);
 
     // Coarse, unauthenticated health for uptime pollers — statuses only.
+    // Reflects the DEFAULT profile (documented: uptime semantics stay
+    // stable regardless of which brain the UI is looking at).
     if (url.pathname === "/healthz") {
       if (req.method !== "GET") {
         return envelope(405, "E_METHOD_NOT_ALLOWED" as ErrorCode, "only GET is allowed");
       }
-      return Response.json(toCoarse(await getHealthReport(cfg, mcp, pg, { cli })));
+      const def = registry.resolve(null);
+      return Response.json(toCoarse(await getHealthReport(def!)));
     }
 
     const rejected = guardRequest(req, url, cfg);
@@ -103,35 +129,49 @@ const server = Bun.serve({
         return envelope(401, "E_UNAUTHENTICATED", "missing or invalid bearer token");
       }
 
+      // Profile routing: absent header = the default profile (0.1.1 curl
+      // scripts and single-instance installs stay zero-aware); a malformed
+      // or unknown id is a 400, never a silent fallback to the wrong brain.
+      const profileId = req.headers.get("x-brain-profile");
+      if (profileId !== null && !PROFILE_ID_RE.test(profileId)) {
+        return envelope(400, "E_BAD_REQUEST", "invalid x-brain-profile header");
+      }
+      const channels = registry.resolve(profileId);
+      if (!channels) {
+        return envelope(400, "E_BAD_REQUEST", `unknown brain profile: ${profileId}`);
+      }
+
       const route = `${req.method} ${url.pathname}`;
       try {
         switch (route) {
+          case "GET /api/profiles":
+            return await handleProfiles(registry);
           case "GET /api/healthz":
-            return Response.json(await getHealthReport(cfg, mcp, pg, { cli }));
+            return Response.json(await getHealthReport(channels));
           case "GET /api/graph":
-            return await handleGraph(api);
+            return await handleGraph(channels);
           case "GET /api/pages":
-            return await handlePages(api, url);
+            return await handlePages(channels, url);
           case "GET /api/pages/facets":
-            return await handlePageFacets(api);
+            return await handlePageFacets(channels);
           case "GET /api/page":
-            return await handlePage(api, url);
+            return await handlePage(channels, url);
           case "GET /api/search":
-            return await handleSearch(api, url);
+            return await handleSearch(channels, url);
           case "GET /api/inbox":
-            return await handleInbox(api);
+            return await handleInbox(channels);
           case "POST /api/inbox/trust/drop":
-            return await handleTrustDrop(api, req);
+            return await handleTrustDrop(channels, req);
           case "POST /api/inbox/edge":
-            return await handleEdgeAction(api, req);
+            return await handleEdgeAction(channels, req);
           case "POST /api/inbox/takes/propose":
-            return await handleTakePropose(api, req);
+            return await handleTakePropose(channels, req);
           case "POST /api/inbox/confirm":
-            return await handleConfirm(api, req);
+            return await handleConfirm(channels, req);
           case "PUT /api/page":
-            return await handlePageWrite(api, req);
+            return await handlePageWrite(channels, req);
           case "GET /api/write-request":
-            return await handleWriteRequest(api, url);
+            return await handleWriteRequest(channels, url);
           default:
             return envelope(404, "E_NOT_FOUND", "unknown route");
         }
@@ -151,17 +191,6 @@ const server = Bun.serve({
 
 console.log(`[cockpit] v${COCKPIT_VERSION} listening on http://${cfg.bind}:${cfg.port}`);
 console.log("[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>'");
-console.log(`[cockpit] gbrain MCP endpoint: ${cfg.gbrainMcpUrl}`);
-console.log(
-  cli
-    ? `[cockpit] CLI channel: ${gbrainBin} (availability probed on first use)`
-    : "[cockpit] CLI channel: no gbrain binary — adjudication actions degrade to copy-command",
-);
-if (cfg.gbrainTakesHolders === null) {
-  console.log(
-    "[cockpit] note: GBRAIN_TAKES_HOLDERS is unset — takes queues may look empty if the token was minted with default holders (see .env.example)",
-  );
-}
 
 process.on("SIGINT", () => {
   console.log("[cockpit] shutting down");

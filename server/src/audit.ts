@@ -12,6 +12,8 @@ const ROTATE_BYTES = 10 * 1024 * 1024;
 
 export interface AuditEntry {
   action: string;
+  /** which brain profile the action targeted (multi-brain provenance) */
+  profile?: string;
   detail?: Record<string, unknown>;
 }
 

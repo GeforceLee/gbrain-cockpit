@@ -56,8 +56,161 @@ export const ADJUDICATION_CHANNELS: Readonly<
   "page.write": "mcp",
 };
 
+// --- Identities & profiles ---------------------------------------------------
+// Multi-brain switching (P0) and the source axis (P1) both hinge on naming:
+// which gbrain deployment a request targets, and which source within a brain
+// a page belongs to. Page identity is (source_id, slug) upstream — slug is
+// only unique per source (gbrain 0.60.558: pages UNIQUE (source_id, slug)) —
+// so everything cross-referencing a page must carry the source too.
+
+/**
+ * Profile ids route the x-brain-profile header and key server-side caches.
+ * Lowercase kebab, bounded: safe as map keys, log lines and audit fields.
+ */
+export const PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * Source ids as cockpit accepts them from HTTP (filters, get_page
+ * disambiguation). `/` is forbidden on purpose: it would corrupt graph node
+ * keys and MCP cache keys. Dunder-prefixed sentinels (`__all__` is
+ * upstream's cross-source wildcard) are reserved and never selectable in
+ * the UI — see isValidSourceId.
+ */
+export const SOURCE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** True when `v` is a selectable source id (charset + not a reserved sentinel). */
+export function isValidSourceId(v: string): boolean {
+  return SOURCE_ID_RE.test(v) && !v.startsWith("__");
+}
+
+/**
+ * The CLI command a profile's owner runs on the brain host: either a bare
+ * command name (resolved via PATH; no `/`, no whitespace, no leading dash)
+ * or an absolute path. This string becomes argv[0] of execFile calls AND the
+ * literal prefix of copy-command strings the owner pastes into a shell, so
+ * the charset must be metachar-free by construction.
+ */
+export const OWNER_BIN_RE =
+  /^(?:[a-z0-9][a-z0-9_-]{0,30}|\/[A-Za-z0-9._/-]{1,200})$/;
+
+/** One gbrain deployment as configured server-side (secrets never leave). */
+export interface BrainProfileConfig {
+  id: string;
+  name: string;
+  /** MCP streamable-HTTP endpoint of this brain's serve. */
+  mcpUrl: string;
+  /** Static bearer token (legacy `gbrain auth create`) — XOR mcpCredentials. */
+  mcpToken?: string;
+  /**
+   * Path to a gbrain OAuth client-credentials handoff file
+   * (`gbrain mcp grant --credentials-out`, 0600) — XOR mcpToken. The driver
+   * renews the access token itself; the secret never leaves the process.
+   */
+  mcpCredentials?: string;
+  pgReadonlyDsn?: string;
+  cliBin?: string;
+  takesHolders?: string[];
+}
+
+/** The wire form of a profile: ids and labels only, zero secrets. */
+export interface ProfileInfo {
+  id: string;
+  name: string;
+  /** resolved CLI command name for owner copy-commands (default "gbrain") */
+  cliCommand?: string;
+  /** true when the profile's live whoami lacks the `write` scope (UX hint) */
+  readOnly?: boolean;
+  /**
+   * true when the whoami scopes include `memory_confirm` (the one-key fact
+   * confirm). Undefined = unknown (MCP unreachable) — never guessed.
+   */
+  canConfirm?: boolean;
+}
+
+export interface ProfilesResponse {
+  defaultId: string;
+  profiles: ProfileInfo[];
+}
+
+// --- Owner copy-commands -----------------------------------------------------
+// The single source of the command strings the Inbox renders for the owner
+// to paste into a terminal on the brain host (channel: copy-command, AGENTS
+// non-negotiable #1/#4). `bin` is the profile's resolved command name; with
+// a custom wrapper (e.g. `gbrain-bip`) the self-built template is the ONLY
+// trustworthy text — upstream's literal `gbrain …` command strings would
+// target the default brain (wrong-brain mutation), so they are gated out.
+
+function assertOwnerBin(bin: string): void {
+  if (!OWNER_BIN_RE.test(bin)) {
+    throw new Error(`owner command bin rejected by OWNER_BIN_RE: ${bin}`);
+  }
+}
+
+function assertTrustRef(ref: string): void {
+  if (!TRUST_REF_RE.test(ref)) {
+    throw new Error(`owner command ref rejected by TRUST_REF_RE: ${ref}`);
+  }
+}
+
+function assertCliId(id: string): void {
+  if (!/^\d{1,18}$/.test(id)) {
+    throw new Error(`owner command id rejected: ${id}`);
+  }
+}
+
+export function trustConfirmCommand(bin: string, ref: string): string {
+  assertOwnerBin(bin);
+  assertTrustRef(ref);
+  return `${bin} trust confirm ${ref}`;
+}
+
+export function trustReleaseCommand(bin: string, ref: string): string {
+  assertOwnerBin(bin);
+  assertTrustRef(ref);
+  return `${bin} trust release ${ref}`;
+}
+
+export function trustDropCommand(bin: string, ref: string): string {
+  assertOwnerBin(bin);
+  assertTrustRef(ref);
+  return `${bin} trust drop ${ref}`;
+}
+
+export function trustExplainCommand(bin: string, ref: string): string {
+  assertOwnerBin(bin);
+  assertTrustRef(ref);
+  return `${bin} trust explain ${ref}`;
+}
+
+export function edgeAcceptCommand(bin: string, id: string): string {
+  assertOwnerBin(bin);
+  assertCliId(id);
+  return `${bin} edge-proposals accept ${id}`;
+}
+
+export function takesAcceptCommand(bin: string, id: string): string {
+  assertOwnerBin(bin);
+  assertCliId(id);
+  return `${bin} takes propose --accept ${id}`;
+}
+
+/**
+ * The unique graph node id for a page: `sourceId/slug` when the source is
+ * known (source ids never contain `/` — SOURCE_ID_RE), bare `slug` in the
+ * degraded no-source-column mode. Consumers that need (slug, source_id)
+ * back must read them from the node's own fields, never re-parse the key:
+ * slugs may themselves contain `/` (e.g. `kb/migration0007`), so a key is
+ * only splittable when its format is known.
+ */
+export function buildGraphKey(
+  sourceId: string | undefined,
+  slug: string,
+): string {
+  return sourceId ? `${sourceId}/${slug}` : slug;
+}
+
 // --- Error envelopes -------------------------------------------------------
-// The browser only ever sees `{ error: summary, code }`; anything richer
+// The browser only ever sees `{ error, summary, code }`; anything richer
 // (stderr, paths, DSNs) stays in server-side logs (ARCHITECTURE §5-7).
 
 export const ERROR_CODES = [
@@ -89,6 +242,12 @@ export interface McpWhoami {
   transport?: string;
   client?: string;
   scopes?: string[];
+  /**
+   * gbrain 0.60.558 whoami differs per transport: legacy bearers return
+   * token_name + top-level scopes; OAuth grants return client_id/client_name
+   * with scopes (and source_id/federated_read) inside a capabilities spread.
+   * The server normalizes `client`/`scopes` from whichever shape arrives.
+   */
   [k: string]: unknown;
 }
 
@@ -137,6 +296,11 @@ export interface HealthReport {
   cockpitVersion: string;
   uptimeMs: number;
   generatedAt: string;
+  /** which brain deployment this report describes (multi-profile) */
+  profile?: {
+    id: string;
+    name: string;
+  };
   checks: {
     mcp: McpCheck;
     brain: BrainCheck;
@@ -180,6 +344,8 @@ export interface PagesFacets {
 
 export interface PageDetail {
   slug: string;
+  /** identity is (source_id, slug) — slug alone is ambiguous across sources */
+  source_id?: string;
   /** gbrain 0.60.x hands out UUID strings here; numeric for safety */
   revision?: number | string;
   content?: string;
@@ -212,6 +378,22 @@ export interface SearchHit {
   trust_tier?: string;
   source_id?: string;
   [k: string]: unknown;
+}
+
+/** One row of MCP `sources_list` (grant-scoped upstream, no withheld marker). */
+export interface SourceSummary {
+  id: string;
+  name?: string;
+  page_count?: number;
+  remote_url?: string | null;
+  [k: string]: unknown;
+}
+
+/** GET /api/sources — in-band degraded like every other channel report. */
+export interface SourcesReport {
+  status: CheckStatus;
+  items?: SourceSummary[];
+  error?: string;
 }
 
 // --- Inbox ------------------------------------------------------------------
@@ -302,6 +484,12 @@ export interface CliChannelStatus {
   available: boolean;
   /** "unprobed" until first use; result cached briefly */
   probedAt?: string;
+  /**
+   * The profile's resolved CLI command name for owner copy-commands
+   * ("gbrain" when unset). Present even when the driver itself is down —
+   * copy-commands are the fallback, they must never go blank.
+   */
+  command?: string;
   error?: string;
 }
 
@@ -312,7 +500,14 @@ export interface CliChannelStatus {
 // unset; the channel then reports "down" and degrades, never crashes.
 
 export interface GraphNode {
+  /**
+   * Unique node id: `source_id/slug` when the source column is present,
+   * bare slug in the degraded mode (see buildGraphKey). Slugs may repeat
+   * across nodes — `slug` below is the display label, NOT the identity.
+   */
+  key: string;
   slug: string;
+  source_id?: string;
   title?: string;
   type?: string;
   updated_at?: string;
@@ -321,9 +516,9 @@ export interface GraphNode {
 }
 
 export interface GraphEdge {
-  /** source page slug */
+  /** source page key (GraphNode.key) */
   source: string;
-  /** target page slug */
+  /** target page key (GraphNode.key) */
   target: string;
   link_type?: string;
   link_source?: string;
@@ -334,8 +529,10 @@ export interface GraphReport {
   status: CheckStatus;
   /**
    * Changes whenever the underlying pages/links change. Clients freeze FA2
-   * layout coordinates per fingerprint so dream diffs stay comparable
-   * (layout coordinates frozen — style-review hard constraint).
+   * layout coordinates per (profile, fingerprint) pair so dream diffs stay
+   * comparable while two brains with coincidentally identical fingerprints
+   * never share a frozen layout (layout coordinates frozen — style-review
+   * hard constraint).
    */
   fingerprint?: string;
   /** true when serving the cached graph after a probe/refetch failure */

@@ -1,76 +1,51 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, loadConfig } from "./config";
+import { loadConfig, ConfigError } from "./config";
 
-const BASE_ENV = {
-  COCKPIT_TOKEN: "cockpit-secret",
-  GBRAIN_MCP_TOKEN: "gbrain-secret",
-};
+// cockpit's own process config only — brain connection profiles (and their
+// fail-closed tests) live in profiles.test.ts.
 
-describe("loadConfig (fail-closed secrets)", () => {
-  test("missing COCKPIT_TOKEN refuses to start and suggests a generated token", () => {
+const BASE = { COCKPIT_TOKEN: "tok" };
+
+describe("loadConfig (cockpit process config)", () => {
+  test("COCKPIT_TOKEN missing fails closed with a ready-to-use secret", () => {
+    expect(() => loadConfig({})).toThrow(ConfigError);
     try {
-      loadConfig({ ...BASE_ENV, COCKPIT_TOKEN: undefined });
-      throw new Error("expected ConfigError");
+      loadConfig({});
+      expect.unreachable();
     } catch (err) {
-      expect(err).toBeInstanceOf(ConfigError);
-      const e = err as ConfigError;
-      expect(e.message).toContain("COCKPIT_TOKEN");
-      expect(e.hint).toContain("COCKPIT_TOKEN=");
+      const hint = (err as ConfigError).hint;
+      expect(hint).toContain("COCKPIT_TOKEN=");
     }
   });
 
-  test("empty/whitespace COCKPIT_TOKEN counts as missing", () => {
-    expect(() => loadConfig({ ...BASE_ENV, COCKPIT_TOKEN: "   " })).toThrow(
-      ConfigError,
-    );
+  test("blank token is also missing (trim)", () => {
+    expect(() => loadConfig({ COCKPIT_TOKEN: "   " })).toThrow(ConfigError);
   });
 
-  test("missing GBRAIN_MCP_TOKEN refuses to start and suggests the mint command", () => {
-    try {
-      loadConfig({ ...BASE_ENV, GBRAIN_MCP_TOKEN: undefined });
-      throw new Error("expected ConfigError");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigError);
-      const e = err as ConfigError;
-      expect(e.hint).toContain("gbrain auth create");
-      // The takes-holders trap must be surfaced at startup, not discovered
-      // later as mysteriously empty queues (ARCHITECTURE §3.1).
-      expect(e.hint).toContain("takes-holders");
-    }
-  });
-
-  test("applies documented defaults", () => {
-    const cfg = loadConfig({ ...BASE_ENV });
+  test("defaults bind and port", () => {
+    const cfg = loadConfig(BASE);
     expect(cfg.bind).toBe("127.0.0.1");
     expect(cfg.port).toBe(8787);
-    expect(cfg.gbrainMcpUrl).toBe("http://127.0.0.1:3131/mcp");
-    expect(cfg.gbrainTakesHolders).toBeNull();
-    expect(cfg.gbrainBin).toBeNull();
-    expect(cfg.pgReadonlyDsn).toBeNull();
+    expect(cfg.cockpitToken).toBe("tok");
   });
 
-  test("parses and validates overrides", () => {
+  test("explicit bind and port win", () => {
     const cfg = loadConfig({
-      ...BASE_ENV,
+      ...BASE,
       COCKPIT_BIND: "0.0.0.0",
-      COCKPIT_PORT: "9000",
-      GBRAIN_MCP_URL: "http://10.0.0.1:3131/mcp",
-      GBRAIN_TAKES_HOLDERS: "world, brain,",
-      GBRAIN_BIN: "/usr/local/bin/gbrain",
+      COCKPIT_PORT: "8799",
     });
     expect(cfg.bind).toBe("0.0.0.0");
-    expect(cfg.port).toBe(9000);
-    expect(cfg.gbrainMcpUrl).toBe("http://10.0.0.1:3131/mcp");
-    expect(cfg.gbrainTakesHolders).toEqual(["world", "brain"]);
-    expect(cfg.gbrainBin).toBe("/usr/local/bin/gbrain");
+    expect(cfg.port).toBe(8799);
   });
 
-  test.each(["0", "70000", "not-a-port", ""])(
-    "rejects invalid COCKPIT_PORT %j",
-    (raw) => {
-      expect(() =>
-        loadConfig({ ...BASE_ENV, COCKPIT_PORT: raw }),
-      ).toThrow(ConfigError);
-    },
-  );
+  test("invalid port fails closed", () => {
+    expect(() => loadConfig({ ...BASE, COCKPIT_PORT: "0" })).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({ ...BASE, COCKPIT_PORT: "70000" }),
+    ).toThrow(ConfigError);
+    expect(() =>
+      loadConfig({ ...BASE, COCKPIT_PORT: "http" }),
+    ).toThrow(ConfigError);
+  });
 });

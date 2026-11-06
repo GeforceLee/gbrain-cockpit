@@ -246,7 +246,9 @@ export class PgReadonlyDriver {
     for (const row of pagesRows) {
       const slug = String(row.slug ?? "");
       if (!slug) continue;
-      const node: GraphNode = { slug, degree: degree.get(slug) ?? 0 };
+      // P0 placeholder key: without the source column (Phase 6) the slug IS
+      // the identity this SELECT produces — same uniqueness as 0.1.1.
+      const node: GraphNode = { key: slug, slug, degree: degree.get(slug) ?? 0 };
       if (typeof row.title === "string" && row.title) node.title = row.title;
       if (typeof row.type === "string" && row.type) node.type = row.type;
       const updated = row.updated_at;

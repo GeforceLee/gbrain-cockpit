@@ -1353,3 +1353,22 @@ button.batch-arm {
     min-width: 0;
   }
 }
+
+/* Read-grant note in the facts decision rail (no memory_confirm scope). */
+.confirm-readonly {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  opacity: 0.75;
+  border: 2px dashed var(--warn, #b8860b);
+  padding: 8px 10px;
+  margin: 0;
+}
+
+/* Read-grant note replacing the Pages edit button. */
+.readonly-note {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  opacity: 0.75;
+  border: 2px dashed var(--warn, #b8860b);
+  padding: 4px 8px;
+}

@@ -188,3 +188,136 @@ describe("normalizeReceipt", () => {
     expect(receipt.detail).toContain("weird");
   });
 });
+
+// --- OAuth client_credentials (multi-brain profiles) -------------------------
+
+interface Recorded {
+  url: string;
+  body: string;
+  headers: Record<string, string>;
+}
+
+function urlAwareFetch(handler: (call: Recorded) => Response) {
+  const calls: Recorded[] = [];
+  const fetchFn = (async (input: unknown, init?: RequestInit) => {
+    const call: Recorded = {
+      url: String(input),
+      body: String(init?.body ?? ""),
+      headers: (init?.headers ?? {}) as Record<string, string>,
+    };
+    calls.push(call);
+    return handler(call);
+  }) as typeof fetch;
+  return { fetchFn, calls };
+}
+
+const oauthOpts = {
+  url: "http://unit/mcp",
+  oauth: {
+    issuerUrl: "http://unit",
+    clientId: "ci",
+    clientSecret: "SUPER-SECRET",
+    accessToken: "stale-token",
+    expiresAt: Math.floor(Date.now() / 1000) - 10, // already expired
+  },
+} as const;
+
+function mcpJsonRpc(call: Recorded): Response {
+  const parsed = JSON.parse(call.body) as { method: string; id?: number };
+  if (parsed.method === "initialize") {
+    return jsonRes({ jsonrpc: "2.0", id: parsed.id, result: {} });
+  }
+  if (parsed.method === "tools/call") {
+    return jsonRes({
+      jsonrpc: "2.0",
+      id: parsed.id,
+      result: { content: [{ type: "text", text: '{"transport":"oauth"}' }] },
+    });
+  }
+  return new Response(null, { status: 202 });
+}
+
+describe("McpDriver oauth renewal", () => {
+  test("expired handoff token: renews via client_credentials POST before the call", async () => {
+    const { fetchFn, calls } = urlAwareFetch((call) => {
+      if (call.url === "http://unit/token") {
+        expect(call.headers["content-type"]).toBe(
+          "application/x-www-form-urlencoded",
+        );
+        expect(call.body).toContain("grant_type=client_credentials");
+        expect(call.body).toContain("client_id=ci");
+        return jsonRes({ access_token: "fresh-1", expires_in: 3600 });
+      }
+      expect(call.headers["authorization"]).toBe("Bearer fresh-1");
+      return mcpJsonRpc(call);
+    });
+    const driver = new McpDriver({ ...oauthOpts, fetchFn });
+    expect(await driver.whoami()).toEqual({ transport: "oauth" });
+    const tokenPosts = calls.filter((c) => c.url === "http://unit/token");
+    expect(tokenPosts).toHaveLength(1); // single-flight, not per-request
+    await driver.whoami();
+    expect(calls.filter((c) => c.url === "http://unit/token")).toHaveLength(1);
+  });
+
+  test("401 mid-session: one forced renewal, then a single replay", async () => {
+    let renewed = false;
+    let replayed = false;
+    const { fetchFn, calls } = urlAwareFetch((call) => {
+      if (call.url === "http://unit/token") {
+        renewed = true;
+        return jsonRes({ access_token: "fresh-2", expires_in: 3600 });
+      }
+      const auth = call.headers["authorization"];
+      if (auth === "Bearer stale-token" && call.body.includes("tools/call")) {
+        return new Response("invalid_token", { status: 401 });
+      }
+      if (auth === "Bearer fresh-2" && call.body.includes("tools/call")) {
+        replayed = true;
+        return mcpJsonRpc(call);
+      }
+      return mcpJsonRpc(call);
+    });
+    const driver = new McpDriver({ ...oauthOpts, fetchFn });
+    expect(await driver.whoami()).toEqual({ transport: "oauth" });
+    expect(renewed).toBe(true);
+    expect(replayed).toBe(true);
+    expect(calls.filter((c) => c.url === "http://unit/token")).toHaveLength(1);
+  });
+
+  test("renewal failures never leak the client secret", async () => {
+    const { fetchFn } = urlAwareFetch((call) => {
+      if (call.url === "http://unit/token") {
+        return new Response("unauthorized: SUPER-SECRET echo", { status: 401 });
+      }
+      return mcpJsonRpc(call);
+    });
+    const driver = new McpDriver({ ...oauthOpts, fetchFn });
+    try {
+      await driver.whoami();
+      throw new Error("expected McpError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(McpError);
+      const e = err as McpError;
+      expect(e.kind).toBe("auth");
+      expect(`${e.message}${e.retryAfterMs ?? ""}`).not.toContain("SUPER-SECRET");
+      expect(e.message).toContain("HTTP 401");
+    }
+  });
+
+  test("static tokens never hit the token endpoint", async () => {
+    const { fetchFn, calls } = urlAwareFetch((call) => {
+      if (call.url === "http://unit/token") {
+        throw new Error("static driver must not renew");
+      }
+      expect(call.headers["authorization"]).toBe("Bearer static-tok");
+      return mcpJsonRpc(call);
+    });
+    const driver = new McpDriver({
+      url: "http://unit/mcp",
+      token: "static-tok",
+      fetchFn,
+    });
+    expect(await driver.whoami()).toEqual({ transport: "oauth" });
+    expect(calls.every((c) => c.url !== "http://unit/token")).toBe(true);
+  });
+});

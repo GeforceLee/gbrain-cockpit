@@ -51,9 +51,28 @@ interface ToolCallPayload {
 
 const PROTOCOL_VERSION = "2025-03-26";
 
+/**
+ * A parsed `gbrain mcp grant --credentials-out` handoff (OAuth
+ * client_credentials). The access token it ships expires (typically 3600s
+ * for renewable harnesses); the driver renews it itself via a form POST to
+ * `${issuerUrl}/token` — mirroring upstream's credentialAccessToken(). The
+ * secret lives in memory only and never reaches a log or an error message.
+ */
+export interface OAuthHandoff {
+  issuerUrl: string;
+  clientId: string;
+  clientSecret: string;
+  accessToken?: string;
+  /** epoch seconds */
+  expiresAt?: number;
+}
+
 export interface McpDriverOptions {
   url: string;
-  token: string;
+  /** static bearer token (legacy `gbrain auth create`) — required unless oauth */
+  token?: string;
+  /** OAuth handoff — when set, token renewal is the driver's job */
+  oauth?: OAuthHandoff;
   /** Driver-layer timeout is the single timeout authority (ARCHITECTURE §6). */
   timeoutMs?: number;
   /** Injectable for tests. */
@@ -62,16 +81,28 @@ export interface McpDriverOptions {
 
 export class McpDriver {
   readonly #url: string;
-  readonly #token: string;
+  readonly #staticToken: string;
+  readonly #oauth: OAuthHandoff | null;
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
   #nextId = 0;
   #sessionId: string | null = null;
   #initPromise: Promise<void> | null = null;
+  #accessToken: string | null = null;
+  #accessTokenExpiresAt: number | undefined = undefined;
+  #renewPromise: Promise<void> | null = null;
 
   constructor(opts: McpDriverOptions) {
     this.#url = opts.url;
-    this.#token = opts.token;
+    this.#staticToken = opts.token ?? "";
+    this.#oauth = opts.oauth ?? null;
+    if (!this.#oauth && !this.#staticToken) {
+      throw new McpError("auth", "McpDriver needs a token or an oauth handoff");
+    }
+    if (this.#oauth) {
+      this.#accessToken = this.#oauth.accessToken ?? null;
+      this.#accessTokenExpiresAt = this.#oauth.expiresAt;
+    }
     this.#timeoutMs = opts.timeoutMs ?? 15_000;
     this.#fetch = opts.fetchFn ?? fetch;
   }
@@ -110,8 +141,10 @@ export class McpDriver {
     }
   }
 
-  async whoami(): Promise<McpWhoami> {
-    return this.callTool<McpWhoami>("whoami");
+  async whoami(
+    opts: { timeoutMs?: number } = {},
+  ): Promise<McpWhoami> {
+    return this.callTool<McpWhoami>("whoami", {}, opts);
   }
 
   async brainIdentity(): Promise<BrainIdentity> {
@@ -269,28 +302,129 @@ export class McpDriver {
     opts: { timeoutMs?: number } = {},
   ): Promise<unknown> {
     const id = ++this.#nextId;
-    const { json } = await this.#post(
-      {
-        jsonrpc: "2.0",
-        id,
-        method,
-        ...(params ? { params } : {}),
-      },
-      opts.timeoutMs,
-    );
-    if (!json) {
+    const attempt = async (): Promise<unknown> => {
+      const { json } = await this.#post(
+        {
+          jsonrpc: "2.0",
+          id,
+          method,
+          ...(params ? { params } : {}),
+        },
+        opts.timeoutMs,
+      );
+      if (!json) {
+        throw new McpError(
+          "protocol",
+          `no JSON-RPC response for ${method} (HTTP body empty)`,
+        );
+      }
+      if (json.error) {
+        throw new McpError(
+          "protocol",
+          `${method} failed: ${json.error.message} (code ${json.error.code})`,
+        );
+      }
+      return json.result;
+    };
+    try {
+      return await attempt();
+    } catch (err) {
+      // OAuth access tokens expire mid-session: one forced renewal and a
+      // single replay. Static tokens never take this path.
+      if (
+        err instanceof McpError &&
+        err.kind === "auth" &&
+        this.#oauth !== null
+      ) {
+        await this.#ensureRenewed(true);
+        this.#sessionId = null; // the server may have dropped the session
+        return await attempt();
+      }
+      throw err;
+    }
+  }
+
+  /** The bearer for the next request; renews proactively when expired. */
+  async #bearerToken(): Promise<string> {
+    if (this.#oauth === null) return this.#staticToken;
+    const now = Date.now() / 1000;
+    const valid =
+      this.#accessToken !== null &&
+      (this.#accessTokenExpiresAt === undefined ||
+        this.#accessTokenExpiresAt > now + 30);
+    if (!valid) await this.#ensureRenewed();
+    return this.#accessToken!;
+  }
+
+  /** Single-flight client_credentials renewal against ${issuerUrl}/token. */
+  async #ensureRenewed(force = false): Promise<void> {
+    if (force) this.#accessToken = null;
+    this.#renewPromise ??= this.#renew().finally(() => {
+      this.#renewPromise = null;
+    });
+    return this.#renewPromise;
+  }
+
+  async #renew(): Promise<void> {
+    const oauth = this.#oauth;
+    if (oauth === null) return;
+    const body = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: oauth.clientId,
+      client_secret: oauth.clientSecret,
+    });
+    let res: Response;
+    try {
+      res = await this.#fetch(`${oauth.issuerUrl}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+    } catch (err) {
+      const name = (err as Error)?.name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new McpError(
+          "timeout",
+          `OAuth token renewal timed out after ${this.#timeoutMs}ms`,
+        );
+      }
       throw new McpError(
-        "protocol",
-        `no JSON-RPC response for ${method} (HTTP body empty)`,
+        "network",
+        `cannot reach the OAuth token endpoint: ${(err as Error).message}`,
       );
     }
-    if (json.error) {
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get("retry-after"));
       throw new McpError(
-        "protocol",
-        `${method} failed: ${json.error.message} (code ${json.error.code})`,
+        "rate-limit",
+        "OAuth token endpoint is rate-limiting us (HTTP 429) — respecting Retry-After",
+        429,
+        Number.isFinite(retryAfter) ? retryAfter * 1000 : undefined,
       );
     }
-    return json.result;
+    if (!res.ok) {
+      // Never echo the response body: it can reflect credentials back.
+      throw new McpError(
+        "auth",
+        `OAuth token renewal failed (HTTP ${res.status})`,
+      );
+    }
+    const json = (await res.json().catch(() => null)) as {
+      access_token?: unknown;
+      expires_in?: unknown;
+    } | null;
+    if (!json || typeof json.access_token !== "string" || !json.access_token) {
+      throw new McpError(
+        "auth",
+        "OAuth token endpoint returned no access_token",
+      );
+    }
+    this.#accessToken = json.access_token;
+    this.#accessTokenExpiresAt =
+      typeof json.expires_in === "number" && Number.isFinite(json.expires_in)
+        ? Date.now() / 1000 + json.expires_in
+        : undefined;
   }
 
   async #post(body: object, timeoutMs?: number): Promise<{ json: RpcResponse | null }> {
@@ -298,7 +432,7 @@ export class McpDriver {
       "content-type": "application/json",
       // Streamable HTTP servers may answer JSON or SSE per request.
       accept: "application/json, text/event-stream",
-      authorization: `Bearer ${this.#token}`,
+      authorization: `Bearer ${await this.#bearerToken()}`,
     };
     if (this.#sessionId) headers["mcp-session-id"] = this.#sessionId;
 

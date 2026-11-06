@@ -4,6 +4,13 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TokenGate } from "./components/TokenGate";
 import { getToken } from "./lib/api";
 import { useI18n, type MessageKey } from "./lib/i18n";
+import {
+  bootstrapProfiles,
+  clearBrainNotice,
+  setProfile,
+  useBrain,
+} from "./lib/brain";
+import { clearAudit } from "./lib/auditLog";
 import { Health } from "./panels/Health";
 import { Inbox } from "./panels/Inbox";
 import { Nebula } from "./panels/Nebula";
@@ -25,6 +32,7 @@ const DEFAULT_PANEL: PanelId = "inbox";
 
 function App() {
   const { locale, setLocale, t } = useI18n();
+  const brain = useBrain();
   const [panelId, setPanelId] = useState<PanelId>(DEFAULT_PANEL);
   // keep-alive: a panel mounts on first visit and stays mounted afterwards
   // (hidden via CSS), so tab / pagination / selection / scroll / graph
@@ -39,9 +47,34 @@ function App() {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
 
+  // Which gbrain deployment every call targets. The profile list loads once
+  // after auth; the stage renders only when it resolved so the first mount
+  // already carries the final profile id (no remount flash).
   useEffect(() => {
-    document.title = t("app.title");
-  }, [t]);
+    if (tokenReady) void bootstrapProfiles();
+  }, [tokenReady]);
+
+  // Switching brains switches worlds: reset the shell state that would
+  // otherwise leak the previous brain's data into the new one (a pending
+  // focus slug would auto-open the WRONG brain's same-named page; the
+  // session audit log is one brain's verdict history). PanelId/visited stay
+  // — the layout survives, only the data world changes.
+  const profileId = brain.currentId;
+  useEffect(() => {
+    if (!brain.loaded) return;
+    setInboxTotal(null);
+    setFocusSlug(null);
+    setSearchSeed(null);
+    clearAudit();
+  }, [profileId, brain.loaded]);
+
+  const activeProfile = brain.profiles.find((p) => p.id === brain.currentId);
+
+  useEffect(() => {
+    document.title = activeProfile
+      ? `${t("app.title")} · ${activeProfile.name}`
+      : t("app.title");
+  }, [t, activeProfile]);
 
   // "/" and ⌘K focus the global search (mockup topbar affordance).
   useEffect(() => {
@@ -180,6 +213,31 @@ function App() {
               <p className="self">{t(`panel.${panelId}.desc` as MessageKey)}</p>
             </div>
             <div className="right">
+              {brain.profiles.length > 1 ? (
+                <select
+                  className="profile-select"
+                  value={brain.currentId}
+                  onChange={(e) => setProfile(e.target.value)}
+                  aria-label={t("shell.profile.label")}
+                  title={t("shell.profile.tooltip")}
+                >
+                  {brain.profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {brain.notice ? (
+                <button
+                  type="button"
+                  className="profile-notice"
+                  onClick={clearBrainNotice}
+                  title={t("shell.profile.unavailable")}
+                >
+                  {t("shell.profile.unavailable")}
+                </button>
+              ) : null}
               <div className="search">
                 <input
                   ref={searchRef}
@@ -245,12 +303,20 @@ function App() {
           <main className="stage">
             {!tokenReady ? (
               <TokenGate onAuthed={() => setTokenReady(true)} />
+            ) : !brain.loaded ? (
+              // profile list resolving — first paint waits for the final id
+              <div className="stage-boot" aria-live="polite">
+                {t("shell.profile.loading")}
+              </div>
             ) : (
               // keep-alive stage: every visited panel stays mounted inside
               // its own slot (hidden via CSS when inactive); each slot owns a
               // STABLE ErrorBoundary so one panel's render error can never
-              // reset another
-              PANELS.map((id) => (
+              // reset another. key={profile}: switching brains remounts the
+              // whole stage — one brain's panels, caches and errors never
+              // carry into another's.
+              <div key={profileId} className="stage-panels">
+                {PANELS.map((id) => (
                 <div
                   key={id}
                   className={`panel-slot ${id === panelId ? "on" : ""}`}
@@ -279,7 +345,8 @@ function App() {
                     {id === "health" && visited.includes(id) ? <Health /> : null}
                   </ErrorBoundary>
                 </div>
-              ))
+                ))}
+              </div>
             )}
           </main>
         </div>

@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+# Brain connection profiles (hold gbrain MCP credentials — same class as .env)
+brains.json
+cockpit-profiles.json
 
 # Internal dev notes — never published (Chinese working docs, see internal/README.md)
 internal/

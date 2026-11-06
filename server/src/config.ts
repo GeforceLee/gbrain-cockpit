@@ -3,6 +3,10 @@ import { randomBytes } from "node:crypto";
 // Configuration surface (ARCHITECTURE §8): env vars are the base layer,
 // startup flags can come later. Startup fails closed on missing secrets
 // (AGENTS.md non-negotiable #7) — a config error is fatal, never a warning.
+//
+// This module covers cockpit's OWN process config (bind/auth). Brain
+// connection profiles live in profiles.ts: one gbrain deployment per
+// profile, from COCKPIT_PROFILES_FILE or the legacy single-instance env.
 
 export class ConfigError extends Error {
   /** Printable, actionable next step for the operator. */
@@ -19,11 +23,6 @@ export interface Config {
   readonly bind: string;
   readonly port: number;
   readonly cockpitToken: string;
-  readonly gbrainMcpUrl: string;
-  readonly gbrainMcpToken: string;
-  readonly gbrainTakesHolders: string[] | null;
-  readonly gbrainBin: string | null;
-  readonly pgReadonlyDsn: string | null;
 }
 
 export function loadConfig(
@@ -40,26 +39,10 @@ export function loadConfig(
     );
   }
 
-  const gbrainMcpToken = env.GBRAIN_MCP_TOKEN?.trim();
-  if (!gbrainMcpToken) {
-    throw new ConfigError(
-      "GBRAIN_MCP_TOKEN is required (fail-closed).",
-      "mint one on the brain host:\n" +
-        "  gbrain auth create cockpit-ui --scopes read,write,memory_confirm --takes-holders <all-holders>\n" +
-        "note: takes holders default to 'world' (fail-closed on gbrain's side) —\n" +
-        "list every holder, or the takes queues will look empty in the UI.",
-    );
-  }
-
   return {
     bind: env.COCKPIT_BIND?.trim() || "127.0.0.1",
     port: parsePort(env.COCKPIT_PORT ?? "8787"),
     cockpitToken,
-    gbrainMcpUrl: env.GBRAIN_MCP_URL?.trim() || "http://127.0.0.1:3131/mcp",
-    gbrainMcpToken,
-    gbrainTakesHolders: splitList(env.GBRAIN_TAKES_HOLDERS),
-    gbrainBin: nonEmpty(env.GBRAIN_BIN),
-    pgReadonlyDsn: nonEmpty(env.PG_READONLY_DSN),
   };
 }
 
@@ -72,17 +55,4 @@ function parsePort(raw: string): number {
     );
   }
   return port;
-}
-
-function splitList(raw: string | undefined): string[] | null {
-  const list = (raw ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return list.length > 0 ? list : null;
-}
-
-function nonEmpty(raw: string | undefined): string | null {
-  const v = raw?.trim();
-  return v ? v : null;
 }
