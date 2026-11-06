@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
+  CliChannelStatus,
   EdgeProposal,
   GraphReport,
   InboxReport,
@@ -22,6 +23,7 @@ import type { BrainRegistry, BrainChannels } from "../brains";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
 import { McpError } from "../drivers/mcp";
+import { cliReason } from "./health";
 
 // API surface (core-loop milestone). Every handler receives an already
 // authenticated request routed to ONE brain's channels (the x-brain-profile
@@ -256,7 +258,7 @@ async function trustQueue(
   if (!ctx.cli) {
     return {
       status: "down",
-      error: "CLI channel unavailable on this host — actions degrade to copy-command",
+      error: "CLI channel unavailable — actions degrade to copy-command",
     };
   }
   try {
@@ -280,7 +282,7 @@ async function edgeQueue(
   if (!ctx.cli) {
     return {
       status: "down",
-      error: "CLI channel unavailable on this host — actions degrade to copy-command",
+      error: "CLI channel unavailable — actions degrade to copy-command",
     };
   }
   try {
@@ -303,7 +305,7 @@ async function takesQueue(
   if (!ctx.cli) {
     return {
       status: "down",
-      error: "CLI channel unavailable on this host — actions degrade to copy-command",
+      error: "CLI channel unavailable — actions degrade to copy-command",
     };
   }
   try {
@@ -326,15 +328,23 @@ export async function handleInbox(ctx: ApiContext): Promise<Response> {
   // The command name comes from the profile config (wrapper brains like
   // `gbrain-bip` exist); it is present even when the CLI driver itself is
   // down — copy-commands are the fallback, they must never go blank.
-  const cliChannel = ctx.cli
+  // `reason` carries the same vocabulary as the Health CLI card, so the
+  // Inbox chip can tell "binary missing (maybe not the brain host)" apart
+  // from "binary found, probe unverified" instead of blaming the host for
+  // both. cliNote (dual-brain hosts: which cliBin failed to resolve) beats
+  // the generic message, matching what Health shows.
+  const probe = ctx.cli ? await ctx.cli.status() : null;
+  const cliChannel: CliChannelStatus = probe
     ? {
-        ...(await ctx.cli.status()),
+        ...probe,
+        reason: cliReason(ctx.cli, probe.available),
         command: ctx.profile.cliBin ?? "gbrain",
       }
     : {
         available: false,
+        reason: cliReason(null, false),
         command: ctx.profile.cliBin ?? "gbrain",
-        error: "gbrain binary not found",
+        error: ctx.cliNote ?? "gbrain binary not found",
       };
   const report: InboxReport = { trust, edgeProposals, takes, cliChannel };
   return Response.json(report);

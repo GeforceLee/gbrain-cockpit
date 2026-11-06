@@ -44,7 +44,7 @@ cockpit server (Bun + TypeScript, zero runtime npm deps)
 | Fact / memory confirmation (`confirm_memory`) | `memory_confirm` scope | MCP | one-key |
 | Page write (`put_page`) | none | MCP receipt protocol | edit + poll |
 
-If the CLI channel is unavailable (cockpit not on the brain host), one-key CLI actions degrade to copy-command blocks — the action stays possible, owner presence increases. MCP-channel actions (confirmations, page writes) work from any host that can reach the MCP endpoint.
+If the CLI channel is unavailable, one-key CLI actions degrade to copy-command blocks — the action stays possible, owner presence increases. The UI distinguishes the two causes: the gbrain binary was not found (this host may not be the brain host) vs. the binary is present but the probe (`trust review`) failed (degraded — see the Health panel). MCP-channel actions (confirmations, page writes) work from any host that can reach the MCP endpoint.
 
 ## CLI execution discipline
 

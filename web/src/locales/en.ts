@@ -95,7 +95,8 @@ export const en = {
   "search.score": "score",
 
   "inbox.cliOk": "CLI channel available: one-key adjudication",
-  "inbox.cliDegraded": "CLI channel unavailable (not the brain host): one-key actions degrade to copy-command",
+  "inbox.cliMissing": "CLI channel unavailable (gbrain binary not found — this host may not be the brain host): one-key actions degrade to copy-command",
+  "inbox.cliUnverified": "CLI channel unavailable (gbrain found but the probe failed — see the Health panel): one-key actions degrade to copy-command",
   "inbox.group.source": "source · {name} · {n} items",
   "inbox.filter.source": "filter the inbox by source",
   "inbox.cliCold": "this brain's CLI cold-starts (no warm socket) — refreshes and actions take seconds",

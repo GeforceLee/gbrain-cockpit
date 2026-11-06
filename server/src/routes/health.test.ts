@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { getHealthReport, normalizeWhoami } from "./health";
+import { cliReason, getHealthReport, normalizeWhoami } from "./health";
 import type { BrainChannels } from "../brains";
+import type { CliDriver } from "../drivers/cli";
 import { McpDriver } from "../drivers/mcp";
 import { PgReadonlyDriver } from "../drivers/pg-readonly";
 
@@ -103,5 +104,14 @@ describe("getHealthReport (per-profile cache)", () => {
     expect(report.status).toBe("down");
     expect(report.checks.mcp.status).toBe("down");
     expect(report.checks.brain.status).toBe("down");
+  });
+});
+
+describe("cliReason (the shared why-unavailable vocabulary)", () => {
+  test("maps driver presence + probe outcome to the Health card's reasons", () => {
+    const driver = {} as CliDriver; // presence is all cliReason reads
+    expect(cliReason(null, false)).toBe("binary-not-found");
+    expect(cliReason(driver, true)).toBe("binary-verified");
+    expect(cliReason(driver, false)).toBe("binary-found-unverified");
   });
 });

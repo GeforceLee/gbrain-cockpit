@@ -94,7 +94,8 @@ export const zhCN = {
   "search.score": "相关度",
 
   "inbox.cliOk": "CLI 通道可用:裁决动作一键执行",
-  "inbox.cliDegraded": "CLI 通道不可用(本机非 brain 主机):一键动作降级为复制命令",
+  "inbox.cliMissing": "CLI 通道不可用(未找到 gbrain——本机可能非 brain 主机):一键动作降级为复制命令",
+  "inbox.cliUnverified": "CLI 通道不可用(gbrain 已就位但探测未通过,详见健康面板):一键动作降级为复制命令",
   "inbox.group.source": "来源 · {name} · {n} 条",
   "inbox.filter.source": "按源筛选收件箱",
   "inbox.cliCold": "该实例 CLI 为冷启动(无暖 socket),刷新与动作需数秒",

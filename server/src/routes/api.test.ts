@@ -144,3 +144,73 @@ describe("source passthrough", () => {
     expect(body2.status).toBe("down");
   });
 });
+
+// --- inbox cliChannel reason (0.2.1 banner fix) -------------------------------
+// The Inbox chip used to blame "not the brain host" for every unavailable
+// probe; the payload now carries the Health CLI card's reason vocabulary so
+// "binary missing" and "binary found, probe unverified" stay distinguishable.
+
+import { handleInbox } from "./api";
+import type { CliDriver } from "../drivers/cli";
+import type { InboxReport } from "@gbrain-cockpit/shared";
+
+function inboxCtx(opts: {
+  probe?: { available: boolean; error?: string; probedAt?: string };
+  cliNote?: string;
+  cliBin?: string;
+}) {
+  const cli = (opts.probe
+    ? {
+        status: async () => ({ ...opts.probe }),
+        trustReview: async () => ({ items: [], counts: {} }),
+        edgeList: async () => [],
+        takesProposeList: async () => [],
+      }
+    : null) as unknown as CliDriver | null;
+  return {
+    cli,
+    cliNote: opts.cliNote,
+    profile: { cliBin: opts.cliBin },
+  } as unknown as ApiContext;
+}
+
+describe("handleInbox cliChannel reason", () => {
+  test("null driver: binary-not-found, cliNote beats the generic message, queues soften", async () => {
+    const ctx = inboxCtx({
+      cliNote: 'configured cliBin "gbrain-bip" not found (not on PATH / not executable)',
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.cliChannel.available).toBe(false);
+    expect(body.cliChannel.reason).toBe("binary-not-found");
+    expect(body.cliChannel.error).toContain("gbrain-bip");
+    expect(body.cliChannel.command).toBe("gbrain"); // copy-command name, never blank
+    // all three queues share the down string without a host claim
+    for (const q of [body.trust, body.edgeProposals, body.takes]) {
+      expect(q.error).toBe("CLI channel unavailable — actions degrade to copy-command");
+    }
+  });
+
+  test("probe failing: binary-found-unverified keeps the error, no host blame", async () => {
+    const ctx = inboxCtx({
+      probe: { available: false, error: "trust review failed: socket timeout" },
+      cliBin: "gbrain-bip",
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.cliChannel.available).toBe(false);
+    expect(body.cliChannel.reason).toBe("binary-found-unverified");
+    expect(body.cliChannel.error).toContain("socket timeout");
+    expect(body.cliChannel.command).toBe("gbrain-bip");
+  });
+
+  test("probe succeeding: binary-verified round-trips with the healthy queues", async () => {
+    const ctx = inboxCtx({
+      probe: { available: true, probedAt: "2026-11-06T00:00:00.000Z" },
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.cliChannel.available).toBe(true);
+    expect(body.cliChannel.reason).toBe("binary-verified");
+    expect(body.trust.status).toBe("ok");
+    expect(body.edgeProposals.status).toBe("ok");
+    expect(body.takes.status).toBe("ok");
+  });
+});

@@ -154,6 +154,20 @@ async function checkBrain(mcp: McpDriver): Promise<BrainCheck> {
  * shows. The probe result is stale-while-revalidate cached inside the
  * driver, so only the first health call per TTL window pays a cold run.
  */
+/**
+ * Single source of truth for "why is the CLI channel (un)available" —
+ * the Inbox chip (via /api/inbox) and this health check read the same
+ * probe, so they must derive the same reason or they'd tell two
+ * different stories about one exec.
+ */
+export function cliReason(
+  cli: CliDriver | null,
+  probeAvailable: boolean,
+): CliCheck["reason"] {
+  if (!cli) return "binary-not-found";
+  return probeAvailable ? "binary-verified" : "binary-found-unverified";
+}
+
 async function checkCli(
   resolvedBin: string | null,
   cli: CliDriver | null,
@@ -176,13 +190,14 @@ async function checkCli(
     };
   }
   const probe = await cli.status();
+  const reason = cliReason(cli, probe.available);
   if (probe.available) {
-    return { status: "ok", bin: resolvedBin, reason: "binary-verified" };
+    return { status: "ok", bin: resolvedBin, reason };
   }
   return {
     status: "degraded",
     bin: resolvedBin,
-    reason: "binary-found-unverified",
+    reason,
     ...(probe.error ? { error: probe.error } : {}),
   };
 }

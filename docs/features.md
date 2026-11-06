@@ -17,7 +17,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - **Three action shapes, structurally fixed**:
   - *one-key* — drop / accept / confirm stamps (CLI whitelist or MCP channel), with the big ink stamp as the confirmation moment
   - *copy-command* — trust-elevating actions render as a copy block with a three-step guide; the verdict only ever happens at your terminal on the brain host (gbrain safety design)
-  - *degraded* — when the CLI channel is off (not the brain host), one-key actions become copy blocks automatically
+  - *degraded* — when the CLI channel is unavailable, one-key actions become copy blocks automatically; the banner distinguishes the two causes (gbrain binary not found — this host may not be the brain host — vs. binary present but probe unverified, see the Health panel)
 - **Channel check card**: renders from the same compile-time channel matrix the code executes — it cannot disagree with reality
 - **Batch reject** for a page of takes (two-step confirm; terminal-confirmation actions are never batched)
 - **Session audit block + recent-verdicts table**: every action stamps itself into a fixed receipt slot — no toasts, no lost history

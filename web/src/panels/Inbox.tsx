@@ -522,9 +522,23 @@ export function Inbox({
         <div className="list-tools">
           <span
             className={`chip ${cliAvailable ? "chip-ok" : "chip-degraded"}`}
-            title={cliAvailable ? t("inbox.cliCold") : undefined}
+            title={
+              cliAvailable
+                ? t("inbox.cliCold")
+                : report?.cliChannel.error
+                  ? firstLine(report.cliChannel.error)
+                  : undefined
+            }
           >
-            {cliAvailable ? t("inbox.cliOk") : t("inbox.cliDegraded")}
+            {cliAvailable
+              ? t("inbox.cliOk")
+              : // "binary-not-found" keeps the conditional host guess; every
+                // other unavailable state (found but probe unverified — or a
+                // pre-reason payload) gets the neutral copy: the probe
+                // failed, the Health panel has the details.
+                report?.cliChannel.reason === "binary-not-found"
+                ? t("inbox.cliMissing")
+                : t("inbox.cliUnverified")}
           </span>
           <button type="button" onClick={() => void refresh()} disabled={busy}>
             {busy ? t("common.loading") : t("health.refresh")}

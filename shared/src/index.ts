@@ -30,7 +30,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.2.0";
+export const COCKPIT_VERSION = "0.2.1";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>
@@ -482,6 +482,12 @@ export type TakeQuality = "correct" | "incorrect" | "partial" | "unresolvable";
 
 export interface CliChannelStatus {
   available: boolean;
+  /**
+   * Why the channel is (un)available — same vocabulary as the Health
+   * panel's CLI card (CliCheck.reason), so the Inbox chip and Health can
+   * never tell two different stories about one probe.
+   */
+  reason?: CliCheck["reason"];
   /** "unprobed" until first use; result cached briefly */
   probedAt?: string;
   /**

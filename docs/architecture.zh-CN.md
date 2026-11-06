@@ -44,7 +44,7 @@ cockpit server(Bun + TypeScript,零运行时 npm 依赖)
 | 事实/记忆确认(`confirm_memory`) | `memory_confirm` scope | MCP | 一键 |
 | 页面写入(`put_page`) | 无 | MCP 回执协议 | 编辑 + 轮询 |
 
-CLI 通道不可用时(cockpit 不在 brain 主机上),一键 CLI 动作降级为复制命令块——动作仍然可达,但对 owner 在场的要求提高。MCP 类动作(确认、页面写入)在任何能到达 MCP 端点的主机上都能用。
+CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍然可达,但对 owner 在场的要求提高。不可用分两种成因,界面对应区分:未找到 gbrain 二进制(本机可能非 brain 主机)与二进制已就位但探测(`trust review`)未通过(降级,详见健康面板)。MCP 类动作(确认、页面写入)在任何能到达 MCP 端点的主机上都能用。
 
 ## CLI 执行纪律
 
