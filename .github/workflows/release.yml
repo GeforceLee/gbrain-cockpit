@@ -60,17 +60,19 @@ jobs:
           COCKPIT_TOKEN=ci-smoke-token GBRAIN_MCP_TOKEN=ci-unreachable \
             COCKPIT_BIND=127.0.0.1 COCKPIT_PORT=8788 \
             COCKPIT_DIST_DIR="$PWD/web/dist" ./dist-bin/cockpit-linux-x64 &
+          SRV=$!
           # assert only what this artifact exists to prove: the binary serves
           # the just-built bundle. No brain is reachable in CI — healthz would
-          # probe dead upstreams, which is not this smoke's question.
+          # only probe dead upstreams, which is not this smoke's question.
+          # ($! not %1: the runner's non-interactive bash has no job control)
           for i in $(seq 1 20); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8788/ || true)
             [ "$code" = "200" ] && break
             sleep 1
           done
-          [ "$code" = "200" ] || { echo "static root answered $code"; exit 1; }
+          [ "$code" = "200" ] || { echo "static root answered $code"; kill "$SRV" 2>/dev/null; exit 1; }
           curl -fsS http://127.0.0.1:8788/ | grep -q "<title>gbrain-cockpit" && echo "web bundle served ✓"
-          kill %1
+          kill "$SRV" 2>/dev/null || true
 
       - name: Upload release artifacts (linux)
         uses: softprops/action-gh-release@v2
