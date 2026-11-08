@@ -11,9 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.4
+      # setup-bun's download flaked across runners today (same commit: one
+      # runner green, one red at this very step) — install the pinned bun
+      # straight from its GitHub release asset with curl's own retries.
+      - name: Install bun 1.4.4 (pinned, retried download)
+        run: |
+          curl -fsSL -o /tmp/bun.zip --retry 5 --retry-delay 5 --retry-all-errors \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip
+          unzip -oq /tmp/bun.zip -d /tmp/buninst
+          install -m 755 /tmp/buninst/bun-linux-x64/bun /usr/local/bin/bun
+          bun --version
 
       - name: Install (frozen lockfile)
         run: bun install --frozen-lockfile
