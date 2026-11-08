@@ -1,4 +1,4 @@
-import { appendFile, mkdir, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -38,5 +38,43 @@ export async function auditWrite(
     );
   } catch (err) {
     console.warn(`[audit] failed to write entry: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * The newest `limit` entries across the audit files (verdict history's
+ * server side): read the newest few day-files, newest entries first.
+ * Read failures degrade to whatever parsed — history is best-effort, never
+ * a red panel.
+ */
+export async function auditTail(
+  limit: number,
+): Promise<Array<Record<string, unknown>>> {
+  try {
+    const files = (await readdir(DIR))
+      .filter((f) => f.endsWith(".jsonl"))
+      .sort()
+      .reverse()
+      .slice(0, 7); // a week of files is plenty for any tail
+    const out: Array<Record<string, unknown>> = [];
+    for (const f of files) {
+      if (out.length >= limit) break;
+      try {
+        const text = await readFile(join(DIR, f), "utf8");
+        const lines = text.split("\n").filter(Boolean);
+        for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+          try {
+            out.push(JSON.parse(lines[i]!) as Record<string, unknown>);
+          } catch {
+            // a torn line (mid-write read) is skipped, not fatal
+          }
+        }
+      } catch {
+        // unreadable file — try the next older one
+      }
+    }
+    return out;
+  } catch {
+    return [];
   }
 }

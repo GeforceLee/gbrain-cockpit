@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type {
+  AnomaliesReport,
+  AuditHistoryReport,
+  BrainHealthReport,
   CliChannelStatus,
+  ContradictionsReport,
+  ContradictionProposal,
+  DecidedTakeRow,
   EdgeProposal,
   EvidenceReport,
+  ExtractionQueue,
+  ExtractionStub,
   GraphReport,
   InboxReport,
   InboxQueue,
@@ -16,8 +24,7 @@ import type {
   SourceDiagnostic,
   SourcesReport,
   SourcesStatusReport,
-  ContradictionsReport,
-  ContradictionProposal,
+  TakeItem,
   TakeProposal,
   TakesQueue,
   TimelineEntry,
@@ -28,7 +35,7 @@ import type {
   WriteRequestsReport,
 } from "@gbrain-cockpit/shared";
 import { isValidSourceId, TRUST_REF_RE } from "@gbrain-cockpit/shared";
-import { auditWrite } from "../audit";
+import { auditTail, auditWrite } from "../audit";
 import type { BrainRegistry, BrainChannels } from "../brains";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
@@ -298,7 +305,24 @@ export async function handleSearch(
   }
   // strip control characters; the rest is passed verbatim as a search term
   const q = raw.replace(/[\x00-\x1f\x7f]/g, "");
+  const mode = param(url, "mode");
+  if (mode !== undefined && mode !== "literal" && mode !== "semantic") {
+    throw new BadRequestError("mode must be literal|semantic");
+  }
   const sourceId = requireSourceId(url);
+  if (mode === "semantic") {
+    // the query tool's own response shape varies — normalize to SearchHit[]
+    // so the panel renders one list, whichever engine answered
+    const r: unknown = await ctx.mcp.query(q, sourceId);
+    const rows: unknown[] = Array.isArray(r)
+      ? r
+      : r !== null &&
+          typeof r === "object" &&
+          Array.isArray((r as Record<string, unknown>).results)
+        ? ((r as Record<string, unknown>).results as unknown[])
+        : [];
+    return Response.json(rows as SearchHit[]);
+  }
   const hits = await ctx.mcp.search(q, sourceId);
   return Response.json(hits satisfies SearchHit[]);
 }
@@ -558,9 +582,34 @@ async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
   }
   try {
     const items = await ctx.pg.pendingTakeProposals();
+    // companion view: extraction repeatedly failed & held (read-only; the
+    // release verb --retry-failed stays an owner action)
+    let failed: TakesQueue["failed"];
+    if (ctx.cli) {
+      try {
+        const r: unknown = await ctx.cli.takesFailedList();
+        const rows: unknown[] = Array.isArray(r)
+          ? r
+          : r !== null &&
+              typeof r === "object" &&
+              Array.isArray((r as Record<string, unknown>).failed)
+            ? ((r as Record<string, unknown>).failed as unknown[])
+            : [];
+        failed = {
+          status: "ok",
+          items: rows as NonNullable<TakesQueue["failed"]>["items"],
+        };
+      } catch (err) {
+        failed = {
+          status: "down",
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
     return {
       status: "ok",
       items,
+      ...(failed ? { failed } : {}),
       // Degraded-rail copy-commands are built SERVER-side: only the server
       // holds the direct-call materials (gbrainBin/gbrainHome never leave
       // it), and on a multi-source brain the naive `${bin} takes propose`
@@ -632,13 +681,52 @@ async function contradictionsQueue(
   }
 }
 
+/** Read-only entity-stub lane (the dispose verb is owner-only upstream). */
+async function extractionQueue(ctx: ApiContext): Promise<ExtractionQueue> {
+  try {
+    const r = await ctx.mcp.extractionPending();
+    const pending = Array.isArray(r.pending) ? r.pending : [];
+    return {
+      status: "ok",
+      items: pending as ExtractionStub[],
+      ...(typeof r.unattributed?.count === "number"
+        ? { unattributedCount: r.unattributed.count }
+        : {}),
+      ...(typeof r.possible_duplicates?.count === "number"
+        ? { duplicatesCount: r.possible_duplicates.count }
+        : {}),
+    };
+  } catch (err) {
+    return {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/** ACTIVE takes awaiting judgment — takes_resolve closes the loop. */
+async function activeTakesQueue(ctx: ApiContext): Promise<InboxQueue<TakeItem>> {
+  try {
+    const items = await ctx.mcp.takesList({ active: true });
+    return { status: "ok", items };
+  } catch (err) {
+    return {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function handleInbox(ctx: ApiContext): Promise<Response> {
-  const [trust, edgeProposals, takes, contradictions] = await Promise.all([
-    trustQueue(ctx),
-    edgeQueue(ctx),
-    takesQueue(ctx),
-    contradictionsQueue(ctx),
-  ]);
+  const [trust, edgeProposals, takes, contradictions, extraction, activeTakes] =
+    await Promise.all([
+      trustQueue(ctx),
+      edgeQueue(ctx),
+      takesQueue(ctx),
+      contradictionsQueue(ctx),
+      extractionQueue(ctx),
+      activeTakesQueue(ctx),
+    ]);
   // The command name comes from the profile config (wrapper brains like
   // `gbrain-bip` exist); it is present even when the CLI driver itself is
   // down — copy-commands are the fallback, they must never go blank.
@@ -665,6 +753,8 @@ export async function handleInbox(ctx: ApiContext): Promise<Response> {
     edgeProposals,
     takes,
     contradictions,
+    extraction,
+    activeTakes,
     cliChannel,
   };
   return Response.json(report);
@@ -867,6 +957,133 @@ export async function handleContradictionAction(
     detail: { id },
   });
   return Response.json({ ok: true, output: result.output });
+}
+
+export async function handleTakeResolve(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const slug = requirePattern(
+    typeof body.slug === "string" ? body.slug : undefined,
+    "slug",
+    SLUG_RE,
+  );
+  const row = Number(body.row);
+  if (!Number.isInteger(row) || row < 1 || row > 10_000) {
+    throw new BadRequestError("row must be an integer 1..10000");
+  }
+  const quality = body.quality;
+  if (
+    quality !== "correct" &&
+    quality !== "incorrect" &&
+    quality !== "partial" &&
+    quality !== "unresolvable"
+  ) {
+    throw new BadRequestError("quality must be correct|incorrect|partial|unresolvable");
+  }
+  const result = await ctx.mcp.takesResolve(slug, row, quality);
+  await auditWrite("owner", {
+    action: "takes.resolve",
+    profile: ctx.id,
+    detail: { slug, row, quality },
+  });
+  return Response.json({ ok: true, result });
+}
+
+export async function handleResolveSlugs(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const partial = param(url, "partial");
+  if (partial === undefined || partial.length < 1 || partial.length > 200) {
+    throw new BadRequestError("partial is required (1..200 chars)");
+  }
+  const sourceId = requireSourceId(url);
+  try {
+    const slugs = await ctx.mcp.resolveSlugs(
+      partial.replace(/[\x00-\x1f\x7f]/g, ""),
+      sourceId,
+    );
+    return Response.json({
+      status: "ok",
+      slugs: Array.isArray(slugs) ? slugs.slice(0, 20) : [],
+    });
+  } catch (err) {
+    return Response.json({
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+export async function handleWriteCancel(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const requestId = requirePattern(
+    typeof body.request_id === "string" ? body.request_id : undefined,
+    "request_id",
+    REQUEST_ID_RE,
+  );
+  const receipt = await ctx.mcp.cancelWriteRequest(requestId);
+  await auditWrite("owner", {
+    action: "write.cancel",
+    profile: ctx.id,
+    detail: { request_id: requestId, status: receipt?.status },
+  });
+  return Response.json(receipt satisfies WriteReceipt);
+}
+
+export async function handleBrainHealth(ctx: ApiContext): Promise<Response> {
+  try {
+    const health = await ctx.mcp.brainHealth();
+    const report: BrainHealthReport = {
+      status: "ok",
+      health,
+      ...(ctx.mcp.lastNotices.length > 0
+        ? { notices: [...ctx.mcp.lastNotices] }
+        : {}),
+    };
+    return Response.json(report);
+  } catch (err) {
+    const report: BrainHealthReport = {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+export async function handleAnomalies(ctx: ApiContext): Promise<Response> {
+  try {
+    const items = await ctx.mcp.anomalies();
+    const report: AnomaliesReport = { status: "ok", items };
+    return Response.json(report);
+  } catch (err) {
+    const report: AnomaliesReport = {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+export async function handleAuditHistory(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const limitRaw = Number.parseInt(param(url, "limit") ?? "30", 10);
+  const limit =
+    Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 30;
+  const audit = await auditTail(limit);
+  let decided: DecidedTakeRow[] | undefined;
+  if (ctx.pg?.configured) {
+    decided = await ctx.pg.decidedTakeProposals().catch(() => undefined);
+  }
+  const report: AuditHistoryReport = { audit, ...(decided ? { decided } : {}) };
+  return Response.json(report);
 }
 
 export async function handleConfirm(

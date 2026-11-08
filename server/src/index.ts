@@ -9,6 +9,9 @@ import { envelope, guardRequest } from "./http";
 import { loadProfiles } from "./profiles";
 import { serveStatic } from "./static";
 import {
+  handleAnomalies,
+  handleAuditHistory,
+  handleBrainHealth,
   handleConfirm,
   handleContradictionAction,
   handleEdgeAction,
@@ -24,10 +27,13 @@ import {
   handleSources,
   handleSourcesStatus,
   handleTakePropose,
+  handleTakeResolve,
   handleTrustDrop,
+  handleWriteCancel,
   handleWriteConflicts,
   handleWriteRequest,
   handleWriteRequests,
+  handleResolveSlugs,
   mapError,
 } from "./routes/api";
 import { getHealthReport, toCoarse } from "./routes/health";
@@ -178,6 +184,18 @@ const server = Bun.serve({
             return await handleContradictionAction(channels, req);
           case "POST /api/inbox/takes/propose":
             return await handleTakePropose(channels, req);
+          case "POST /api/inbox/takes/resolve":
+            return await handleTakeResolve(channels, req);
+          case "POST /api/write-cancel":
+            return await handleWriteCancel(channels, req);
+          case "GET /api/resolve-slugs":
+            return await handleResolveSlugs(channels, url);
+          case "GET /api/brain-health":
+            return await handleBrainHealth(channels);
+          case "GET /api/anomalies":
+            return await handleAnomalies(channels);
+          case "GET /api/audit-history":
+            return await handleAuditHistory(channels, url);
           case "POST /api/inbox/confirm":
             return await handleConfirm(channels, req);
           case "PUT /api/page":

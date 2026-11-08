@@ -1,5 +1,6 @@
 import {
   buildGraphKey,
+  type DecidedTakeRow,
   type GraphEdge,
   type GraphNode,
   type TakeProposal,
@@ -54,6 +55,16 @@ const SQL_TAKES_PENDING =
   "SELECT id, source_id, page_slug, claim_text, kind, holder, weight, domain, status, proposed_at, model_id, promoted_row_num " +
   "FROM take_proposals WHERE status = 'pending' " +
   "ORDER BY proposed_at DESC, id DESC LIMIT 9999";
+
+/**
+ * The verdict-history companion: decided rows of the SAME table (column
+ * check 2026-11-08 on 0.60.611: acted_at / acted_by exist — the hard gate
+ * passed, no whitelist expansion needed). Fixed statement, newest first.
+ */
+const SQL_TAKES_DECIDED =
+  "SELECT id, source_id, page_slug, claim_text, status, acted_at, acted_by, kind " +
+  "FROM take_proposals WHERE status <> 'pending' " +
+  "ORDER BY acted_at DESC NULLS LAST, id DESC LIMIT 100";
 
 /**
  * Pages columns we consume; presence-checked against information_schema.
@@ -175,6 +186,30 @@ export class PgReadonlyDriver {
       };
       return proposal;
     });
+  }
+
+  /** Decided proposals (verdict history, pg side) — newest first, capped 100. */
+  async decidedTakeProposals(): Promise<DecidedTakeRow[]> {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const rows = await this.#query(SQL_TAKES_DECIDED);
+    return rows.map((row) => ({
+      id: Number(row.id),
+      page_slug: String(row.page_slug ?? ""),
+      claim_text: String(row.claim_text ?? ""),
+      ...(typeof row.source_id === "string" ? { source_id: row.source_id } : {}),
+      ...(typeof row.status === "string" ? { status: row.status } : {}),
+      ...(typeof row.acted_by === "string" && row.acted_by
+        ? { acted_by: row.acted_by }
+        : {}),
+      ...(row.acted_at instanceof Date
+        ? { acted_at: row.acted_at.toISOString() }
+        : typeof row.acted_at === "string" && row.acted_at
+          ? { acted_at: row.acted_at }
+          : {}),
+      ...(typeof row.kind === "string" ? { kind: row.kind } : {}),
+    }));
   }
 
   /**

@@ -59,8 +59,16 @@ describe("mapError", () => {
 
 // --- source passthrough (P1 source axis) -------------------------------------
 
-import { handlePage, handlePages, handleSearch, handleSources } from "./api";
+import {
+  handlePage,
+  handlePages,
+  handleResolveSlugs,
+  handleSearch,
+  handleSources,
+  handleTakeResolve,
+} from "./api";
 import type { ApiContext } from "./api";
+import type { SearchHit } from "@gbrain-cockpit/shared";
 import type { McpDriver } from "../drivers/mcp";
 import type { SourceSummary, SourcesReport } from "@gbrain-cockpit/shared";
 
@@ -304,6 +312,83 @@ describe("handleInbox cliChannel reason", () => {
     const body = (await (await handleInbox(ctxThrowing)).json()) as InboxReport;
     expect(body.contradictions.status).toBe("ok");
     expect(body.contradictions.probe).toBeUndefined();
+  });
+
+  test("extraction + activeTakes queues ride the inbox payload, degrading in-band", async () => {
+    const ctx = inboxCtx({
+      probe: { available: true, probedAt: "2026-11-08T00:00:00.000Z" },
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    // the fake mcp only implements findContradictions → both new queues
+    // degrade in-band rather than breaking the whole inbox fetch
+    expect(["degraded", "down"]).toContain(body.extraction.status);
+    expect(["degraded", "down"]).toContain(body.activeTakes.status);
+  });
+});
+
+// --- 0.3.0 pillars: resolve / semantic search / write-cancel -------------------
+
+describe("0.3.0 route additions", () => {
+  const qualityErr = async (body: unknown) => {
+    try {
+      await handleTakeResolve(
+        {
+          mcp: { takesResolve: async () => ({}) },
+        } as unknown as ApiContext,
+        new Request("http://x/", {
+          method: "POST",
+          body: JSON.stringify(body),
+          headers: { "content-type": "application/json" },
+        }),
+      );
+      return null;
+    } catch (err) {
+      return err;
+    }
+  };
+
+  test("takes resolve validates slug/row/quality before any driver call", async () => {
+    expect(await qualityErr({ slug: "kb/x", row: 1, quality: "correct" })).toBeNull();
+    expect(await qualityErr({ slug: "kb/x", row: 1, quality: "maybe" })).toBeInstanceOf(
+      BadRequestError,
+    );
+    expect(await qualityErr({ slug: "kb/x", row: 0, quality: "correct" })).toBeInstanceOf(
+      BadRequestError,
+    );
+    expect(await qualityErr({ slug: "bad slug", row: 1, quality: "correct" })).toBeInstanceOf(
+      BadRequestError,
+    );
+  });
+
+  test("semantic search normalizes query's array or {results} envelope", async () => {
+    for (const answer of [[{ slug: "a" }], { results: [{ slug: "b" }] }]) {
+      const ctx = {
+        mcp: { query: async () => answer },
+      } as unknown as ApiContext;
+      const res = await handleSearch(ctx, new URL("http://x/api/search?q=m&mode=semantic"));
+      const body = (await res.json()) as SearchHit[];
+      expect(body).toHaveLength(1);
+    }
+    const badMode = {
+      mcp: { search: async () => [] },
+    } as unknown as ApiContext;
+    await expect(
+      handleSearch(badMode, new URL("http://x/api/search?q=m&mode=grep")),
+    ).rejects.toBeInstanceOf(BadRequestError);
+  });
+
+  test("resolve-slugs caps and strips; write-cancel validates the request id", async () => {
+    const ctx = {
+      mcp: {
+        resolveSlugs: async () => Array.from({ length: 40 }, (_, i) => `kb/x${i}`),
+      },
+    } as unknown as ApiContext;
+    const res = await handleResolveSlugs(ctx, new URL("http://x/api/resolve-slugs?partial=kb"));
+    const body = (await res.json()) as { slugs: string[] };
+    expect(body.slugs).toHaveLength(20);
+    await expect(
+      handleResolveSlugs(ctx, new URL("http://x/api/resolve-slugs")),
+    ).rejects.toBeInstanceOf(BadRequestError);
   });
 });
 

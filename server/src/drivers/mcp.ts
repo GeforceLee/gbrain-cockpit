@@ -13,6 +13,7 @@ import {
   type SourceDiagnostic,
   type SourceSummary,
   type TakeItem,
+  type TakeQuality,
   type TimelineEntry,
   type WriteConflictRow,
   type WriteReceipt,
@@ -161,7 +162,19 @@ export class McpDriver {
       throw new McpError("protocol", `tool ${name} errored: ${text || "n/a"}`);
     }
     // Prefer the structured payload; fall back to parsing the first text part.
+    // `_meta` (upstream's behavior-disclosure notices, hundreds of chars per
+    // call) is stripped HERE — the single choke point — and its
+    // gbrain_notices texts kept for Health; business rendering never sees it.
     if (payload.structuredContent !== undefined) {
+      this.#harvestNotices(payload.structuredContent);
+      if (payload.structuredContent !== null &&
+        typeof payload.structuredContent === "object" &&
+        !Array.isArray(payload.structuredContent) &&
+        "_meta" in (payload.structuredContent as Record<string, unknown>)) {
+        const clean = { ...(payload.structuredContent as Record<string, unknown>) };
+        delete clean._meta;
+        return clean as T;
+      }
       return payload.structuredContent as T;
     }
     const text = payload.content?.find((c) => c.type === "text")?.text;
@@ -190,10 +203,21 @@ export class McpDriver {
   // cache key, so concurrent identical calls also collapse to one fetch.
 
   #cache = new Map<string, { at: number; value: unknown }>();
+  /** single-flight: same-key reads in flight share ONE upstream call (the
+   *  doc above promised this from day one; graph lazy-loads and rapid tab
+   *  switches made the promise load-bearing) */
+  #inflight = new Map<string, Promise<unknown>>();
+  /** latest _meta.gbrain_notices texts (ring, newest last) — Health surfaces them */
+  #notices: string[] = [];
 
   /** Drop all cached reads — after any successful write or adjudication. */
   invalidateAll(): void {
     this.#cache.clear();
+  }
+
+  /** The latest upstream behavior-disclosure notices (ARCHITECTURE §7). */
+  get lastNotices(): readonly string[] {
+    return this.#notices;
   }
 
   async #cached<T>(
@@ -204,9 +228,19 @@ export class McpDriver {
     const key = `${name}:${JSON.stringify(args)}`;
     const hit = this.#cache.get(key);
     if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
-    const value = await this.callTool<T>(name, args);
-    this.#cache.set(key, { at: Date.now(), value });
-    return value;
+    const existing = this.#inflight.get(key);
+    if (existing) return existing as Promise<T>;
+    const flight = (async () => {
+      try {
+        const value = await this.callTool<T>(name, args);
+        this.#cache.set(key, { at: Date.now(), value });
+        return value;
+      } finally {
+        this.#inflight.delete(key);
+      }
+    })();
+    this.#inflight.set(key, flight);
+    return flight;
   }
 
   listPages(params: {
@@ -324,6 +358,100 @@ export class McpDriver {
    */
   findContradictions(): Promise<ContradictionProbeState> {
     return this.#cached<ContradictionProbeState>(60_000, "find_contradictions", {});
+  }
+
+  #harvestNotices(value: unknown): void {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+    const meta = (value as Record<string, unknown>)._meta;
+    if (meta === null || typeof meta !== "object" || Array.isArray(meta)) return;
+    const notices = (meta as Record<string, unknown>).gbrain_notices;
+    if (!Array.isArray(notices)) return;
+    for (const n of notices) {
+      if (typeof n === "string" && n.trim()) {
+        this.#notices.push(n.trim().slice(0, 400));
+      }
+    }
+    if (this.#notices.length > 5) this.#notices = this.#notices.slice(-5);
+  }
+
+  /**
+   * The extraction queue's three lists (0.60.578+): pending stubs (the
+   * reviewable lane), unattributed facts and possible duplicates. Read-only —
+   * the dispose verb (extraction_review) is owner-only upstream.
+   */
+  extractionPending(): Promise<{
+    count?: number;
+    pending?: unknown[];
+    unattributed?: { count?: number; rows?: unknown[] };
+    possible_duplicates?: { count?: number; rows?: unknown[] };
+    [k: string]: unknown;
+  }> {
+    return this.#cached(30_000, "extraction_pending", {
+      include: ["pending", "unattributed", "possible_duplicates"],
+    });
+  }
+
+  /**
+   * The semantic half of the search dual entry (MCP `query` — the argument is
+   * literally `query`, probed; it also accepts `image`, left to V2.5).
+   * Response shape varies; normalized to a SearchHit[] by the route.
+   */
+  query(q: string, sourceId?: string): Promise<unknown> {
+    return this.#cached(30_000, "query", {
+      query: q,
+      ...(sourceId ? { source_id: sourceId } : {}),
+    });
+  }
+
+  /** Fuzzy slug/title → exact slugs (the jump box's resolver). */
+  resolveSlugs(partial: string, sourceId?: string): Promise<string[]> {
+    return this.#cached<string[]>(30_000, "resolve_slugs", {
+      partial,
+      ...(sourceId ? { source_id: sourceId } : {}),
+    });
+  }
+
+  /** gbrain's own health bands (write capacity, ghost pages, …). */
+  brainHealth(): Promise<Record<string, unknown>> {
+    return this.#cached<Record<string, unknown>>(30_000, "get_brain_health", {});
+  }
+
+  /** Per-cohort statistical anomalies (probed: [] on a young brain). */
+  anomalies(): Promise<unknown[]> {
+    const call = this.#cached<{ anomalies?: unknown[] } | unknown[]>(
+      60_000,
+      "find_anomalies",
+      {},
+    );
+    return call.then((r) => (Array.isArray(r) ? r : r?.anomalies ?? []));
+  }
+
+  /** Cancel THIS token's accepted-but-unpublished write (gbrain's own guard). */
+  async cancelWriteRequest(requestId: string): Promise<WriteReceipt> {
+    const receipt = await this.callTool<WriteReceipt>("cancel_write_request", {
+      request_id: requestId,
+    });
+    if (receipt?.status === "cancelled") this.invalidateAll();
+    return receipt;
+  }
+
+  /**
+   * Judge an ACTIVE take (the propose→accept→witness→resolve loop's last
+   * step). gbrain stamps the resolver `mcp:<client>` — a feature: owner
+   * verdicts and cockpit verdicts stay distinguishable forever.
+   */
+  async takesResolve(
+    slug: string,
+    rowNum: number,
+    quality: TakeQuality,
+  ): Promise<unknown> {
+    const result = await this.callTool<unknown>("takes_resolve", {
+      slug,
+      row: rowNum,
+      quality,
+    });
+    this.invalidateAll();
+    return result;
   }
 
   // --- V1.1 dimensions & provenance (live-probed 0.60.558, 2026-11-06) --------

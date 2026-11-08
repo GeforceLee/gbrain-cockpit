@@ -33,8 +33,9 @@ export type AdjudicationAction =
   // (cross-source; the CLI verb single-source filters, GBRAIN-CAPABILITIES §2)
   | "takes.propose.accept" // `gbrain takes propose --accept <id>`
   | "takes.propose.reject" // `gbrain takes propose --reject <id>`
-  | "takes.resolve" // MCP takes_resolve on ACTIVE takes (slug+row, future)
-  | "page.write"; // MCP put_page / edit_page (receipt protocol)
+  | "takes.resolve" // MCP takes_resolve on ACTIVE takes (slug+row)
+  | "page.write" // MCP put_page / edit_page (receipt protocol)
+  | "write.cancel"; // MCP cancel_write_request (own token's, pre-publish)
 
 /** The one and only channel an action may travel through. */
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
@@ -71,6 +72,9 @@ export const ADJUDICATION_CHANNELS: Readonly<
   "takes.propose.reject": "cli-whitelist",
   "takes.resolve": "mcp",
   "page.write": "mcp",
+  // cancels only THIS token's accepted-but-unpublished writes — gbrain's own
+  // guard, no owner-presence question (nothing has been published yet)
+  "write.cancel": "mcp",
 };
 
 // --- Identities & profiles ---------------------------------------------------
@@ -682,6 +686,32 @@ export interface TakeQueueCommands {
 /** The pending-takes queue, plus its degraded-rail command templates. */
 export interface TakesQueue extends InboxQueue<TakeProposal> {
   commands?: TakeQueueCommands;
+  /**
+   * Companion read-only view: pages whose extraction keeps failing and got
+   * held (`takes propose --failed --json`, CLI whitelist). Release
+   * (--retry-failed) stays an owner action — cockpit only surfaces them.
+   */
+  failed?: {
+    status: CheckStatus;
+    items?: Array<{ slug?: string; source_id?: string; [k: string]: unknown }>;
+    error?: string;
+  };
+}
+
+/** One auto-extracted entity stub awaiting owner review (extraction_pending). */
+export interface ExtractionStub {
+  slug?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * The entity-stub queue: read-only (the dispose verb extraction_review is
+ * owner-only upstream — not on cockpit's token face, no CLI form), so the
+ * lane shows the pending list plus the other two lists' counts.
+ */
+export interface ExtractionQueue extends InboxQueue<ExtractionStub> {
+  unattributedCount?: number;
+  duplicatesCount?: number;
 }
 
 export interface InboxReport {
@@ -689,7 +719,56 @@ export interface InboxReport {
   edgeProposals: InboxQueue<EdgeProposal>;
   takes: TakesQueue;
   contradictions: ContradictionsReport;
+  /** auto-extracted entity stubs (read-only lane) */
+  extraction: ExtractionQueue;
+  /** ACTIVE takes awaiting judgment (takes_list → takes_resolve closes the loop) */
+  activeTakes: InboxQueue<TakeItem>;
   cliChannel: CliChannelStatus;
+}
+
+/** GET /api/brain-health — get_brain_health + the driver's latest _meta notices. */
+export interface BrainHealthReport {
+  status: CheckStatus;
+  health?: Record<string, unknown>;
+  /** latest upstream behavior-disclosure notices (text, capped) */
+  notices?: string[];
+  error?: string;
+}
+
+/** GET /api/anomalies — find_anomalies, in-band. */
+export interface AnomaliesReport {
+  status: CheckStatus;
+  items?: unknown[];
+  error?: string;
+}
+
+/** GET /api/audit-history — tail of the server-side JSONL audit trail. */
+export interface AuditHistoryRow {
+  at?: string;
+  actor?: string;
+  action?: string;
+  profile?: string;
+  detail?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+/** GET /api/audit-history — the verdict history's two server sides. */
+export interface AuditHistoryReport {
+  audit: AuditHistoryRow[];
+  /** decided take_proposals rows; absent when the bypass is down */
+  decided?: DecidedTakeRow[];
+}
+
+/** One decided take_proposals row (the pg side of the verdict history). */
+export interface DecidedTakeRow {
+  id: number;
+  status?: string;
+  acted_at?: string;
+  acted_by?: string;
+  page_slug: string;
+  claim_text: string;
+  source_id?: string;
+  [k: string]: unknown;
 }
 
 export type TakeQuality = "correct" | "incorrect" | "partial" | "unresolvable";

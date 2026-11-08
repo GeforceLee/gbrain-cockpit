@@ -142,6 +142,17 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
     args: [{ kind: "value", literal: "--reject", name: "id", regex: ID_RE }],
     json: false,
   },
+  // read-only companion view: pages whose extraction keeps failing and got
+  // held. The release verb (--retry-failed) is deliberately NOT here —
+  // surfacing held pages is cockpit's job, releasing them is the owner's.
+  "takes propose failed": {
+    words: ["takes", "propose"],
+    args: [
+      { kind: "flag", literal: "--failed" },
+      { kind: "flag", literal: "--json" },
+    ],
+    json: true,
+  },
   // Contradiction proposals — gbrain's dedicated decide family (probed on
   // 0.60.611, leewin: `decide proposals list --json` answers
   // {status, proposals, review_proposals}; pending is the default status).
@@ -381,6 +392,11 @@ export class CliDriver {
     opts: ScopedExecOpts = {},
   ): Promise<{ output: string }> {
     return this.#runText("takes propose reject", { id }, opts);
+  }
+
+  /** Held-for-repeated-extraction-failure pages (read-only companion view). */
+  async takesFailedList(): Promise<unknown> {
+    return this.#runJson("takes propose failed", {});
   }
 
   async #runJson<T>(key: string, values: Record<string, string>): Promise<T> {
