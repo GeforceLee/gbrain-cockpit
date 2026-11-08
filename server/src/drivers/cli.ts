@@ -5,7 +5,6 @@ import {
   TRUST_REF_RE,
   type CliChannelStatus,
   type EdgeProposal,
-  type TakeProposal,
   type TrustReviewEnvelope,
 } from "@gbrain-cockpit/shared";
 
@@ -73,7 +72,6 @@ interface SubcommandSpec {
 const REF_RE = TRUST_REF_RE;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const LIMIT_RE = /^\d{1,4}$/;
 
 // The live list — GBRAIN-CAPABILITIES.md §2 is the source of truth; keep both
 // in sync when probes correct it.
@@ -124,18 +122,15 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
     args: [{ kind: "positional", name: "id", regex: ID_RE }],
     json: false,
   },
-  // takes propose family (verified 2026-11-04 on 0.60.558): the pending
-  // LLM-proposed takes queue — the REAL source of the Inbox takes queue.
+  // takes propose adjudication verbs (verified 2026-11-04 on 0.60.558).
   // Note the CLI shape: accept/reject are value flags on `takes propose`,
-  // not subcommand positionals.
-  "takes propose list": {
-    words: ["takes", "propose"],
-    args: [
-      { kind: "value", literal: "--limit", name: "limit", regex: LIMIT_RE },
-      { kind: "flag", literal: "--json" },
-    ],
-    json: true,
-  },
+  // not subcommand positionals. The LIST form is deliberately NOT
+  // whitelisted anymore: gbrain scopes `takes propose` to ONE source per
+  // run (resolveSourceId → 'default' with no GBRAIN_SOURCE), so a CLI list
+  // on a multi-source brain silently hides every non-default source — the
+  // queue reads the read-only bypass instead (pg-readonly.ts), and these
+  // two verbs exec with GBRAIN_SOURCE=<the row's source_id> via the
+  // TakesActionGuard's direct-call path when the profile opts in.
   "takes propose accept": {
     words: ["takes", "propose"],
     args: [{ kind: "value", literal: "--accept", name: "id", regex: ID_RE }],
@@ -211,13 +206,29 @@ interface RawResult {
 }
 
 export interface CliDriverDeps {
-  /** injectable for tests */
-  exec?: (bin: string, argv: string[]) => Promise<RawResult>;
+  /** injectable for tests; env is undefined for inherited-process-env execs */
+  exec?: (
+    bin: string,
+    argv: string[],
+    env?: Record<string, string>,
+  ) => Promise<RawResult>;
+}
+
+/** Per-call overrides for source-scoped execs (takes adjudication). */
+export interface ScopedExecOpts {
+  /** the real gbrain binary, bypassing an isolated-brain wrapper cliBin */
+  bin?: string;
+  /** a fully-built child env (GBRAIN_SOURCE/GBRAIN_HOME set, GBRAIN_BRAIN_ID stripped) */
+  env?: Record<string, string>;
 }
 
 export class CliDriver {
   readonly #bin: string;
-  readonly #exec: (bin: string, argv: string[]) => Promise<RawResult>;
+  readonly #exec: (
+    bin: string,
+    argv: string[],
+    env?: Record<string, string>,
+  ) => Promise<RawResult>;
   #inFlight = 0;
   #queue: Array<() => void> = [];
   #probe: { at: number; result: CliChannelStatus } | null = null;
@@ -226,11 +237,12 @@ export class CliDriver {
     this.#bin = bin;
     this.#exec =
       deps.exec ??
-      (async (bin, argv) => {
+      (async (bin, argv, env) => {
         const { stdout, stderr } = await execFileP(bin, argv, {
           timeout: TIMEOUT_MS,
           maxBuffer: MAX_BUFFER,
           encoding: "utf8",
+          ...(env ? { env } : {}),
         });
         return { stdout, stderr };
       });
@@ -302,24 +314,24 @@ export class CliDriver {
   }
 
   /**
-   * Pending LLM-proposed takes queue (the Inbox takes queue's real source).
-   * Measured on gbrain 0.60.558: the list is newest-first and any larger
-   * --limit is clamped server-side to 500, with no working paging flag
-   * (--offset is accepted but ignored, --after does not exist) — so when the
-   * backlog exceeds 500, older proposals only surface as newer ones are
-   * adjudicated. We still ask high: if a future gbrain raises its ceiling,
-   * the full list arrives without a cockpit change.
+   * Adjudicate a pending take proposal. `opts` carries the source-scoped
+   * direct call (real binary + GBRAIN_SOURCE/GBRAIN_HOME env) built by
+   * TakesActionGuard for multi-source brains; without it the exec runs
+   * through the profile's cliBin with the inherited environment — the
+   * legacy single-source path, preserved verbatim.
    */
-  async takesProposeList(limit = 9999): Promise<TakeProposal[]> {
-    return this.#runJson("takes propose list", { limit: String(limit) });
+  async takesProposeAccept(
+    id: string,
+    opts: ScopedExecOpts = {},
+  ): Promise<{ output: string }> {
+    return this.#runText("takes propose accept", { id }, opts);
   }
 
-  async takesProposeAccept(id: string): Promise<{ output: string }> {
-    return this.#runText("takes propose accept", { id });
-  }
-
-  async takesProposeReject(id: string): Promise<{ output: string }> {
-    return this.#runText("takes propose reject", { id });
+  async takesProposeReject(
+    id: string,
+    opts: ScopedExecOpts = {},
+  ): Promise<{ output: string }> {
+    return this.#runText("takes propose reject", { id }, opts);
   }
 
   async #runJson<T>(key: string, values: Record<string, string>): Promise<T> {
@@ -336,24 +348,27 @@ export class CliDriver {
   async #runText(
     key: string,
     values: Record<string, string>,
+    opts?: ScopedExecOpts,
   ): Promise<{ output: string }> {
-    const { stdout } = await this.#runRaw(key, values);
+    const { stdout } = await this.#runRaw(key, values, opts);
     return { output: stdout.trim().slice(0, 2000) };
   }
 
   async #runRaw(
     key: string,
     values: Record<string, string>,
+    opts?: ScopedExecOpts,
   ): Promise<RawResult> {
     // Layer 1 + layer 2 validation happens inside buildArgv: whitelist key,
     // per-argument regex, and the `--` separator. Nothing untrusted reaches
-    // the child process.
+    // the child process — the optional env override is server-built only
+    // (TakesActionGuard), never request-shaped.
     const argv = buildArgv(key, values);
     await this.#acquire();
     try {
       const started = performance.now();
       try {
-        const result = await this.#exec(this.#bin, argv);
+        const result = await this.#exec(opts?.bin ?? this.#bin, argv, opts?.env);
         const latencyMs = Math.round(performance.now() - started);
         if (latencyMs > 1000) {
           // Cold-start smell: cli-socket not warm or serve needs a restart

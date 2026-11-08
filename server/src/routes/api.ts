@@ -30,6 +30,7 @@ import type { BrainRegistry, BrainChannels } from "../brains";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
 import { McpError } from "../drivers/mcp";
+import { TakesSourceGuardError } from "../drivers/takes-source";
 import { cliReason } from "./health";
 
 // API surface (core-loop milestone). Every handler receives an already
@@ -76,6 +77,13 @@ function requirePattern(value: string | undefined, name: string, re: RegExp): st
 export function mapError(err: unknown): Response {
   if (err instanceof BadRequestError || err instanceof CliValidationError) {
     return envelope(400, "E_BAD_REQUEST", err.message);
+  }
+  if (err instanceof TakesSourceGuardError) {
+    // The source-scoped takes guard refused the exec (brain config/database
+    // mismatch, or an upstream source_id outside gbrain's env charset).
+    // The guard's messages carry database NAMES only, never URLs — safe to
+    // surface so the operator can fix the deployment.
+    return envelope(502, "E_UPSTREAM", err.message);
   }
   if (err instanceof CliExecutionError) {
     // The gbrain CLI ran and failed (nonzero exit, ENOENT, timeout). The
@@ -533,17 +541,22 @@ async function edgeQueue(
 async function takesQueue(
   ctx: ApiContext,
 ): Promise<InboxQueue<TakeProposal>> {
-  // The pending-takes queue lives in gbrain's hidden CLI family
-  // (`takes propose`), not behind an MCP tool — so this queue is CLI-only
-  // by design and degrades to copy-command off the brain host.
-  if (!ctx.cli) {
+  // The pending-takes queue reads the read-only bypass, NOT the CLI:
+  // gbrain's `takes propose` list scopes to ONE source per run
+  // (resolveSourceId → 'default' without GBRAIN_SOURCE), so on a
+  // multi-source brain the CLI silently hides every other source's
+  // proposals — the table read is naturally cross-source (probed on
+  // 0.60.558, GBRAIN-CAPABILITIES §2 hidden-family row). Adjudication
+  // (accept/reject) stays on the CLI channel — it is the only writer.
+  if (!ctx.pg?.configured) {
     return {
       status: "down",
-      error: "CLI channel unavailable — actions degrade to copy-command",
+      error:
+        "takes queue reads the read-only bypass — set pgReadonlyDsn on this profile (and grant its account SELECT on take_proposals)",
     };
   }
   try {
-    const items = await ctx.cli.takesProposeList();
+    const items = await ctx.pg.pendingTakeProposals();
     return { status: "ok", items };
   } catch (err) {
     return {
@@ -693,15 +706,51 @@ export async function handleTakePropose(
       "CLI channel unavailable on this host — use the copy-command instead",
     );
   }
+  // Multi-source brains: the CLI verb scopes to ONE source per run, so the
+  // exec must carry the proposal row's own source. The row comes from the
+  // same read-only queue the Inbox renders (server-authoritative, never
+  // client-shaped), the guard re-asserts the brain's database before every
+  // exec, and only then does the real binary run with GBRAIN_SOURCE set.
+  let scoped: { bin?: string; env?: Record<string, string> } = {};
+  let sourceId: string | undefined;
+  if (ctx.takesGuard) {
+    if (!ctx.pg?.configured) {
+      return envelope(
+        503,
+        "E_UPSTREAM",
+        "cannot resolve the proposal's source: the read-only bypass is unavailable — use the copy-command instead",
+      );
+    }
+    let pending: TakeProposal[];
+    try {
+      pending = await ctx.pg.pendingTakeProposals();
+    } catch (err) {
+      return envelope(
+        502,
+        "E_UPSTREAM",
+        `cannot read the pending queue to resolve the proposal's source: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    const row = pending.find((p) => String(p.id) === id);
+    if (!row?.source_id) {
+      return envelope(
+        404,
+        "E_NOT_FOUND",
+        `proposal #${id} is not in the pending queue — already adjudicated, or invisible to the read-only account`,
+      );
+    }
+    sourceId = row.source_id;
+    scoped = await ctx.takesGuard.scopedExec(row.source_id);
+  }
   const result =
     op === "accept"
-      ? await ctx.cli.takesProposeAccept(id)
-      : await ctx.cli.takesProposeReject(id);
+      ? await ctx.cli.takesProposeAccept(id, scoped)
+      : await ctx.cli.takesProposeReject(id, scoped);
   ctx.mcp.invalidateAll();
   await auditWrite("owner", {
     action: `takes.propose.${op}`,
     profile: ctx.id,
-    detail: { id },
+    detail: { id, ...(sourceId ? { source_id: sourceId } : {}) },
   });
   return Response.json({ ok: true, output: result.output });
 }

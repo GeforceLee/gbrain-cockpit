@@ -153,7 +153,7 @@ function validateProfile(
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new ConfigError(
       `profiles[${i}] must be an object`,
-      "each entry: id, name?, mcpUrl, mcpToken | mcpCredentials, cliBin?, pgReadonlyDsn?, takesHolders?",
+      "each entry: id, name?, mcpUrl, mcpToken | mcpCredentials, cliBin?, pgReadonlyDsn?, takesHolders?, gbrainBin+gbrainHome?",
     );
   }
   const p = raw as Record<string, unknown>;
@@ -205,7 +205,44 @@ function validateProfile(
       "a bare name like gbrain-bip, or an absolute path — no whitespace or shell metachars (the string is pasted into the owner's shell).",
     );
   }
+  // Source-scoped takes adjudication (gbrainBin/gbrainHome): the direct-call
+  // opt-in. All-or-nothing by design — a lone gbrainBin or gbrainHome is a
+  // config mistake, and without pgReadonlyDsn there is no expected database
+  // name to assert the brain's config.json against, so the safety check
+  // (mirroring the isolated-brain wrappers) could not run.
+  const gbrainBin = nonEmpty(p.gbrainBin);
+  const gbrainHome = nonEmpty(p.gbrainHome);
+  if ((gbrainBin || gbrainHome) && !(gbrainBin && gbrainHome)) {
+    throw new ConfigError(
+      `profile ${id}: gbrainBin and gbrainHome must be set together`,
+      "they declare the direct-call path for source-scoped takes adjudication — set both or neither.",
+    );
+  }
+  if (gbrainBin && !gbrainBin.startsWith("/")) {
+    throw new ConfigError(
+      `profile ${id}: gbrainBin must be an absolute path`,
+      "the direct call must name the real gbrain binary explicitly (e.g. /home/you/.bun/bin/gbrain) — never a wrapper, never a PATH lookup.",
+    );
+  }
+  if (gbrainBin && !OWNER_BIN_RE.test(gbrainBin)) {
+    throw new ConfigError(
+      `profile ${id}: gbrainBin failed the command-name/path charset`,
+      "an absolute path to the real gbrain binary — no whitespace or shell metachars.",
+    );
+  }
+  if (gbrainHome && !gbrainHome.startsWith("/")) {
+    throw new ConfigError(
+      `profile ${id}: gbrainHome must be an absolute path`,
+      "the brain's GBRAIN_HOME — the directory holding .gbrain/config.json.",
+    );
+  }
   const pgReadonlyDsn = nonEmpty(p.pgReadonlyDsn);
+  if (gbrainBin && gbrainHome && !pgReadonlyDsn) {
+    throw new ConfigError(
+      `profile ${id}: gbrainBin/gbrainHome also need pgReadonlyDsn`,
+      "the per-exec safety assertion compares the brain config's database_url against this DSN's database name — without it the direct call would be unguarded.",
+    );
+  }
   const takesHolders = Array.isArray(p.takesHolders)
     ? p.takesHolders.filter(
         (h): h is string => typeof h === "string" && !!h.trim(),
@@ -221,6 +258,7 @@ function validateProfile(
     ...(cliBin ? { cliBin } : {}),
     ...(pgReadonlyDsn ? { pgReadonlyDsn } : {}),
     ...(takesHolders && takesHolders.length > 0 ? { takesHolders } : {}),
+    ...(gbrainBin && gbrainHome ? { gbrainBin, gbrainHome } : {}),
   };
 }
 

@@ -279,3 +279,74 @@ describe("loadProfiles — OAuth credentials file", () => {
     ).toThrow(ConfigError);
   });
 });
+
+// --- gbrainBin/gbrainHome (source-scoped takes adjudication opt-in) ----------
+
+describe("loadProfiles — gbrainBin/gbrainHome pair", () => {
+  const PAIR = {
+    gbrainBin: "/opt/gbrain-real/gbrain",
+    gbrainHome: "/srv/brain-bip-home",
+  };
+  const directCall = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify([
+      {
+        id: "bip",
+        mcpUrl: "http://127.0.0.1:3132/mcp",
+        mcpToken: "tok-b",
+        cliBin: "gbrain-bip",
+        pgReadonlyDsn: "postgres://cockpit_ro:x@127.0.0.1/bip",
+        ...overrides,
+      },
+    ]);
+
+  test("valid pair parses through", () => {
+    const cfg = loadProfiles(envWith("/etc/brains.json"), {
+      readFile: () => directCall(PAIR),
+    });
+    expect(cfg.profiles[0]!.gbrainBin).toBe("/opt/gbrain-real/gbrain");
+    expect(cfg.profiles[0]!.gbrainHome).toBe("/srv/brain-bip-home");
+  });
+
+  test("half a pair fails closed naming the profile", () => {
+    for (const [drop, keep] of [
+      ["gbrainBin", "gbrainHome"],
+      ["gbrainHome", "gbrainBin"],
+    ] as const) {
+      const entry: Record<string, unknown> = { ...PAIR };
+      delete entry[drop];
+      try {
+        loadProfiles(envWith("/etc/brains.json"), {
+          readFile: () => directCall(entry),
+        });
+        expect.unreachable(`${keep} alone must fail`);
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigError);
+        const message = (err as ConfigError).message;
+        expect(message).toContain("profile bip:");
+        expect(message).toContain("together");
+      }
+    }
+  });
+
+  test("relative paths and non-path garbage fail closed", () => {
+    for (const bad of [
+      { ...PAIR, gbrainBin: "gbrain" }, // PATH lookup — must be explicit
+      { ...PAIR, gbrainBin: "/bin/gb;rm -rf /" },
+      { ...PAIR, gbrainHome: "gbrain-bip" }, // relative
+    ]) {
+      expect(() =>
+        loadProfiles(envWith("/etc/brains.json"), {
+          readFile: () => directCall(bad),
+        }),
+      ).toThrow(ConfigError);
+    }
+  });
+
+  test("the pair requires pgReadonlyDsn (the assertion's expected name)", () => {
+    expect(() =>
+      loadProfiles(envWith("/etc/brains.json"), {
+        readFile: () => directCall({ ...PAIR, pgReadonlyDsn: undefined }),
+      }),
+    ).toThrow(/pgReadonlyDsn/);
+  });
+});

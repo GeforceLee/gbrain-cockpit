@@ -3,6 +3,7 @@ import { ConfigError } from "./config";
 import { CliDriver, locateGbrainBin } from "./drivers/cli";
 import { McpDriver } from "./drivers/mcp";
 import { PgReadonlyDriver } from "./drivers/pg-readonly";
+import { dbBasename, TakesActionGuard } from "./drivers/takes-source";
 import type { ProfilesConfig, ResolvedProfile } from "./profiles";
 
 // BrainRegistry (ARCHITECTURE §8, multi-brain switching): eagerly validates
@@ -20,6 +21,13 @@ export interface BrainChannels {
   readonly mcp: McpDriver;
   readonly cli: CliDriver | null;
   readonly pg: PgReadonlyDriver;
+  /**
+   * Source-scoped takes adjudication guard — non-null only when the profile
+   * declares gbrainBin+gbrainHome (the direct-call opt-in for multi-source
+   * brains). Accept/reject then exec the real binary with the proposal
+   * row's GBRAIN_SOURCE; null keeps the legacy unscoped path.
+   */
+  readonly takesGuard: TakesActionGuard | null;
   /** absolute CLI path as resolved at startup (null = unavailable) */
   readonly cliBinResolved: string | null;
   /** why the CLI channel is unavailable, when it is (display in health) */
@@ -31,6 +39,8 @@ export interface RegistryDeps {
   accessX?: (path: string) => Promise<boolean>;
   /** injectable for tests — every profile's McpDriver uses it */
   fetchFn?: typeof fetch;
+  /** injectable for tests — every profile's TakesActionGuard uses it */
+  readFile?: (path: string) => Promise<string>;
 }
 
 const PROFILE_INFO_TTL_MS = 60_000;
@@ -39,6 +49,7 @@ export class BrainRegistry {
   readonly #profiles = new Map<string, ResolvedProfile>();
   readonly #deps: RegistryDeps;
   readonly #cli: ReadonlyMap<string, { bin: string | null; note?: string }>;
+  readonly #takesGuards = new Map<string, TakesActionGuard>();
   readonly #channels = new Map<string, BrainChannels>();
   readonly #profileInfo = new Map<
     string,
@@ -52,12 +63,14 @@ export class BrainRegistry {
   private constructor(
     config: ProfilesConfig,
     cli: ReadonlyMap<string, { bin: string | null; note?: string }>,
+    takesGuards: ReadonlyMap<string, TakesActionGuard>,
     deps: RegistryDeps,
   ) {
     for (const p of config.profiles) this.#profiles.set(p.id, p);
     this.defaultId = config.defaultId;
     this.mode = config.mode;
     this.#cli = cli;
+    for (const [id, guard] of takesGuards) this.#takesGuards.set(id, guard);
     this.#deps = deps;
   }
 
@@ -67,6 +80,7 @@ export class BrainRegistry {
     deps: RegistryDeps = {},
   ): Promise<BrainRegistry> {
     const resolution = new Map<string, { bin: string | null; note?: string }>();
+    const takesGuards = new Map<string, TakesActionGuard>();
     for (const p of config.profiles) {
       if (p.cliBin) {
         const bin = await locateGbrainBin(p.cliBin, deps);
@@ -93,8 +107,39 @@ export class BrainRegistry {
         const bin = await this.#discoverGbrain(deps);
         resolution.set(p.id, { bin });
       }
+      // Source-scoped takes adjudication opt-in: resolve the direct-call
+      // binary AND run the guard's database assertion once here. Unlike a
+      // broken cliBin (copy-command still exists), a broken gbrainBin/gbrainHome
+      // has NO fallback — silently degrading would reintroduce the invisible-
+      // proposals bug this guard exists to fix — so it fails closed.
+      if (p.gbrainBin && p.gbrainHome) {
+        const bin = await locateGbrainBin(p.gbrainBin, deps);
+        if (!bin) {
+          throw new ConfigError(
+            `profile ${p.id}: gbrainBin is set but not executable: ${p.gbrainBin}`,
+            "point it at the REAL gbrain binary (the same path the isolated-brain wrapper execs), not a wrapper.",
+          );
+        }
+        const guard = new TakesActionGuard(
+          {
+            gbrainBin: bin,
+            gbrainHome: p.gbrainHome,
+            expectedDb: dbBasename(p.pgReadonlyDsn ?? ""),
+          },
+          deps.readFile ? { readFile: deps.readFile } : {},
+        );
+        try {
+          await guard.assertStartup();
+        } catch (err) {
+          throw new ConfigError(
+            `profile ${p.id}: ${(err as Error).message}`,
+            "the gbrainBin/gbrainHome pair must match this profile's pgReadonlyDsn database — check the brain's .gbrain/config.json.",
+          );
+        }
+        takesGuards.set(p.id, guard);
+      }
     }
-    return new BrainRegistry(config, resolution, deps);
+    return new BrainRegistry(config, resolution, takesGuards, deps);
   }
 
   static async #discoverGbrain(deps: RegistryDeps): Promise<string | null> {
@@ -121,6 +166,7 @@ export class BrainRegistry {
         }),
         cli: bin ? new CliDriver(bin) : null,
         pg: new PgReadonlyDriver({ dsn: profile.pgReadonlyDsn ?? null }),
+        takesGuard: this.#takesGuards.get(key) ?? null,
         cliBinResolved: bin,
         ...(this.#cli.get(key)?.note ? { cliNote: this.#cli.get(key)!.note } : {}),
       };

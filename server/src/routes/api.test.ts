@@ -158,19 +158,26 @@ function inboxCtx(opts: {
   probe?: { available: boolean; error?: string; probedAt?: string };
   cliNote?: string;
   cliBin?: string;
+  /** takes queue channel: ok (bypass configured) | unset */
+  pg?: "ok" | "unset";
 }) {
   const cli = (opts.probe
     ? {
         status: async () => ({ ...opts.probe }),
         trustReview: async () => ({ items: [], counts: {} }),
         edgeList: async () => [],
-        takesProposeList: async () => [],
       }
     : null) as unknown as CliDriver | null;
+  const pg = {
+    configured: opts.pg !== "unset",
+    pendingTakeProposals: async () => [],
+  };
   return {
     cli,
     cliNote: opts.cliNote,
     profile: { cliBin: opts.cliBin },
+    pg,
+    takesGuard: null,
   } as unknown as ApiContext;
 }
 
@@ -184,10 +191,23 @@ describe("handleInbox cliChannel reason", () => {
     expect(body.cliChannel.reason).toBe("binary-not-found");
     expect(body.cliChannel.error).toContain("gbrain-bip");
     expect(body.cliChannel.command).toBe("gbrain"); // copy-command name, never blank
-    // all three queues share the down string without a host claim
-    for (const q of [body.trust, body.edgeProposals, body.takes]) {
+    // trust/edges share the CLI-down string; the takes queue no longer
+    // depends on the CLI channel at all — it reads the bypass and stays ok
+    for (const q of [body.trust, body.edgeProposals]) {
       expect(q.error).toBe("CLI channel unavailable — actions degrade to copy-command");
     }
+    expect(body.takes.status).toBe("ok");
+    expect(body.takes.items).toEqual([]);
+  });
+
+  test("takes queue names the bypass (not the CLI) when pgReadonlyDsn is unset", async () => {
+    const ctx = inboxCtx({
+      probe: { available: true, probedAt: "2026-11-08T00:00:00.000Z" },
+      pg: "unset",
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.takes.status).toBe("down");
+    expect(body.takes.error).toContain("read-only bypass");
   });
 
   test("probe failing: binary-found-unverified keeps the error, no host blame", async () => {
@@ -504,3 +524,182 @@ describe("V1.1 POST /api/evidence", () => {
   });
 });
 
+// --- handleTakePropose: per-row source scoping (multi-source fix) -------------
+// The queue read moved to the bypass; accept/reject still go through the CLI
+// driver but with GBRAIN_SOURCE=<the row's source_id> + GBRAIN_HOME, exec'd
+// on the REAL binary (wrappers unset GBRAIN_SOURCE by design). The guard's
+// database assertion is covered in takes-source.test.ts; here the guard is
+// a stub so the ROUTE contract stays the focus: right row → right env,
+// missing row → 404, guard refusal → 502, legacy profiles unchanged.
+
+import { handleTakePropose } from "./api";
+import type { ScopedExecOpts } from "../drivers/cli";
+import { TakesSourceGuardError } from "../drivers/takes-source";
+import type { TakeProposal as TakeProposalType } from "@gbrain-cockpit/shared";
+
+function takesCtx(opts: {
+  queue: TakeProposalType[];
+  guard?: {
+    scopedExec: (sourceId: string) => Promise<ScopedExecOpts>;
+  } | null;
+  queueErr?: Error;
+}) {
+  const calls: { bin: string; argv: string[]; env?: Record<string, string> }[] = [];
+  const cli = {
+    takesProposeAccept: async (id: string, o?: ScopedExecOpts) => {
+      calls.push({ bin: o?.bin ?? "/fake/wrapper", argv: ["takes", "propose", "--accept", id], env: o?.env });
+      return { output: `accepted ${id}` };
+    },
+    takesProposeReject: async (id: string, o?: ScopedExecOpts) => {
+      calls.push({ bin: o?.bin ?? "/fake/wrapper", argv: ["takes", "propose", "--reject", id], env: o?.env });
+      return { output: `rejected ${id}` };
+    },
+  };
+  const pg = {
+    configured: true,
+    pendingTakeProposals: async () => {
+      if (opts.queueErr) throw opts.queueErr;
+      return opts.queue;
+    },
+  };
+  return {
+    ctx: {
+      id: "bip",
+      profile: {},
+      mcp: { invalidateAll: () => {} },
+      cli,
+      pg,
+      takesGuard: opts.guard === undefined ? null : opts.guard,
+      cliBinResolved: "/fake/wrapper",
+    } as unknown as ApiContext,
+    calls,
+  };
+}
+
+const GUARD = {
+  scopedExec: async (sourceId: string) => ({
+    bin: "/opt/gbrain-real/gbrain",
+    env: { GBRAIN_SOURCE: sourceId, GBRAIN_HOME: "/srv/brain-bip-home" },
+  }),
+};
+
+const REQ = (op: string, id: string | number) =>
+  new Request("http://x/api/inbox/takes/propose", {
+    method: "POST",
+    body: JSON.stringify({ op, id }),
+  });
+
+describe("handleTakePropose source scoping", () => {
+  test("scoped profile: the exec carries the row's source env on the REAL binary", async () => {
+    const { ctx, calls } = takesCtx({
+      queue: [{ id: 6, source_id: "mail-import", page_slug: "issue/bug-1234", claim_text: "c" }],
+      guard: GUARD,
+    });
+    const res = await handleTakePropose(ctx, REQ("accept", 6));
+    expect(res.status).toBe(200);
+    expect(calls[0]?.bin).toBe("/opt/gbrain-real/gbrain");
+    expect(calls[0]?.env?.GBRAIN_SOURCE).toBe("mail-import");
+    expect(calls[0]?.env?.GBRAIN_HOME).toBe("/srv/brain-bip-home");
+    expect(calls[0]?.argv).toEqual(["takes", "propose", "--accept", "6"]);
+    // reject rides the same scoping
+    await handleTakePropose(ctx, REQ("reject", 6));
+    expect(calls[1]?.env?.GBRAIN_SOURCE).toBe("mail-import");
+  });
+
+  test("a proposal from ANOTHER row's source never leaks into the env", async () => {
+    const seen: string[] = [];
+    const { ctx } = takesCtx({
+      queue: [
+        { id: 6, source_id: "mail-import", page_slug: "a", claim_text: "c" },
+        { id: 7, source_id: "default", page_slug: "b", claim_text: "c" },
+      ],
+      guard: {
+        scopedExec: async (sourceId) => {
+          seen.push(sourceId);
+          return GUARD.scopedExec(sourceId);
+        },
+      },
+    });
+    await handleTakePropose(ctx, REQ("accept", 7));
+    expect(seen).toEqual(["default"]); // per-ROW, not per-profile
+  });
+
+  test("id not in the pending queue → 404, no exec, no guard call", async () => {
+    let guardCalls = 0;
+    const { ctx, calls } = takesCtx({
+      queue: [{ id: 6, source_id: "s", page_slug: "a", claim_text: "c" }],
+      guard: {
+        scopedExec: async (s) => {
+          guardCalls++;
+          return GUARD.scopedExec(s);
+        },
+      },
+    });
+    const res = await handleTakePropose(ctx, REQ("accept", 999));
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("#999");
+    expect(guardCalls).toBe(0);
+    expect(calls.length).toBe(0);
+  });
+
+  test("guard refusal (database mismatch) → 502 E_UPSTREAM via mapError, exec never runs", async () => {
+    const { ctx, calls } = takesCtx({
+      queue: [{ id: 6, source_id: "s", page_slug: "a", claim_text: "c" }],
+      guard: {
+        scopedExec: async () => {
+          throw new TakesSourceGuardError(
+            'takes adjudigation refused: config points at database "postgres" but the read-only DSN names "bip"',
+          );
+        },
+      },
+    });
+    // like CliExecutionError on the other action routes, the guard's refusal
+    // propagates to index.ts's mapError catch-all
+    const err = await handleTakePropose(ctx, REQ("accept", 6)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(TakesSourceGuardError);
+    const res = mapError(err);
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe("E_UPSTREAM");
+    expect(body.error).toContain('names "bip"');
+    expect(body.error).not.toContain("://"); // no URL in the surfaced refusal
+    expect(calls.length).toBe(0);
+  });
+
+  test("queue unreadable → 502 naming the bypass, no exec", async () => {
+    const { ctx, calls } = takesCtx({
+      queue: [],
+      queueErr: new Error("permission denied for table take_proposals"),
+      guard: GUARD,
+    });
+    const res = await handleTakePropose(ctx, REQ("reject", 6));
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("permission denied");
+    expect(calls.length).toBe(0);
+  });
+
+  test("legacy profile (no guard): plain cliBin exec, inherited env — verbatim", async () => {
+    const { ctx, calls } = takesCtx({
+      queue: [{ id: 6, source_id: "default", page_slug: "a", claim_text: "c" }],
+      guard: null,
+    });
+    const res = await handleTakePropose(ctx, REQ("accept", 6));
+    expect(res.status).toBe(200);
+    expect(calls[0]?.bin).toBe("/fake/wrapper");
+    expect(calls[0]?.env).toBeUndefined();
+  });
+
+  test("op validation still precedes everything", async () => {
+    const { ctx, calls } = takesCtx({ queue: [], guard: GUARD });
+    await expect(handleTakePropose(ctx, REQ("undo", 6))).rejects.toThrow(
+      /accept\|reject/,
+    );
+    await expect(handleTakePropose(ctx, REQ("accept", "6;evil"))).rejects.toThrow();
+    expect(calls.length).toBe(0);
+  });
+});

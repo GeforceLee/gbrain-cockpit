@@ -110,6 +110,18 @@ export interface BrainProfileConfig {
   pgReadonlyDsn?: string;
   cliBin?: string;
   takesHolders?: string[];
+  /**
+   * Opt-in direct call to the REAL gbrain binary for source-scoped takes
+   * adjudication (`takes propose --accept/--reject` resolve their source from
+   * GBRAIN_SOURCE, which isolated-brain wrapper scripts unset by design).
+   * Absolute path only; must be paired with gbrainHome and pgReadonlyDsn —
+   * the driver re-checks `<gbrainHome>/.gbrain/config.json`'s database_url
+   * basename against the DSN's database before every exec (the wrapper's own
+   * safety assertion, replicated). Profiles file only, not legacy env.
+   */
+  gbrainBin?: string;
+  /** The brain's GBRAIN_HOME — the directory holding `.gbrain/config.json`. */
+  gbrainHome?: string;
 }
 
 /** The wire form of a profile: ids and labels only, zero secrets. */

@@ -30,13 +30,6 @@ describe("buildArgv (whitelist discipline)", () => {
   });
 
   test("value flags carry their validated value inline", () => {
-    expect(buildArgv("takes propose list", { limit: "500" })).toEqual([
-      "takes",
-      "propose",
-      "--limit",
-      "500",
-      "--json",
-    ]);
     expect(buildArgv("takes propose accept", { id: "606" })).toEqual([
       "takes",
       "propose",
@@ -49,6 +42,15 @@ describe("buildArgv (whitelist discipline)", () => {
       "--reject",
       "606",
     ]);
+  });
+
+  test("the takes propose LIST form is not whitelisted (queue reads the bypass)", () => {
+    // gbrain scopes `takes propose` to one source per run — the CLI list
+    // hides non-default sources on multi-source brains, so it must not be
+    // executable through this driver at all.
+    expect(() => buildArgv("takes propose list", { limit: "500" })).toThrow(
+      CliValidationError,
+    );
   });
 
   test("flag injection through any value is impossible", () => {
@@ -64,9 +66,9 @@ describe("buildArgv (whitelist discipline)", () => {
     expect(() =>
       buildArgv("takes propose accept", { id: "1 --evil" }),
     ).toThrow(CliValidationError);
-    expect(() => buildArgv("takes propose list", { limit: "1;evil" })).toThrow(
-      CliValidationError,
-    );
+    expect(() =>
+      buildArgv("takes propose reject", { id: "1;evil" }),
+    ).toThrow(CliValidationError);
   });
 
   test("whitelist refs only, by prefix", () => {
@@ -85,7 +87,7 @@ describe("buildArgv (whitelist discipline)", () => {
     expect(() =>
       buildArgv("edge-proposals date", { id: "7" }),
     ).toThrow(CliValidationError);
-    expect(() => buildArgv("takes propose list", {})).toThrow(
+    expect(() => buildArgv("takes propose accept", {})).toThrow(
       CliValidationError,
     );
   });
@@ -103,13 +105,17 @@ describe("buildArgv (whitelist discipline)", () => {
 });
 
 function makeDriver(
-  handler: (bin: string, argv: string[]) => Promise<{ stdout: string; stderr: string }>,
+  handler: (
+    bin: string,
+    argv: string[],
+    env?: Record<string, string>,
+  ) => Promise<{ stdout: string; stderr: string }>,
 ) {
-  const calls: { bin: string; argv: string[] }[] = [];
+  const calls: { bin: string; argv: string[]; env?: Record<string, string> }[] = [];
   const driver = new CliDriver("/fake/gbrain", {
-    exec: async (bin, argv) => {
-      calls.push({ bin, argv });
-      return handler(bin, argv);
+    exec: async (bin, argv, env) => {
+      calls.push({ bin, argv, env });
+      return handler(bin, argv, env);
     },
   });
   return { driver, calls };
@@ -204,27 +210,38 @@ describe("CliDriver", () => {
     expect(peak).toBeLessThanOrEqual(2);
   });
 
-  test("takes propose list/accept/reject build whitelisted argv", async () => {
-    const { driver, calls } = makeDriver(async (_bin, argv) => ({
-      stdout: argv.includes("--json")
-        ? JSON.stringify([{ id: 606, page_slug: "x", claim_text: "y" }])
-        : "promoted",
+  test("takes propose accept/reject build whitelisted argv (legacy path: no override)", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: "promoted",
       stderr: "",
     }));
-    const items = await driver.takesProposeList(500);
-    expect(items[0]?.id).toBe(606);
-    expect(calls[0]?.argv).toEqual([
-      "takes",
-      "propose",
-      "--limit",
-      "500",
-      "--json",
-    ]);
     const accepted = await driver.takesProposeAccept("606");
     expect(accepted.output).toBe("promoted");
-    expect(calls[1]?.argv).toEqual(["takes", "propose", "--accept", "606"]);
+    expect(calls[0]?.argv).toEqual(["takes", "propose", "--accept", "606"]);
+    expect(calls[0]?.bin).toBe("/fake/gbrain");
+    expect(calls[0]?.env).toBeUndefined(); // inherited process env
     expect((await driver.takesProposeReject("606")).output).toBe("promoted");
-    expect(calls[2]?.argv).toEqual(["takes", "propose", "--reject", "606"]);
+    expect(calls[1]?.argv).toEqual(["takes", "propose", "--reject", "606"]);
+  });
+
+  test("scoped opts swap the binary and hand the exec its own env", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: "promoted",
+      stderr: "",
+    }));
+    const env = {
+      PATH: "/usr/bin",
+      GBRAIN_SOURCE: "mail-import",
+      GBRAIN_HOME: "/srv/brain-bip-home",
+    };
+    await driver.takesProposeAccept("6", { bin: "/opt/gbrain-real/gbrain", env });
+    expect(calls[0]?.bin).toBe("/opt/gbrain-real/gbrain");
+    expect(calls[0]?.argv).toEqual(["takes", "propose", "--accept", "6"]);
+    expect(calls[0]?.env).toBe(env);
+    // the next call without opts is back on the profile's own cliBin
+    await driver.takesProposeReject("6");
+    expect(calls[1]?.bin).toBe("/fake/gbrain");
+    expect(calls[1]?.env).toBeUndefined();
   });
 
   test("status() reflects probe success and caches it", async () => {

@@ -52,6 +52,7 @@ function channels(
     }),
     cli: null,
     pg: new PgReadonlyDriver({ dsn: null }),
+    takesGuard: null,
     cliBinResolved: null,
   };
 }

@@ -199,3 +199,107 @@ describe("BrainRegistry.profileInfos", () => {
     expect(byId.get("b")!.cliCommand).toBe("gbrain"); // unset cliBin default
   });
 });
+
+// --- takesGuard startup wiring (source-scoped adjudication opt-in) ----------
+
+describe("BrainRegistry takesGuard", () => {
+  const brainFile = (extra: Record<string, unknown>) =>
+    JSON.stringify([
+      {
+        id: "bip",
+        mcpUrl: "http://127.0.0.1:3132/mcp",
+        mcpToken: "tok-b",
+        cliBin: "gbrain-bip",
+        pgReadonlyDsn: "postgres://cockpit_ro:x@127.0.0.1/bip",
+        ...extra,
+      },
+    ]);
+
+  const guardDeps = (configDb: string | null) => ({
+    which: async (name: string) => WHICH[name] ?? null,
+    accessX: async (p: string) =>
+      p.startsWith("/usr") || p === "/opt/gbrain-real/gbrain",
+    readFile: async (p: string) => {
+      if (p !== "/srv/brain-bip-home/.gbrain/config.json")
+        throw new Error("ENOENT");
+      if (configDb === null) throw new Error("ENOENT");
+      return JSON.stringify({
+        engine: "postgres",
+        database_url: `postgresql://u:p@127.0.0.1/${configDb}`,
+      });
+    },
+  });
+
+  test("opt-in profile gets a guard; the binary is X_OK-resolved at startup", async () => {
+    const cfg = loadProfiles(
+      { COCKPIT_PROFILES_FILE: "/x" },
+      {
+        readFile: () =>
+          brainFile({
+            gbrainBin: "/opt/gbrain-real/gbrain",
+            gbrainHome: "/srv/brain-bip-home",
+          }),
+      },
+    );
+    const reg = await BrainRegistry.create(cfg, guardDeps("bip"));
+    const guard = reg.resolve("bip")!.takesGuard;
+    expect(guard).not.toBeNull();
+    expect(guard!.bin).toBe("/opt/gbrain-real/gbrain");
+    expect(reg.resolve("bip")!.takesGuard).toBe(guard); // cached channels
+  });
+
+  test("profiles WITHOUT the pair keep takesGuard null (legacy path)", async () => {
+    const reg = await BrainRegistry.create(config("file"), guardDeps("bip"));
+    expect(reg.resolve("bip")!.takesGuard).toBeNull();
+  });
+
+  test("unexecutable gbrainBin is fatal — there is no fallback channel", async () => {
+    const cfg = loadProfiles(
+      { COCKPIT_PROFILES_FILE: "/x" },
+      {
+        readFile: () =>
+          brainFile({
+            gbrainBin: "/nope/gbrain",
+            gbrainHome: "/srv/brain-bip-home",
+          }),
+      },
+    );
+    await expect(BrainRegistry.create(cfg, guardDeps("bip"))).rejects.toBeInstanceOf(
+      ConfigError,
+    );
+  });
+
+  test("brain config pointing at ANOTHER database is fatal at startup", async () => {
+    const cfg = loadProfiles(
+      { COCKPIT_PROFILES_FILE: "/x" },
+      {
+        readFile: () =>
+          brainFile({
+            gbrainBin: "/opt/gbrain-real/gbrain",
+            gbrainHome: "/srv/brain-bip-home",
+          }),
+      },
+    );
+    // config.json names "postgres" while the DSN names "bip" — refusing
+    // beats silently adjudicating against the wrong brain.
+    await expect(BrainRegistry.create(cfg, guardDeps("postgres"))).rejects.toThrow(
+      /wrong brain/,
+    );
+  });
+
+  test("missing brain config file is fatal at startup", async () => {
+    const cfg = loadProfiles(
+      { COCKPIT_PROFILES_FILE: "/x" },
+      {
+        readFile: () =>
+          brainFile({
+            gbrainBin: "/opt/gbrain-real/gbrain",
+            gbrainHome: "/srv/brain-bip-home",
+          }),
+      },
+    );
+    await expect(BrainRegistry.create(cfg, guardDeps(null))).rejects.toBeInstanceOf(
+      ConfigError,
+    );
+  });
+});

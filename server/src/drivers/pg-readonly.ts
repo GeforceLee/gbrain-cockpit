@@ -1,7 +1,12 @@
-import { buildGraphKey, type GraphEdge, type GraphNode } from "@gbrain-cockpit/shared";
+import {
+  buildGraphKey,
+  type GraphEdge,
+  type GraphNode,
+  type TakeProposal,
+} from "@gbrain-cockpit/shared";
 
 // Read-only graph bypass (ARCHITECTURE §3.3, channel ③). The whole SQL
-// surface of this driver is the four FIXED statements below — identifiers are
+// surface of this driver is the FIXED statements below — identifiers are
 // filtered against a hardcoded candidate list via information_schema, so no
 // user input can ever reach the database. The DSN must belong to a dedicated
 // read-only account; this driver never issues anything but SELECTs and the
@@ -35,6 +40,20 @@ const SQL_PROBE_LINKS = "SELECT count(*)::int AS n FROM links";
 const SQL_COLUMNS =
   "SELECT table_name, column_name FROM information_schema.columns " +
   "WHERE table_schema = 'public' AND table_name IN ('pages', 'links')";
+/**
+ * The Inbox takes queue. NOT reachable through the CLI: gbrain 0.60.558's
+ * `takes propose` (list and --accept/--reject alike) scopes to ONE source
+ * resolved per run (resolveSourceId, 'default' with no GBRAIN_SOURCE), so
+ * on a multi-source brain the CLI only ever shows the default source's
+ * proposals — the table read is naturally cross-source. Same column set
+ * and newest-first order as upstream's listPendingProposals
+ * (src/core/take-proposals.ts), minus its server-side 500-row clamp —
+ * the read-only account needs GRANT SELECT on this table (deploy step).
+ */
+const SQL_TAKES_PENDING =
+  "SELECT id, source_id, page_slug, claim_text, kind, holder, weight, domain, status, proposed_at, model_id, promoted_row_num " +
+  "FROM take_proposals WHERE status = 'pending' " +
+  "ORDER BY proposed_at DESC, id DESC LIMIT 9999";
 
 /**
  * Pages columns we consume; presence-checked against information_schema.
@@ -113,6 +132,49 @@ export class PgReadonlyDriver {
     const started = performance.now();
     await this.#query(SQL_PROBE_PAGES);
     return Math.round(performance.now() - started);
+  }
+
+  /**
+   * The Inbox takes queue — fresh every call, deliberately uncached:
+   * adjudications flip rows to accepted/rejected and the queue must reflect
+   * them on the next poll (the graph's TTL pattern would serve stale
+   * verdicts). Numeric coercion mirrors upstream's normalizeTakeProposalRow
+   * so CLI-shaped consumers see the same contract.
+   */
+  async pendingTakeProposals(): Promise<TakeProposal[]> {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const rows = await this.#query(SQL_TAKES_PENDING);
+    return rows.map((row) => {
+      const proposal: TakeProposal = {
+        id: Number(row.id),
+        page_slug: String(row.page_slug ?? ""),
+        claim_text: String(row.claim_text ?? ""),
+        ...(typeof row.source_id === "string" ? { source_id: row.source_id } : {}),
+        ...(typeof row.kind === "string" ? { kind: row.kind } : {}),
+        ...(typeof row.holder === "string" ? { holder: row.holder } : {}),
+        ...(row.weight === undefined || row.weight === null
+          ? {}
+          : { weight: Number(row.weight) }),
+        ...(typeof row.domain === "string" && row.domain
+          ? { domain: row.domain }
+          : {}),
+        ...(typeof row.status === "string" ? { status: row.status } : {}),
+        ...(row.proposed_at instanceof Date
+          ? { proposed_at: row.proposed_at.toISOString() }
+          : typeof row.proposed_at === "string" && row.proposed_at
+            ? { proposed_at: row.proposed_at }
+            : {}),
+        ...(typeof row.model_id === "string" && row.model_id
+          ? { model_id: row.model_id }
+          : {}),
+        ...(row.promoted_row_num === undefined || row.promoted_row_num === null
+          ? {}
+          : { promoted_row_num: Number(row.promoted_row_num) }),
+      };
+      return proposal;
+    });
   }
 
   /**

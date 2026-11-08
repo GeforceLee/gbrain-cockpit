@@ -210,6 +210,106 @@ describe("PgReadonlyDriver", () => {
   });
 });
 
+// --- Inbox takes queue (multi-source visibility fix) --------------------------
+
+const SQL_TAKES_PENDING =
+  "SELECT id, source_id, page_slug, claim_text, kind, holder, weight, domain, status, proposed_at, model_id, promoted_row_num " +
+  "FROM take_proposals WHERE status = 'pending' " +
+  "ORDER BY proposed_at DESC, id DESC LIMIT 9999";
+
+describe("PgReadonlyDriver pendingTakeProposals", () => {
+  test("unconfigured throws without querying", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([], log) });
+    await expect(driver.pendingTakeProposals()).rejects.toThrow(/not configured/);
+    expect(log.length).toBe(0);
+  });
+
+  test("reads cross-source rows through the ONE fixed statement, CLI-shaped", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery(
+        [
+          {
+            text: SQL_TAKES_PENDING,
+            rows: [
+              {
+                id: 6,
+                source_id: "mail-import",
+                page_slug: "issue/bug-1234",
+                claim_text: "claim six",
+                kind: "take",
+                holder: "brain",
+                weight: "0.70", // pg numeric arrives as string
+                domain: null,
+                status: "pending",
+                proposed_at: new Date("2026-11-06T05:12:00Z"),
+                model_id: "qwen3",
+                promoted_row_num: null,
+              },
+              {
+                id: 657,
+                source_id: "default",
+                page_slug: "atlas-page",
+                claim_text: "legacy default-source row",
+                kind: "fact",
+                holder: "world",
+                weight: 0.5,
+                domain: "ops",
+                status: "pending",
+                proposed_at: "2026-11-05T00:00:00Z",
+                model_id: null,
+                promoted_row_num: 4,
+              },
+            ],
+          },
+        ],
+        log,
+      ),
+    });
+    const items = await driver.pendingTakeProposals();
+    expect(log).toEqual([SQL_TAKES_PENDING]); // the whole SQL surface, once
+    expect(items).toHaveLength(2);
+    // both sources visible — the whole point of the bypass queue
+    expect(items[0]).toEqual({
+      id: 6,
+      source_id: "mail-import",
+      page_slug: "issue/bug-1234",
+      claim_text: "claim six",
+      kind: "take",
+      holder: "brain",
+      weight: 0.7, // numeric coerced, mirrors upstream's normalize
+      status: "pending",
+      proposed_at: "2026-11-06T05:12:00.000Z", // Date → ISO (ms), the CLI JSON shape
+      model_id: "qwen3",
+    });
+    expect(items[1]).toEqual({
+      id: 657,
+      source_id: "default",
+      page_slug: "atlas-page",
+      claim_text: "legacy default-source row",
+      kind: "fact",
+      holder: "world",
+      weight: 0.5,
+      domain: "ops",
+      status: "pending",
+      proposed_at: "2026-11-05T00:00:00Z",
+      promoted_row_num: 4,
+    });
+  });
+
+  test("query failures propagate to the route (queue down, never a crash)", async () => {
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: async () => {
+        throw new Error('permission denied for table take_proposals');
+      },
+    });
+    await expect(driver.pendingTakeProposals()).rejects.toThrow(/permission denied/);
+  });
+});
+
 // --- multi-source identity (Phase 6): (source_id, slug) keys -----------------
 
 const COLUMNS_WITH_SOURCE: Script = {
