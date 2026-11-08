@@ -34,8 +34,32 @@ jobs:
       - name: Build web bundle
         run: bun run build
 
+      # The compiled binary serves static files from a dist directory next to
+      # itself (server/src/index.ts resolves ../web/dist before $bunfs) — a
+      # release without the web bundle ships a UI-less half product, so the
+      # bundle itself is an artifact, and the smoke below proves it's there.
+      - name: Bundle web-dist for release
+        run: tar -czf dist-bin/web-dist.tar.gz -C web dist
+
       - name: Compile linux binary
         run: bun run compile:linux
+
+      - name: Smoke: binary serves the fresh web bundle
+        run: |
+          COCKPIT_TOKEN=ci-smoke-token GBRAIN_MCP_TOKEN=ci-unreachable \
+            COCKPIT_BIND=127.0.0.1 COCKPIT_PORT=8788 \
+            COCKPIT_DIST_DIR="$PWD/web/dist" ./dist-bin/cockpit-linux-x64 &
+          # assert only what this artifact exists to prove: the binary serves
+          # the just-built bundle. No brain is reachable in CI — healthz would
+          # probe dead upstreams, which is not this smoke's question.
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8788/ || true)
+            [ "$code" = "200" ] && break
+            sleep 1
+          done
+          [ "$code" = "200" ] || { echo "static root answered $code"; exit 1; }
+          curl -fsS http://127.0.0.1:8788/ | grep -q "<title>gbrain-cockpit" && echo "web bundle served ✓"
+          kill %1
 
       - name: Upload release artifacts (linux)
         uses: softprops/action-gh-release@v2
@@ -43,6 +67,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist-bin/cockpit-linux-x64
+            dist-bin/web-dist.tar.gz
             server/deploy/cockpit.service
 
   release-macos:

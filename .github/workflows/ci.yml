@@ -27,6 +27,11 @@ jobs:
       - name: Locale key parity (zh-CN / en)
         run: bun run check:locales
 
+      # The release builds web for the first time otherwise — vite/rollup-level
+      # failures (bad asset imports, CSS resolution) belong in CI, not in a tag.
+      - name: Build web bundle
+        run: bun run build
+
       - name: Supply-chain audit
         run: bun audit --prod
 
