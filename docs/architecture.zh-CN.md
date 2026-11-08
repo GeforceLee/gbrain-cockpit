@@ -22,12 +22,15 @@ gbrain-cockpit 是面向自托管 [gbrain](https://github.com/garrytan/gbrain)(`
 cockpit server(Bun + TypeScript,零运行时 npm 依赖)
    │
    ├─① MCP 通道 ──────► gbrain serve 的 MCP 端点
-   │     读取、页面写入(回执协议)、事实确认
+   │     读取、页面写入(回执协议)、事实确认、
+   │     出处读取(关系/时间线/来源诊断)、写收据列表、搜索证据组装
    │
    ├─② CLI 通道 ──────► 白名单内的 `gbrain` 子命令,仅 --json
-   │     信任队列审阅/驳回、关系提案、takes propose
+   │     信任队列审阅/驳回、关系提案、takes 裁决
    │
-   └─③ 只读旁路 ──────► pages/links 固定 SELECT(仅图谱用)
+   └─③ 只读旁路 ──────► pages/links 固定 SELECT(图谱)
+         + take_proposals(Inbox takes 队列,天然跨源;
+         CLI 的 takes 列表每次运行只看一个源)
          SQL 零用户输入;可选,PGLite 引擎下关闭
 ```
 
@@ -40,11 +43,12 @@ cockpit server(Bun + TypeScript,零运行时 npm 依赖)
 | 接受信任提案(tp) | owner 终端逐字确认 | **复制命令** | 命令块 |
 | 放行搁置写入(h) | owner 终端逐字确认 | **复制命令** | 命令块 |
 | 关系提案 accept / reject / undo / date | 无 | CLI 白名单 | 一键 |
-| takes propose accept / reject | 无 | CLI 白名单 | 一键 |
+| takes 待判定队列(`take_proposals`) | 专用只读账号 | 只读旁路 | 队列展示 |
+| takes propose accept / reject | 无 | CLI 白名单(多源 brain 上按行带 `GBRAIN_SOURCE` env) | 一键 |
 | 事实/记忆确认(`confirm_memory`) | `memory_confirm` scope | MCP | 一键 |
 | 页面写入(`put_page`) | 无 | MCP 回执协议 | 编辑 + 轮询 |
 
-CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍然可达,但对 owner 在场的要求提高。不可用分两种成因,界面对应区分:未找到 gbrain 二进制(本机可能非 brain 主机)与二进制已就位但探测(`trust review`)未通过(降级,详见健康面板)。MCP 类动作(确认、页面写入)在任何能到达 MCP 端点的主机上都能用。
+多源 brain 上,裁决动词以提案行自己的 `GBRAIN_SOURCE` 与 profile 的 `GBRAIN_HOME` 直调真实 gbrain 二进制(经 `gbrainBin`/`gbrainHome` 显式开启;驱动每次执行前复断言 brain 配置的库名——与隔离 wrapper 同一道防线)。CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍然可达,但对 owner 在场的要求提高。不可用分两种成因,界面对应区分:未找到 gbrain 二进制(本机可能非 brain 主机)与二进制已就位但探测(`trust review`)未通过(降级,详见健康面板)。MCP 类动作(确认、页面写入)在任何能到达 MCP 端点的主机上都能用。
 
 ## CLI 执行纪律
 
@@ -62,6 +66,17 @@ CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍�
 - `expected_revision`——dream 在你编辑期间改了此页,你会看到显式冲突,而不是被静默覆盖
 - `request_id`(客户端生成 UUID)——同一 ID 重放取回同一结果;超时的写入通过 `get_write_request` **轮询**收据,绝不重发
 - `wait_ms` 15 秒;上游超时后界面保留 request_id 轮询到终态(`committed | conflict | failed | cancelled`)
+- 单次保存的收据槽之外,Pages 面板还透出 gbrain 自己的记录:`list_write_requests`(本令牌的收据,新→旧)与 `list_write_conflicts`(反复 `source_changed` 的页面)——展开才拉取,旧版 gbrain 上带内降级
+
+## 维度与出处读取
+
+V1.1 的读取集(对照 0.60.558 实测钉形)走同一 MCP driver,按工具分别带 TTL 缓存:
+
+- `list_pages` 接受 `slug_prefix` 与 `tag` 收窄(上游 list 行不带标签——标签筛选是自由输入框,不是 chips)
+- `GET /api/page?full=1` 在页面束上附加 `get_links` / `get_backlinks` / `get_timeline`;失败或上游不支持的区块落进 `degraded` 列表、界面自描述——默认(速览)束保持两次上游调用,守住 30 次/分的自律预算
+- `sources_status`(参数是 `id`,一次一源)对 grant 范围内的源列表扇出,供 Health 卡片;图谱图例的关系出处计数在客户端对旁路载荷的 `link_source` 聚合——零新增上游调用
+- `assemble_evidence` 按命中三元组(单次 ≤3)返回证据窗口,支撑搜索面板的证据展开
+- 所有新报告在旧版 gbrain 上一律带内降级(`status: degraded|down`);web 对缺席区块或 404 端点按「不可用」处理,绝不报错
 
 ## 安全基线
 
@@ -69,7 +84,7 @@ CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍�
 - **令牌卫生**:令牌只走 `Authorization` 头——query 参数里出现令牌形态的值直接 400;浏览器侧令牌存 localStorage、仅以请求头发送、绝不进 URL;比较为常数时间
 - **Host/Origin 防线**:Host 白名单(防 DNS rebinding)+ 非 GET 请求的 Origin/`Sec-Fetch-Site` 校验 + 写请求仅接受 JSON body
 - **不可信内容渲染**:brain 内容(导入的页面/邮件/聊天记录)是持久化不可信输入。页面正文是 markdown(gbrain 仓库即 Markdown 的设计,已对上游文档与真实 brain 实证),只经唯一一条管线渲染——`marked → DOMPurify`(`lib/markdown.ts` + `components/PageBody.tsx`;script/图片/表单剥离,外链加固为 `_blank`+`noopener`);对话导入包装(引文标记行 + 裹住正文的 text 围栏)在渲染前解包,严格形状匹配、不匹配按原样渲染;该 `dangerouslySetInnerHTML` 是全站唯一一处,其余一律纯文本,图谱标签用 canvas 绘制
-- **SQL 面**:只读旁路只跑三条模块级常量 SELECT(pages/links 两表,专用只读账号);用户输入到不了 SQL
+- **SQL 面**:只读旁路只跑模块级常量 SELECT(pages/links 供图谱、take_proposals 供 Inbox takes 队列,专用只读账号);用户输入到不了 SQL
 - **错误信封**:浏览器只看得到 `{error: 概要, code}`;子进程 stderr 只进服务端日志
 - **审计留痕**:写动作追加到程序目录之外的 `~/.cockpit-audit/YYYY-MM-DD.jsonl`
 
@@ -89,7 +104,7 @@ CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍�
 | `GBRAIN_MCP_TOKEN` | **是** | `gbrain auth create` 铸造的 token(scope 至少 `read,write,memory_confirm`) |
 | `GBRAIN_TAKES_HOLDERS` | 否 | 铸 token 时的全量 holder 列表(启动自检;takes 可见域默认 fail-closed 收窄到 `world`) |
 | `GBRAIN_BIN` | 否 | gbrain 可执行路径;留空自动发现 |
-| `PG_READONLY_DSN` | 否 | 图谱用的只读 Postgres 账号;PGLite 引擎保持未设 |
+| `PG_READONLY_DSN` | 否 | 图谱与 takes 队列用的只读 Postgres 账号;PGLite 引擎保持未设(takes 队列届时报不可用) |
 
 ## 仓库结构
 
@@ -137,7 +152,10 @@ DSN),每次 `/api/*` 调用经 `x-brain-profile` 头路由(缺省 = 默认 profi
     "name": "bip-brain",
     "mcpUrl": "http://127.0.0.1:3132/mcp",
     "mcpCredentials": "/etc/gbrain-cockpit/bip-credentials.json",
-    "cliBin": "gbrain-bip"
+    "cliBin": "gbrain-bip",
+    "pgReadonlyDsn": "postgresql://cockpit_ro:…@host/bip",
+    "gbrainBin": "/home/you/.bun/bin/gbrain",
+    "gbrainHome": "/home/you/gbrain-bip"
   }
 ]
 ```

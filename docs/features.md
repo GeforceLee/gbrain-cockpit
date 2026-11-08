@@ -26,27 +26,30 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 ## Graph — the whole-brain map
 
 - Every page and every relation on one canvas map (sigma.js; labels drawn on canvas, never HTML)
-- Community grouping (Louvain) with color families, typed relation colors, and a **relation-type legend with per-type show/hide**
+- Community grouping (Louvain) with color families, typed relation colors, and a **relation-type legend with per-type show/hide** plus a **link-provenance legend group** (where each relation was extracted from — markdown, dream, manual…), counted over the same edge set the routes draw
 - Four view modes: overview · focus (a page and its neighbors) · relations matrix (≤2-step neighbors grouped) · stock look
 - "Hide low-link pages" filter to de-noise; pending-adjudication pages stay visible and marked
-- Search-locate box jumps to any slug; node drawer shows type, relation count, versions and a **content peek**, with one-click jump to edit
+- Search-locate box jumps to any slug; node drawer shows type, relation count, versions, tags, outgoing/backlink counts and a **content peek**, with one-click jump to edit
 
 ## Pages — browse and edit
 
 - Type facets straight from your brain's own `schema_stats` (nothing hardcoded), with counts
+- **Three filter dimensions**: type facets, a slug-prefix box (server-side `slug_prefix` narrowing) and a tag box (upstream's `tag` filter — list rows never carry tags upstream, so this is a free-input filter, not a chip list); plus the source filter, all server-side
 - Deep keyset pagination on gbrain's own cursor — every page of a 10k-page brain is reachable, not just the first window
 - In-place editing on the full write-receipt protocol: optimistic-lock conflict instead of silent overwrite, idempotent request ids, receipt polling on timeout (never a re-send)
-- Detail view: type, updated, trust tier, revision, version count; the editing surface behind every page drawer's "edit in Pages →"
+- **Write-receipts section** (lazy, fetched on expand): what gbrain itself recorded for this token's writes — status, request id, slug, time — plus a banner of pages whose writes keep ending in `source_changed` conflicts; the upstream truth next to the session-side audit table
+- **Detail view with full provenance**: tags, origin (which channel wrote the page), created date, source file, trust tier, revision; **relations** — outgoing (`get_links`) and backlinks (`get_backlinks`), each row with its type, per-edge provenance and a context excerpt, click to jump; a read-only **timeline**; the **version-history** list. A missing or failed section self-describes as unavailable instead of erroring
 - Page bodies render as markdown through the marked → DOMPurify pipeline everywhere (detail view, page drawer, graph peek) — gbrain stores pages as markdown (its repo-of-Markdown design), and imported content is persistent untrusted input: scripts/images/forms are stripped, external links open hardened (`_blank` + `noopener`). Pages stored inside the conversation-ingest wrapper (a quoted-excerpt line plus a text fence around the whole body) are unwrapped at render time; any other shape renders exactly as stored
 
 ## Search
 
 - The cheap hybrid (literal + semantic) top-20 entry point — no LLM call
-- Global topbar box with `/` and ⌘K shortcuts lands here; results show score, type, and a plain-text snippet; click to peek the page in place (the result list stays behind it)
+- Global topbar box with `/` and ⌘K shortcuts lands here; results show score, type, a plain-text snippet and an **origin chip** (which channel captured the page); click to peek the page in place (the result list stays behind it)
+- **Evidence expansion** per hit (`assemble_evidence`): the window of text around the matched chunk — the drawer stays the full-page view
 
 ## Health
 
-- Overall status plus per-channel cards: MCP latency gauge, brain summary (name, gbrain version, engine, page count), CLI channel (binary found / missing), read-only bypass
+- Overall status plus per-channel cards: MCP latency gauge, brain summary (name, gbrain version, engine, page count), CLI channel (binary found / missing), read-only bypass, and **per-source diagnostics** (`sources_status`: clone state, last sync, pending writes)
 - The safety checklist: token-in-header-only, CLI whitelist discipline, fixed-SELECT bypass, receipt-protocol writes
 - Coarse unauthenticated `/healthz` for uptime pollers (statuses only, no data)
 

@@ -22,12 +22,16 @@ Browser (React SPA, token in Authorization header only)
 cockpit server (Bun + TypeScript, zero runtime npm deps)
    │
    ├─① MCP driver ────────► gbrain serve MCP endpoint
-   │     reads, page writes (receipt protocol), fact confirmation
+   │     reads, page writes (receipt protocol), fact confirmation,
+   │     provenance reads (links/backlinks/timeline/sources), write-receipt
+   │     listing, search-evidence assembly
    │
    ├─② CLI driver ────────► whitelisted `gbrain` subcommands, --json only
-   │     trust queue review/drop, edge proposals, takes propose
+   │     trust queue review/drop, edge proposals, takes adjudication
    │
-   └─③ read-only bypass ──► fixed SELECT on pages/links (graph only)
+   └─③ read-only bypass ──► fixed SELECT on pages/links (graph)
+         + take_proposals (Inbox takes queue — cross-source by nature;
+         the CLI's takes list is scoped to ONE source per run)
          zero user input in SQL; optional, off on PGLite engines
 ```
 
@@ -40,11 +44,12 @@ cockpit server (Bun + TypeScript, zero runtime npm deps)
 | Accept trust proposal (tp) | owner typed-token terminal confirm | **copy-command** | copy block |
 | Release held write (h) | owner typed-token terminal confirm | **copy-command** | copy block |
 | Edge proposal accept / reject / undo / date | none | CLI whitelist | one-key |
-| Takes propose accept / reject | none | CLI whitelist | one-key |
+| Takes pending queue (`take_proposals`) | dedicated read-only role | read-only bypass | queue view |
+| Takes propose accept / reject | none | CLI whitelist (per-row `GBRAIN_SOURCE` env on multi-source brains) | one-key |
 | Fact / memory confirmation (`confirm_memory`) | `memory_confirm` scope | MCP | one-key |
 | Page write (`put_page`) | none | MCP receipt protocol | edit + poll |
 
-If the CLI channel is unavailable, one-key CLI actions degrade to copy-command blocks — the action stays possible, owner presence increases. The UI distinguishes the two causes: the gbrain binary was not found (this host may not be the brain host) vs. the binary is present but the probe (`trust review`) failed (degraded — see the Health panel). MCP-channel actions (confirmations, page writes) work from any host that can reach the MCP endpoint.
+On multi-source brains the adjudication verbs exec the REAL gbrain binary with the proposal row's own `GBRAIN_SOURCE` and the profile's `GBRAIN_HOME` (opt-in via `gbrainBin`/`gbrainHome`; the driver re-asserts the brain config's database name before every exec — the same guard isolated-brain wrapper scripts apply). If the CLI channel is unavailable, one-key CLI actions degrade to copy-command blocks — the action stays possible, owner presence increases. The UI distinguishes the two causes: the gbrain binary was not found (this host may not be the brain host) vs. the binary is present but the probe (`trust review`) failed (degraded — see the Health panel). MCP-channel actions (confirmations, page writes) work from any host that can reach the MCP endpoint.
 
 ## CLI execution discipline
 
@@ -62,6 +67,17 @@ Saves ride gbrain's own write protocol end-to-end:
 - `expected_revision` — if dream changed the page while you edited, you get a visible conflict, never a silent overwrite
 - `request_id` (client-minted UUID) — same id replays to the same result; a timed-out write is **polled** via `get_write_request`, never re-sent
 - `wait_ms` 15s; on upstream timeout the UI keeps the request_id and polls the receipt to a final state (`committed | conflict | failed | cancelled`)
+- beyond the per-save slot, the Pages panel exposes gbrain's own record: `list_write_requests` (this token's receipts, newest first) and `list_write_conflicts` (pages repeatedly ending in `source_changed`) — fetched lazily on expand, in-band degraded on older gbrains
+
+## Dimensions & provenance reads
+
+The V1.1 read set (live-probed against 0.60.558) rides the same MCP driver with per-tool TTL caches:
+
+- `list_pages` narrows by `slug_prefix` and `tag` (list rows never carry tags upstream — the tag filter is a free-input box, not a chip list)
+- `GET /api/page?full=1` attaches `get_links` / `get_backlinks` / `get_timeline` to the page bundle; a failed or unsupported section lands in a `degraded` list and the UI self-describes it — the default (peek) bundle stays at two upstream calls to honor the 30 req/min self-budget
+- `sources_status` (arg `id`, one source per call) fans out over the grant-scoped source list for the Health card; the graph legend's link-provenance counts aggregate client-side over the bypass payload's `link_source` — no extra upstream call
+- `assemble_evidence` answers per-hit evidence windows (≤3 triples per call) for the Search panel's evidence expansion
+- every new report degrades in-band (`status: degraded|down`) on older gbrains; the web treats a missing section or a 404 endpoint as unavailable, never as an error
 
 ## Security baseline
 
@@ -69,7 +85,7 @@ Saves ride gbrain's own write protocol end-to-end:
 - **Token hygiene**: tokens travel only in the `Authorization` header — a token-looking query parameter is rejected with 400; browser-side the token lives in localStorage and is attached as a header, never in URLs; comparison is constant-time
 - **Host/Origin defenses**: Host-header whitelist (DNS-rebinding) + Origin/`Sec-Fetch-Site` checks on non-GET + JSON-only write bodies
 - **Untrusted content rendering**: all brain content (imported pages, mail, chat logs) is persistent untrusted input. Page bodies are markdown (gbrain's repo-of-Markdown design, verified against upstream docs and the real brain) and render through exactly one pipeline — `marked → DOMPurify` (`lib/markdown.ts` + `components/PageBody.tsx`; scripts/images/forms stripped, links hardened to `_blank`+`noopener`); conversation-ingest wrappers (quoted-excerpt line + whole-body text fence) are unwrapped before rendering with strict shape matching and as-stored fallback; that `dangerouslySetInnerHTML` is the app's only one, everything else stays plain text and graph labels are drawn on canvas
-- **SQL surface**: the graph bypass runs three module-level constant SELECTs against `pages`/`links` on a dedicated read-only role; user input cannot reach SQL
+- **SQL surface**: the read-only bypass runs module-level constant SELECTs against `pages`/`links` (graph) and `take_proposals` (Inbox takes queue) on a dedicated read-only role; user input cannot reach SQL
 - **Error envelope**: the browser only ever sees `{error: summary, code}`; subprocess stderr stays in server logs
 - **Audit trail**: write actions append to `~/.cockpit-audit/YYYY-MM-DD.jsonl` outside the program directory
 
@@ -89,7 +105,7 @@ Environment variables (see [`.env.example`](../.env.example) for the annotated v
 | `GBRAIN_MCP_TOKEN` | **yes** | token minted via `gbrain auth create` (`read,write,memory_confirm` scopes) |
 | `GBRAIN_TAKES_HOLDERS` | no | full holder list used at mint time (startup self-check; takes visibility is fail-closed to `world` by default) |
 | `GBRAIN_BIN` | no | gbrain executable path; empty = auto-discover |
-| `PG_READONLY_DSN` | no | read-only Postgres role for the graph; unset on PGLite engines |
+| `PG_READONLY_DSN` | no | read-only Postgres role for the graph and the takes queue; unset on PGLite engines (the takes queue then reports unavailable) |
 
 ## Repo layout
 
@@ -139,7 +155,10 @@ Configuration is a JSON file pointed at by `COCKPIT_PROFILES_FILE`:
     "name": "bip-brain",
     "mcpUrl": "http://127.0.0.1:3132/mcp",
     "mcpCredentials": "/etc/gbrain-cockpit/bip-credentials.json",
-    "cliBin": "gbrain-bip"
+    "cliBin": "gbrain-bip",
+    "pgReadonlyDsn": "postgresql://cockpit_ro:…@host/bip",
+    "gbrainBin": "/home/you/.bun/bin/gbrain",
+    "gbrainHome": "/home/you/gbrain-bip"
   }
 ]
 ```
