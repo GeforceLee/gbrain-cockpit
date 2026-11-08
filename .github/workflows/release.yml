@@ -44,7 +44,7 @@ jobs:
       - name: Compile linux binary
         run: bun run compile:linux
 
-      - name: Smoke: binary serves the fresh web bundle
+      - name: Smoke — binary serves the fresh web bundle
         run: |
           COCKPIT_TOKEN=ci-smoke-token GBRAIN_MCP_TOKEN=ci-unreachable \
             COCKPIT_BIND=127.0.0.1 COCKPIT_PORT=8788 \
