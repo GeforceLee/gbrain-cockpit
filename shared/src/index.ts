@@ -20,7 +20,9 @@ export type AdjudicationAction =
   | "edge-proposals.date"
   | "edge-proposals.undo"
   | "memory.confirm" // MCP confirm_memory (needs memory_confirm scope)
-  | "takes.propose.list" // `gbrain takes propose --json` (hidden family)
+  // NOTE: no "takes.propose.list" here — the queue READ is not an
+  // adjudication action; since 0.2.2 it rides the read-only bypass
+  // (cross-source; the CLI verb single-source filters, GBRAIN-CAPABILITIES §2)
   | "takes.propose.accept" // `gbrain takes propose --accept <id>`
   | "takes.propose.reject" // `gbrain takes propose --reject <id>`
   | "takes.resolve" // MCP takes_resolve on ACTIVE takes (slug+row, future)
@@ -49,7 +51,6 @@ export const ADJUDICATION_CHANNELS: Readonly<
   "edge-proposals.date": "cli-whitelist",
   "edge-proposals.undo": "cli-whitelist",
   "memory.confirm": "mcp",
-  "takes.propose.list": "cli-whitelist",
   "takes.propose.accept": "cli-whitelist",
   "takes.propose.reject": "cli-whitelist",
   "takes.resolve": "mcp",
