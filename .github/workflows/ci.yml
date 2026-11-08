@@ -11,15 +11,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # setup-bun's download flaked across runners today (same commit: one
-      # runner green, one red at this very step) — install the pinned bun
-      # straight from its GitHub release asset with curl's own retries.
-      - name: Install bun 1.4.4 (pinned, retried download)
+      # GitHub's release-asset CDN failed from runners today while git
+      # clones kept working — pinned direct download with curl retries, and
+      # an npm-registry fallback (a different CDN entirely) so a broken
+      # asset path can never red the pipeline.
+      - name: Install bun 1.4.4 (pinned; asset download with npm fallback)
         run: |
-          curl -fsSL -o /tmp/bun.zip --retry 5 --retry-delay 5 --retry-all-errors \
-            https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip
-          unzip -oq /tmp/bun.zip -d /tmp/buninst
-          install -m 755 /tmp/buninst/bun-linux-x64/bun /usr/local/bin/bun
+          if curl -fsSL -o /tmp/bun.zip --retry 3 --retry-delay 5 --retry-all-errors \
+               https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip; then
+            echo "installed from the GitHub release asset"
+            unzip -oq /tmp/bun.zip -d /tmp/buninst
+            install -m 755 /tmp/buninst/bun-linux-x64/bun /usr/local/bin/bun
+          else
+            echo "asset download failed — falling back to the npm registry"
+            npm i -g bun@1.4.4
+          fi
           bun --version
 
       - name: Install (frozen lockfile)
