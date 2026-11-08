@@ -19,6 +19,14 @@ export type AdjudicationAction =
   | "edge-proposals.reject"
   | "edge-proposals.date"
   | "edge-proposals.undo"
+  // Contradiction proposals: gbrain's DEDICATED decide family (probed
+  // 0.60.611: `decide proposals list/accept/reject/undo`). They also surface
+  // as dp<id> entries inside `trust review`, but their disposition verbs are
+  // these — NOT trust confirm/drop — so dp refs never enter TRUST_REF_RE.
+  | "contradictions.queue.list" // `gbrain decide proposals list --json`
+  | "contradictions.accept" // `gbrain decide proposals accept <id>`
+  | "contradictions.reject" // `gbrain decide proposals reject <id>`
+  | "contradictions.undo" // `gbrain decide proposals undo <id>`
   | "memory.confirm" // MCP confirm_memory (needs memory_confirm scope)
   // NOTE: no "takes.propose.list" here — the queue READ is not an
   // adjudication action; since 0.2.2 it rides the read-only bypass
@@ -50,6 +58,14 @@ export const ADJUDICATION_CHANNELS: Readonly<
   "edge-proposals.reject": "cli-whitelist",
   "edge-proposals.date": "cli-whitelist",
   "edge-proposals.undo": "cli-whitelist",
+  // decide proposals carry no typed-token gate upstream (a --all-from batch
+  // form exists, which a terminal-confirmation family never would) — same
+  // adjudication class as edge-proposals: CLI whitelist, one-key, never the
+  // owner-presence (copy-command) channel.
+  "contradictions.queue.list": "cli-whitelist",
+  "contradictions.accept": "cli-whitelist",
+  "contradictions.reject": "cli-whitelist",
+  "contradictions.undo": "cli-whitelist",
   "memory.confirm": "mcp",
   "takes.propose.accept": "cli-whitelist",
   "takes.propose.reject": "cli-whitelist",
@@ -199,6 +215,18 @@ export function edgeAcceptCommand(bin: string, id: string): string {
   assertOwnerBin(bin);
   assertCliId(id);
   return `${bin} edge-proposals accept ${id}`;
+}
+
+export function contradictionAcceptCommand(bin: string, id: string): string {
+  assertOwnerBin(bin);
+  assertCliId(id);
+  return `${bin} decide proposals accept ${id}`;
+}
+
+export function contradictionRejectCommand(bin: string, id: string): string {
+  assertOwnerBin(bin);
+  assertCliId(id);
+  return `${bin} decide proposals reject ${id}`;
 }
 
 /**
@@ -553,6 +581,43 @@ export interface EdgeProposal {
   [k: string]: unknown;
 }
 
+/**
+ * One contradiction proposal from `gbrain decide proposals list --json`
+ * (probed empty on 0.60.611: `{status, proposals: [], review_proposals: []}`
+ * — row shape still unknown, so everything beyond id is defensive
+ * passthrough; the UI renders known-looking fields and never assumes).
+ */
+export interface ContradictionProposal {
+  id?: string | number;
+  [k: string]: unknown;
+}
+
+/**
+ * The Inbox's fifth queue: contradiction proposals from the decide family,
+ * plus the state of the `eval suspected-contradictions` probe that feeds
+ * `find_contradictions` (the lane's informational header). The probe state
+ * distinguishes "never ran" (note present — the empty state says HOW to run
+ * it, never "no contradictions") from "ran, found nothing".
+ */
+export interface ContradictionsReport extends InboxQueue<ContradictionProposal> {
+  probe?: {
+    ranAt?: string;
+    runId?: string;
+    /** upstream's own self-describing line when no probe has ever run */
+    note?: string;
+    totalVisible?: number;
+  };
+}
+
+/** GET-level read of MCP find_contradictions — the probe-state half of the lane. */
+export interface ContradictionProbeState {
+  ranAt?: string;
+  runId?: string;
+  note?: string;
+  totalVisible?: number;
+  [k: string]: unknown;
+}
+
 export interface TakeItem {
   ref?: string;
   id?: string | number;
@@ -623,6 +688,7 @@ export interface InboxReport {
   trust: InboxQueue<TrustReviewItem>;
   edgeProposals: InboxQueue<EdgeProposal>;
   takes: TakesQueue;
+  contradictions: ContradictionsReport;
   cliChannel: CliChannelStatus;
 }
 

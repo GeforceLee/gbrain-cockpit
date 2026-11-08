@@ -53,6 +53,50 @@ describe("buildArgv (whitelist discipline)", () => {
     );
   });
 
+  test("decide proposals family: list/accept/reject/undo build exact argv", () => {
+    expect(buildArgv("decide proposals list", {})).toEqual([
+      "decide",
+      "proposals",
+      "list",
+      "--json",
+    ]);
+    expect(buildArgv("decide proposals accept", { id: "7" })).toEqual([
+      "decide",
+      "proposals",
+      "accept",
+      "--",
+      "7",
+    ]);
+    expect(buildArgv("decide proposals reject", { id: "7" })).toEqual([
+      "decide",
+      "proposals",
+      "reject",
+      "--",
+      "7",
+    ]);
+    expect(buildArgv("decide proposals undo", { id: "7" })).toEqual([
+      "decide",
+      "proposals",
+      "undo",
+      "--",
+      "7",
+    ]);
+  });
+
+  test("decide proposals verbs reject flag-shaped and non-numeric ids", () => {
+    // bare digits only: the dp<id> prefix is a TRUST-review ref shape, while
+    // this family takes the bare proposal id (probed 0.60.611)
+    expect(() => buildArgv("decide proposals accept", { id: "--all-from" })).toThrow(
+      CliValidationError,
+    );
+    expect(() => buildArgv("decide proposals reject", { id: "7;rm" })).toThrow(
+      CliValidationError,
+    );
+    expect(() => buildArgv("decide proposals undo", { id: "dp7" })).toThrow(
+      CliValidationError,
+    );
+  });
+
   test("flag injection through any value is impossible", () => {
     expect(() => buildArgv("trust drop", { ref: "--json" })).toThrow(
       CliValidationError,

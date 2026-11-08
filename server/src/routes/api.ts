@@ -16,6 +16,8 @@ import type {
   SourceDiagnostic,
   SourcesReport,
   SourcesStatusReport,
+  ContradictionsReport,
+  ContradictionProposal,
   TakeProposal,
   TakesQueue,
   TimelineEntry,
@@ -579,11 +581,63 @@ async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
   }
 }
 
+async function contradictionsQueue(
+  ctx: ApiContext,
+): Promise<ContradictionsReport> {
+  // Lane = decide-family proposals (the CLI queue, same shape as edges) +
+  // the eval probe's last-run state (the MCP read, informational header).
+  // The two halves degrade independently: a down CLI still shows the probe
+  // state, an unreachable MCP still lists proposals.
+  const probeP = ctx.mcp
+    .findContradictions()
+    .then(
+      (p): ContradictionsReport["probe"] => ({
+        ...(typeof p.ran_at === "string" ? { ranAt: p.ran_at } : {}),
+        ...(typeof p.run_id === "string" ? { runId: p.run_id } : {}),
+        ...(typeof p.note === "string" ? { note: p.note } : {}),
+        ...(typeof p.total_visible === "number"
+          ? { totalVisible: p.total_visible }
+          : {}),
+      }),
+    )
+    .catch(() => undefined);
+  if (!ctx.cli) {
+    const probe = await probeP;
+    return {
+      status: "down",
+      error: "CLI channel unavailable — actions degrade to copy-command",
+      ...(probe ? { probe } : {}),
+    };
+  }
+  try {
+    const [envelope, probe] = await Promise.all([
+      ctx.cli.decideProposalsList(),
+      probeP,
+    ]);
+    const items = Array.isArray(envelope.proposals)
+      ? (envelope.proposals as ContradictionProposal[])
+      : [];
+    return {
+      status: "ok",
+      items,
+      ...(probe ? { probe } : {}),
+    };
+  } catch (err) {
+    const probe = await probeP.catch(() => undefined);
+    return {
+      status: "down",
+      error: err instanceof Error ? err.message : String(err),
+      ...(probe ? { probe } : {}),
+    };
+  }
+}
+
 export async function handleInbox(ctx: ApiContext): Promise<Response> {
-  const [trust, edgeProposals, takes] = await Promise.all([
+  const [trust, edgeProposals, takes, contradictions] = await Promise.all([
     trustQueue(ctx),
     edgeQueue(ctx),
     takesQueue(ctx),
+    contradictionsQueue(ctx),
   ]);
   // The command name comes from the profile config (wrapper brains like
   // `gbrain-bip` exist); it is present even when the CLI driver itself is
@@ -606,7 +660,13 @@ export async function handleInbox(ctx: ApiContext): Promise<Response> {
         command: ctx.profile.cliBin ?? "gbrain",
         error: ctx.cliNote ?? "gbrain binary not found",
       };
-  const report: InboxReport = { trust, edgeProposals, takes, cliChannel };
+  const report: InboxReport = {
+    trust,
+    edgeProposals,
+    takes,
+    contradictions,
+    cliChannel,
+  };
   return Response.json(report);
 }
 
@@ -764,6 +824,47 @@ export async function handleTakePropose(
     action: `takes.propose.${op}`,
     profile: ctx.id,
     detail: { id, ...(sourceId ? { source_id: sourceId } : {}) },
+  });
+  return Response.json({ ok: true, output: result.output });
+}
+
+export async function handleContradictionAction(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const op = body.op;
+  const id = requirePattern(
+    typeof body.id === "string" ? body.id : undefined,
+    "id",
+    ID_RE,
+  );
+  if (!ctx.cli) {
+    return envelope(
+      503,
+      "E_UPSTREAM",
+      "CLI channel unavailable on this host — use the copy-command instead",
+    );
+  }
+  let result: { output: string };
+  switch (op) {
+    case "accept":
+      result = await ctx.cli.decideProposalsAccept(id);
+      break;
+    case "reject":
+      result = await ctx.cli.decideProposalsReject(id);
+      break;
+    case "undo":
+      result = await ctx.cli.decideProposalsUndo(id);
+      break;
+    default:
+      throw new BadRequestError("op must be accept|reject|undo");
+  }
+  ctx.mcp.invalidateAll();
+  await auditWrite("owner", {
+    action: `contradictions.${op}`,
+    profile: ctx.id,
+    detail: { id },
   });
   return Response.json({ ok: true, output: result.output });
 }

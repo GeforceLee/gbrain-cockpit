@@ -172,6 +172,18 @@ export const en = {
   "inbox.queue.edgesDesc": "Relation fixes dream found between pages: accept or reject.",
   "inbox.queue.takes": "Takes to resolve",
   "inbox.queue.takesDesc": "dream's LLM-proposed takes (propose_takes queue): accept writes it into the page's takes, reject dismisses it; click the page slug to inspect the source.",
+  "inbox.queue.contradictions": "Contradictions",
+  "inbox.queue.contradictionsDesc":
+    "Suspected contradictions from gbrain's decide sweep — two claims that fight over the same fact land here; this queue has undo.",
+  "inbox.contradiction.severity": "severity",
+  "inbox.contradiction.hint": "Use this to accept; the next block rejects (same id).",
+  "inbox.contradiction.undoNote": "Changed your mind: decide proposals undo <id>.",
+  "inbox.contradiction.probeNever":
+    "The contradiction probe has never run — an empty queue here does NOT mean no contradictions. Run gbrain eval suspected-contradictions run --query \"…\" on the brain host first.",
+  "inbox.contradiction.probeRan": "Probe last ran {at}, {n} visible contradiction(s).",
+  "inbox.contradiction.probeUnavailable":
+    "Probe state unavailable (this gbrain lacks find_contradictions, or the call failed).",
+  "inbox.via.cliDecide": "one-key · CLI decide · ⌘⌫",
   "inbox.queue.others": "Other pending",
   "inbox.queue.othersDesc": "Trust rules / allow entries etc. — use explain for detail.",
   "inbox.doc.raw": "Raw proposal (gbrain output)",

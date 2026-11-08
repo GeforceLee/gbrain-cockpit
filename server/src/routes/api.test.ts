@@ -160,12 +160,21 @@ function inboxCtx(opts: {
   cliBin?: string;
   /** takes queue channel: ok (bypass configured) | unset */
   pg?: "ok" | "unset";
+  /** decide proposals rows for the contradictions queue */
+  decideProposals?: Array<{ id: number }>;
+  /** find_contradictions answer for the probe header */
+  probeState?: Record<string, unknown>;
 }) {
   const cli = (opts.probe
     ? {
         status: async () => ({ ...opts.probe }),
         trustReview: async () => ({ items: [], counts: {} }),
         edgeList: async () => [],
+        decideProposalsList: async () => ({
+          status: "pending",
+          proposals: opts.decideProposals ?? [],
+          review_proposals: [],
+        }),
       }
     : null) as unknown as CliDriver | null;
   const pg = {
@@ -178,6 +187,10 @@ function inboxCtx(opts: {
     profile: { cliBin: opts.cliBin },
     pg,
     takesGuard: null,
+    mcp: {
+      findContradictions: async () =>
+        opts.probeState ?? { contradictions: [], note: "No probe runs…" },
+    },
   } as unknown as ApiContext;
 }
 
@@ -232,6 +245,65 @@ describe("handleInbox cliChannel reason", () => {
     expect(body.trust.status).toBe("ok");
     expect(body.edgeProposals.status).toBe("ok");
     expect(body.takes.status).toBe("ok");
+  });
+
+  test("contradictions queue: decide rows + ran-probe state ride together", async () => {
+    const ctx = inboxCtx({
+      probe: { available: true, probedAt: "2026-11-08T00:00:00.000Z" },
+      decideProposals: [{ id: 7 }, { id: 8 }],
+      probeState: {
+        run_id: "r1",
+        ran_at: "2026-11-08T07:39:07.472Z",
+        contradictions: [],
+        total_visible: 0,
+      },
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.contradictions.status).toBe("ok");
+    expect(body.contradictions.items).toHaveLength(2);
+    expect(body.contradictions.probe).toEqual({
+      ranAt: "2026-11-08T07:39:07.472Z",
+      runId: "r1",
+      totalVisible: 0,
+    });
+  });
+
+  test("contradictions queue: never-ran note passes through verbatim (the empty state teaches how to start)", async () => {
+    const ctx = inboxCtx({
+      probe: { available: true, probedAt: "2026-11-08T00:00:00.000Z" },
+      probeState: { contradictions: [], note: "No probe runs in the last 30 days; run `gbrain eval suspected-contradictions` first." },
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.contradictions.probe?.note).toContain("No probe runs");
+    expect(body.contradictions.probe?.ranAt).toBeUndefined();
+  });
+
+  test("contradictions queue: CLI down degrades the queue but NOT the probe header", async () => {
+    const ctx = inboxCtx({
+      probeState: { ran_at: "2026-11-08T07:39:07.472Z", contradictions: [], total_visible: 2 },
+    });
+    const body = (await (await handleInbox(ctx)).json()) as InboxReport;
+    expect(body.contradictions.status).toBe("down");
+    expect(body.contradictions.probe?.ranAt).toBe("2026-11-08T07:39:07.472Z");
+  });
+
+  test("contradictions queue: MCP probe unreachable leaves the queue itself intact", async () => {
+    const ctx = inboxCtx({
+      probe: { available: true, probedAt: "2026-11-08T00:00:00.000Z" },
+      probeState: new Error("mcp dead") as unknown as Record<string, unknown>,
+    });
+    // findContradictions throws → probe half silently absent, queue still ok
+    const ctxThrowing = {
+      ...ctx,
+      mcp: {
+        findContradictions: async () => {
+          throw new Error("mcp dead");
+        },
+      },
+    } as unknown as ApiContext;
+    const body = (await (await handleInbox(ctxThrowing)).json()) as InboxReport;
+    expect(body.contradictions.status).toBe("ok");
+    expect(body.contradictions.probe).toBeUndefined();
   });
 });
 

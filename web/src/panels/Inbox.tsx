@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import {
   ADJUDICATION_CHANNELS,
   TRUST_REF_RE,
+  contradictionAcceptCommand,
+  contradictionRejectCommand,
   edgeAcceptCommand,
   trustConfirmCommand,
   trustDropCommand,
@@ -10,6 +12,7 @@ import {
 } from "@gbrain-cockpit/shared";
 import type {
   AdjudicationAction,
+  ContradictionProposal,
   EdgeProposal,
   InboxReport,
   TakeProposal,
@@ -42,7 +45,14 @@ import { firstLine } from "../lib/text";
 // never a button), and when the CLI channel is unavailable on this host,
 // CLI one-key actions degrade to copy-command blocks too.
 
-type QueueId = "proposals" | "held" | "facts" | "edges" | "takes" | "others";
+type QueueId =
+  | "proposals"
+  | "held"
+  | "facts"
+  | "edges"
+  | "takes"
+  | "contradictions"
+  | "others";
 type TabId = "all" | Exclude<QueueId, "others">;
 
 /** keep-alive refresh threshold: re-fetch the queues once when returning to
@@ -223,12 +233,23 @@ export function Inbox({
   const proposals = trustItems.filter((i) => (i.ref ?? "").startsWith("tp"));
   const heldWrites = trustItems.filter((i) => (i.ref ?? "").startsWith("h"));
   const facts = trustItems.filter((i) => (i.ref ?? "").startsWith("f"));
+  // dp<id> entries are decide-proposal contradictions: they surface in the
+  // trust queue's data but their disposition verbs are the decide family —
+  // so they ride the contradictions queue, never trust drop/confirm.
+  const dpTrustItems = trustItems.filter((i) => (i.ref ?? "").startsWith("dp"));
   const others = trustItems.filter((i) => {
     const r = i.ref ?? "";
-    return r && !r.startsWith("tp") && !r.startsWith("h") && !r.startsWith("f");
+    return (
+      r &&
+      !r.startsWith("tp") &&
+      !r.startsWith("h") &&
+      !r.startsWith("f") &&
+      !r.startsWith("dp")
+    );
   });
   const edges = report?.edgeProposals.items ?? [];
   const takes = report?.takes.items ?? [];
+  const decideProposals = report?.contradictions.items ?? [];
 
   const queueCounts: Record<QueueId, number> = {
     proposals: proposals.length,
@@ -236,6 +257,7 @@ export function Inbox({
     facts: facts.length,
     edges: edges.length,
     takes: takes.length,
+    contradictions: dpTrustItems.length + decideProposals.length,
     others: others.length,
   };
 
@@ -255,6 +277,9 @@ export function Inbox({
     ...(report && report.takes.status !== "ok"
       ? { takes: firstLine(report.takes.error) }
       : {}),
+    ...(report && report.contradictions.status !== "ok"
+      ? { contradictions: firstLine(report.contradictions.error) }
+      : {}),
   };
   const downNotices = (tabId: TabId): string[] =>
     tabId === "all"
@@ -271,13 +296,17 @@ export function Inbox({
         queueCounts.facts +
         queueCounts.edges +
         queueCounts.takes +
+        queueCounts.contradictions +
         queueCounts.others,
     );
   }, [report]); // onTotal is a stable state setter from the shell
 
   // --- entry assembly --------------------------------------------------------
 
-  function trustEntry(queueId: "proposals" | "held" | "facts" | "others", item: TrustReviewItem): Entry {
+  function trustEntry(
+    queueId: "proposals" | "held" | "facts" | "contradictions" | "others",
+    item: TrustReviewItem,
+  ): Entry {
     const ref = item.ref ?? "?";
     return {
       key: `trust-${ref}`,
@@ -350,12 +379,48 @@ export function Inbox({
     };
   }
 
+  /** decide-family contradiction proposal (row shape probed empty on 0.60.611
+   *  — every field except id is defensive: render what looks known, never
+   *  assume). The dp<id> trust-review twins of these rows render via
+   *  trustEntry("contradictions", …) with the same rail. */
+  function contradictionEntry(p: ContradictionProposal): Entry {
+    const id = String(p.id ?? "");
+    const sev =
+      stringField(p, "severity") ?? stringField(p, "kind") ?? undefined;
+    const target =
+      stringField(p, "page_slug") ??
+      stringField(p, "slug") ??
+      stringField(p, "left_slug") ??
+      stringField(p, "slug_a") ??
+      stringField(p, "target");
+    return {
+      key: `contradiction-${id || JSON.stringify(p).slice(0, 40)}`,
+      queueId: "contradictions",
+      ref: id ? `#${id}` : "dp",
+      refClass: "",
+      title: itemSummary(p as TrustReviewItem) || `#${id}`,
+      sub: sev,
+      target,
+      ...(stringField(p, "source_id")
+        ? { sourceId: stringField(p, "source_id") }
+        : {}),
+      tags: [
+        { variant: "soft", text: t("inbox.queue.contradictions") },
+        ...(sev ? [{ variant: "warn" as TagVariant, text: sev }] : []),
+      ],
+      srcLines: [target ?? ""].filter(Boolean),
+      item: p,
+    };
+  }
+
   const allEntries: Entry[] = [
     ...proposals.map((i) => trustEntry("proposals", i)),
     ...heldWrites.map((i) => trustEntry("held", i)),
     ...facts.map((i) => trustEntry("facts", i)),
     ...edges.map(edgeEntry),
     ...takes.map(takeEntry),
+    ...dpTrustItems.map((i) => trustEntry("contradictions", i)),
+    ...decideProposals.map(contradictionEntry),
     ...others.map((i) => trustEntry("others", i)),
   ];
   /** inbox source filter: null = all sources (observed ids are the options —
@@ -489,6 +554,11 @@ export function Inbox({
     { id: "facts", label: t("inbox.queue.facts"), n: queueCounts.facts },
     { id: "edges", label: t("inbox.queue.edges"), n: queueCounts.edges },
     { id: "takes", label: t("inbox.queue.takes"), n: queueCounts.takes },
+    {
+      id: "contradictions",
+      label: t("inbox.queue.contradictions"),
+      n: queueCounts.contradictions,
+    },
   ];
 
   return (
@@ -636,6 +706,7 @@ export function Inbox({
                 {t(`inbox.queue.${tab}Desc` as MessageKey)}
               </p>
             )}
+            {tab === "contradictions" && <ContradictionProbeNote report={report} />}
             {visibleEntries.length === 0 && downNotices(tab).length === 0 && (
               <p className="muted empty-note">{t("inbox.empty")}</p>
             )}
@@ -722,6 +793,34 @@ export function Inbox({
         </div>
       )}
     </section>
+  );
+}
+
+// --- contradiction probe header ------------------------------------------------
+
+/** The eval probe's last-run state — the lane's informational header. All
+ *  states self-describe: "never ran" never masquerades as "no contradictions"
+ *  (upstream's own note told us so), "ran" says when and how much it saw. */
+function ContradictionProbeNote({ report }: { report: InboxReport }) {
+  const { t } = useI18n();
+  const probe = report.contradictions.probe;
+  if (!probe) {
+    return (
+      <p className="muted empty-note">{t("inbox.contradiction.probeUnavailable")}</p>
+    );
+  }
+  if (probe.note) {
+    return (
+      <p className="muted empty-note">{t("inbox.contradiction.probeNever")}</p>
+    );
+  }
+  const at = probe.ranAt ? probe.ranAt.replace("T", " ").slice(0, 16) : "?";
+  return (
+    <p className="muted empty-note">
+      {t("inbox.contradiction.probeRan")
+        .replace("{at}", at)
+        .replace("{n}", String(probe.totalVisible ?? 0))}
+    </p>
   );
 }
 
@@ -827,6 +926,66 @@ function DocumentCard({
             </p>
           </>
         )}
+      </>
+    );
+  }
+
+  if (entry.queueId === "contradictions") {
+    // decide rows carry numeric ids; their dp<id> trust-review twins carry a
+    // ref — both render here, everything beyond that defensively (row shape
+    // probed empty on 0.60.611, real fields land with the first real sweep)
+    const p = item as ContradictionProposal;
+    const ref =
+      stringField(p, "ref") ?? (p.id !== undefined ? `#${String(p.id)}` : "—");
+    const sev = stringField(p, "severity") ?? stringField(p, "kind");
+    const created = stringField(p, "created_at");
+    return (
+      <>
+        <div className="doc-head">
+          <div>
+            <h2>{entry.title}</h2>
+            <p className="refline mono">
+              {ref} · {t("inbox.queue.contradictions")}
+            </p>
+          </div>
+          <div className="to">
+            <div className="mono to-cap">{t("inbox.doc.target")}</div>
+            {onPeek && isSlugLike(entry.target) ? (
+              <button
+                type="button"
+                className="linkish to-link"
+                onClick={() =>
+                  onPeek({
+                    slug: entry.target!,
+                    ...(stringField(entry.item, "source_id")
+                      ? { sourceId: stringField(entry.item, "source_id") }
+                      : {}),
+                  })
+                }
+              >
+                {entry.target}
+              </button>
+            ) : (
+              <b>{entry.target ?? t("inbox.doc.unknownTarget")}</b>
+            )}
+          </div>
+        </div>
+        <div className="meta3">
+          <div>
+            <p className="k">{t("inbox.doc.ref")}</p>
+            <p className="v mono">{ref}</p>
+          </div>
+          <div>
+            <p className="k">{t("inbox.contradiction.severity")}</p>
+            <p className="v">{sev ?? "—"}</p>
+          </div>
+          <div>
+            <p className="k">{t("pages.createdAt")}</p>
+            <p className="v">{created ?? "—"}</p>
+          </div>
+        </div>
+        <p className="cap">{t("inbox.doc.raw")}</p>
+        <pre className="doc-raw">{JSON.stringify(item, null, 2)}</pre>
       </>
     );
   }
@@ -1257,6 +1416,67 @@ function DecisionRail({
         {
           label: t("channel.row.drop"),
           channel: ch("takes.propose.reject"),
+          verdict: cliAvailable ? "yes" : "na",
+          note: cliAvailable ? t("channel.onekey") : t("channel.degraded"),
+        },
+        { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
+      ];
+      break;
+    }
+    case "contradictions": {
+      // decide rows: numeric id; their dp<id> trust-review twins: digits of ref
+      const raw = entry.item as ContradictionProposal;
+      const dpRef = stringField(raw, "ref") ?? "";
+      const id = safeId(
+        dpRef ? dpRef.replace(/^dp/, "") : String(raw.id ?? ""),
+      );
+      rail = cliAvailable && id !== "?" ? (
+        <>
+          {stampOk("inbox.edgeAccept", "stamp.en.accept", t("inbox.via.cliDecide"), () =>
+            act(
+              "/api/inbox/contradictions",
+              { op: "accept", id },
+              `contradictions.accept ${id}`,
+              acceptedStamp,
+              metaFor("ok", t("verdict.accepted"), `dp#${id}`),
+            ),
+          )}
+          {stampDrop(
+            "inbox.edgeReject",
+            "stamp.en.reject",
+            t("inbox.via.cliDecide"),
+            (dropRun = () =>
+              act(
+                "/api/inbox/contradictions",
+                { op: "reject", id },
+                `contradictions.reject ${id}`,
+                rejectedStamp,
+                metaFor("stop", t("verdict.rejected"), `dp#${id}`),
+              )),
+          )}
+        </>
+      ) : (
+        <>
+          <CopyCommand
+            command={contradictionAcceptCommand(cliCommand, id)}
+            hint={t("inbox.contradiction.hint")}
+          />
+          <CopyCommand
+            command={contradictionRejectCommand(cliCommand, id)}
+            hint={t("inbox.contradiction.undoNote")}
+          />
+        </>
+      );
+      rows = [
+        {
+          label: t("channel.row.accept"),
+          channel: ch("contradictions.accept"),
+          verdict: cliAvailable ? "yes" : "na",
+          note: cliAvailable ? t("channel.onekey") : t("channel.degraded"),
+        },
+        {
+          label: t("channel.row.drop"),
+          channel: ch("contradictions.reject"),
           verdict: cliAvailable ? "yes" : "na",
           note: cliAvailable ? t("channel.onekey") : t("channel.degraded"),
         },

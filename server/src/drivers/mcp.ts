@@ -1,6 +1,7 @@
 import {
   COCKPIT_VERSION,
   type BrainIdentity,
+  type ContradictionProbeState,
   type EvidencePayload,
   type LinkRow,
   type McpWhoami,
@@ -312,6 +313,17 @@ export class McpDriver {
 
   takesList(params: { active?: boolean } = {}): Promise<TakeItem[]> {
     return this.#cached<TakeItem[]>(10_000, "takes_list", { ...params });
+  }
+
+  /**
+   * The contradiction probe's latest run (feeds the Inbox contradiction lane's
+   * informational header). Probed 0.60.611, two shapes: never ran →
+   * `{contradictions: [], note: "No probe runs in the last 30 days; …"}`;
+   * ran → `{run_id, ran_at, contradictions: […], total_visible}`. 60s TTL —
+   * it changes only when someone runs the probe.
+   */
+  findContradictions(): Promise<ContradictionProbeState> {
+    return this.#cached<ContradictionProbeState>(60_000, "find_contradictions", {});
   }
 
   // --- V1.1 dimensions & provenance (live-probed 0.60.558, 2026-11-06) --------

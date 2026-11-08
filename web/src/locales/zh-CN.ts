@@ -170,6 +170,18 @@ export const zhCN = {
   "inbox.queue.edgesDesc": "dream 发现的页面间关系修正:接受或驳回。",
   "inbox.queue.takes": "观点待判定",
   "inbox.queue.takesDesc": "dream 的 LLM 提案观点(propose_takes 队列):接受即写入该页的 takes,驳回即丢弃;点击页面 slug 可回看源文依据。",
+  "inbox.queue.contradictions": "矛盾提案",
+  "inbox.queue.contradictionsDesc":
+    "上游矛盾扫描(decide sweep)产出的疑似矛盾:同一件事两条说法打架时在这里裁决;此队列有撤销。",
+  "inbox.contradiction.severity": "严重度",
+  "inbox.contradiction.hint": "接受用这条;驳回用下一条(同一 ID)。",
+  "inbox.contradiction.undoNote": "驳回后如需反悔:decide proposals undo <ID>。",
+  "inbox.contradiction.probeNever":
+    "矛盾探针从未跑过——本页「队列空」不代表无矛盾。在 brain 主机运行 gbrain eval suspected-contradictions run --query \"…\" 后再来。",
+  "inbox.contradiction.probeRan": "探针上次运行 {at},可见矛盾 {n} 条。",
+  "inbox.contradiction.probeUnavailable":
+    "探针状态不可读(此 gbrain 无 find_contradictions 或调用失败)。",
+  "inbox.via.cliDecide": "一键 · CLI decide · ⌘⌫",
   "inbox.queue.others": "其他待办",
   "inbox.queue.othersDesc": "信任规则/allow 条目等,用 explain 查看详情。",
   "inbox.doc.raw": "原始提案(gbrain 返回)",

@@ -10,6 +10,7 @@ import { loadProfiles } from "./profiles";
 import { serveStatic } from "./static";
 import {
   handleConfirm,
+  handleContradictionAction,
   handleEdgeAction,
   handleEvidence,
   handleGraph,
@@ -173,6 +174,8 @@ const server = Bun.serve({
             return await handleTrustDrop(channels, req);
           case "POST /api/inbox/edge":
             return await handleEdgeAction(channels, req);
+          case "POST /api/inbox/contradictions":
+            return await handleContradictionAction(channels, req);
           case "POST /api/inbox/takes/propose":
             return await handleTakePropose(channels, req);
           case "POST /api/inbox/confirm":

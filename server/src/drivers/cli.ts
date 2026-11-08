@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import {
   TRUST_REF_RE,
   type CliChannelStatus,
+  type ContradictionProposal,
   type EdgeProposal,
   type TrustReviewEnvelope,
 } from "@gbrain-cockpit/shared";
@@ -139,6 +140,30 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
   "takes propose reject": {
     words: ["takes", "propose"],
     args: [{ kind: "value", literal: "--reject", name: "id", regex: ID_RE }],
+    json: false,
+  },
+  // Contradiction proposals — gbrain's dedicated decide family (probed on
+  // 0.60.611, leewin: `decide proposals list --json` answers
+  // {status, proposals, review_proposals}; pending is the default status).
+  // No typed-token gate upstream — same adjudication class as edge-proposals.
+  "decide proposals list": {
+    words: ["decide", "proposals", "list"],
+    args: [{ kind: "flag", literal: "--json" }],
+    json: true,
+  },
+  "decide proposals accept": {
+    words: ["decide", "proposals", "accept"],
+    args: [{ kind: "positional", name: "id", regex: ID_RE }],
+    json: false,
+  },
+  "decide proposals reject": {
+    words: ["decide", "proposals", "reject"],
+    args: [{ kind: "positional", name: "id", regex: ID_RE }],
+    json: false,
+  },
+  "decide proposals undo": {
+    words: ["decide", "proposals", "undo"],
+    args: [{ kind: "positional", name: "id", regex: ID_RE }],
     json: false,
   },
 };
@@ -311,6 +336,30 @@ export class CliDriver {
 
   async edgeUndo(id: string): Promise<{ output: string }> {
     return this.#runText("edge-proposals undo", { id });
+  }
+
+  /**
+   * Pending contradiction proposals. The envelope carries both `proposals`
+   * and `review_proposals`; the queue renders `proposals` (the pending lane —
+   * review_proposals belongs to the sweep's own review flow, not the Inbox).
+   */
+  async decideProposalsList(): Promise<{
+    proposals?: ContradictionProposal[];
+    [k: string]: unknown;
+  }> {
+    return this.#runJson("decide proposals list", {});
+  }
+
+  async decideProposalsAccept(id: string): Promise<{ output: string }> {
+    return this.#runText("decide proposals accept", { id });
+  }
+
+  async decideProposalsReject(id: string): Promise<{ output: string }> {
+    return this.#runText("decide proposals reject", { id });
+  }
+
+  async decideProposalsUndo(id: string): Promise<{ output: string }> {
+    return this.#runText("decide proposals undo", { id });
   }
 
   /**

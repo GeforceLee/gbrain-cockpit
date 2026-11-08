@@ -6,6 +6,8 @@ import {
   PROFILE_ID_RE,
   SOURCE_ID_RE,
   buildGraphKey,
+  contradictionAcceptCommand,
+  contradictionRejectCommand,
   edgeAcceptCommand,
   isValidSourceId,
   trustConfirmCommand,
@@ -123,11 +125,19 @@ describe("owner command builders", () => {
     expect(edgeAcceptCommand(bin, "12345")).toBe(
       "gbrain-bip edge-proposals accept 12345",
     );
+    expect(contradictionAcceptCommand(bin, "7")).toBe(
+      "gbrain-bip decide proposals accept 7",
+    );
+    expect(contradictionRejectCommand("gbrain", "7")).toBe(
+      "gbrain decide proposals reject 7",
+    );
   });
   test("reject bad refs/ids before a string is ever rendered", () => {
     expect(() => trustConfirmCommand(bin, "tp;rm -rf")).toThrow();
     expect(() => trustDropCommand(bin, "xp1")).toThrow(); // bad prefix
     expect(() => edgeAcceptCommand(bin, "12a")).toThrow();
+    expect(() => contradictionAcceptCommand(bin, "dp7")).toThrow(); // bare digits, not the trust-ref shape
+    expect(() => contradictionRejectCommand(bin, "-1")).toThrow();
   });
   test("reject bad bins — argv[0] and paste-text share one charset", () => {
     expect(() => trustConfirmCommand("my gbrain", "tp1")).toThrow();
