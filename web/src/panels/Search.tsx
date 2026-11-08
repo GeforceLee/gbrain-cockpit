@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import type { SearchHit, SourcesReport } from "@gbrain-cockpit/shared";
+import type { EvidenceReport, SearchHit, SourcesReport } from "@gbrain-cockpit/shared";
 import { PageDrawer } from "../components/PageDrawer";
-import { ApiError, apiGet } from "../lib/api";
+import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { useSlugSiblings, type PageRef } from "../lib/pages";
+import { firstLine } from "../lib/text";
 
 // Search panel: the cheap hybrid search (no LLM). Results are persistent
 // untrusted input — titles/snippets render as plain text, never as markup.
@@ -36,6 +37,45 @@ export function Search({
   // ids observed in hits when the tool is missing (older gbrain)
   const [sourceFilter, setSourceFilter] = useState("");
   const [sources, setSources] = useState<string[] | null>(null);
+  // V1.1 evidence preview (assemble_evidence): one expansion at a time,
+  // fetched once per hit and cached — the drawer stays the full view
+  const [evOpen, setEvOpen] = useState<string | null>(null);
+  const [evCache, setEvCache] = useState<
+    Record<string, { text: string | null; error?: string }>
+  >({});
+
+  const evKey = (h: SearchHit) =>
+    `${h.source_id ?? ""}/${h.slug ?? ""}/${String(h.chunk_id ?? "")}`;
+
+  async function toggleEvidence(h: SearchHit) {
+    const key = evKey(h);
+    if (evOpen === key) {
+      setEvOpen(null);
+      return;
+    }
+    setEvOpen(key);
+    if (evCache[key]) return;
+    try {
+      const rep = await apiSend<EvidenceReport>("/api/evidence", "POST", {
+        hits: [{ source_id: h.source_id, slug: h.slug, chunk_id: h.chunk_id }],
+      });
+      setEvCache((prev) => ({
+        ...prev,
+        [key]:
+          rep.status === "ok"
+            ? { text: rep.results?.[0]?.chunk_text ?? null }
+            : { text: null, error: rep.error },
+      }));
+    } catch (err) {
+      setEvCache((prev) => ({
+        ...prev,
+        [key]: {
+          text: null,
+          error: err instanceof ApiError ? err.message : String(err),
+        },
+      }));
+    }
+  }
 
   const siblings = useSlugSiblings(peek?.slug ?? null, peek?.sourceId);
 
@@ -153,6 +193,11 @@ export function Search({
                   {h.source_id}
                 </span>
               ) : null}
+              {typeof h.origin === "string" && h.origin ? (
+                <span className="src-chip mono" title={t("pages.origin")}>
+                  {h.origin}
+                </span>
+              ) : null}
               <span className="page-meta mono">
                 {h.type ?? "?"} · {h.slug ?? "?"} · {t("search.score")}{" "}
                 {h.score?.toFixed(3) ?? "?"}
@@ -161,6 +206,37 @@ export function Search({
                 <span className="page-snippet">{h.chunk_text.slice(0, 220)}</span>
               )}
             </button>
+            {typeof h.chunk_id === "number" && (
+              /* evidence lives OUTSIDE the row button (no nested buttons) */
+              <div className="row-extra">
+                <button
+                  type="button"
+                  className="linkish small"
+                  onClick={() => void toggleEvidence(h)}
+                >
+                  {t("search.evidence")}
+                </button>
+                {evOpen === evKey(h) && (
+                  <div className="evidence-block">
+                    {!evCache[evKey(h)] && (
+                      <p className="muted small">{t("search.evidenceLoading")}</p>
+                    )}
+                    {evCache[evKey(h)]?.error && (
+                      <p className="error small">
+                        {t("search.evidenceError")} —{" "}
+                        {firstLine(evCache[evKey(h)]!.error)}
+                      </p>
+                    )}
+                    {evCache[evKey(h)] && !evCache[evKey(h)]?.error && (
+                      // evidence text is untrusted content: plain text only
+                      <pre className="mono small">
+                        {evCache[evKey(h)]!.text ?? t("search.evidenceEmpty")}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </li>
         ))}
       </ul>

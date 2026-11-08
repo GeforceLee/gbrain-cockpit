@@ -1,8 +1,9 @@
 import { useEffect } from "react";
 import { useI18n } from "../lib/i18n";
-import { usePageBundle, type PageRef } from "../lib/pages";
+import { relationCount, usePageBundle, type PageRef } from "../lib/pages";
 import { firstLine } from "../lib/text";
 import { PageBody } from "./PageBody";
+import { Tag } from "./Tag";
 
 // PageDrawer — the shared read-only page view every panel opens IN PLACE
 // (Inbox queue-card targets, Search hits; the Nebula drawer shares the same
@@ -32,7 +33,8 @@ export function PageDrawer({
   onOpenSibling?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
-  const { bundle, error, loading } = usePageBundle(page);
+  // full bundle: tags + relation counts ride the same fetch (V1.1 light rows)
+  const { bundle, error, loading } = usePageBundle(page, { full: true });
 
   // Esc closes — same key contract as the Nebula drawer
   useEffect(() => {
@@ -106,6 +108,27 @@ export function PageDrawer({
               <span>{t("pages.versions")}</span>
               <span className="mono">{String(bundle.versions.length)}</span>
             </div>
+            {Array.isArray(shown?.tags) && shown.tags.length > 0 && (
+              <div className="kv kv-tags">
+                <span>{t("pages.tags")}</span>
+                <span className="tag-set">
+                  {shown.tags.map((tag) => (
+                    <Tag key={String(tag)} variant="term">
+                      {String(tag)}
+                    </Tag>
+                  ))}
+                </span>
+              </div>
+            )}
+            {(bundle.links !== undefined || bundle.backlinks !== undefined) && (
+              <div className="kv">
+                <span>{t("viewer.links")}</span>
+                <span className="mono">
+                  {t("viewer.outLinks")} {relationCount(bundle.links, "out")} ·{" "}
+                  {t("viewer.backlinks")} {relationCount(bundle.backlinks, "in")}
+                </span>
+              </div>
+            )}
           </>
         )}
         {siblings && siblings.length > 0 && onOpenSibling && (

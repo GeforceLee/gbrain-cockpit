@@ -2,20 +2,27 @@ import { randomUUID } from "node:crypto";
 import type {
   CliChannelStatus,
   EdgeProposal,
+  EvidenceReport,
   GraphReport,
   InboxReport,
   InboxQueue,
+  LinkRow,
   PageDetail,
   PageSummary,
   PageVersion,
   PagesFacets,
   ProfilesResponse,
   SearchHit,
+  SourceDiagnostic,
   SourcesReport,
+  SourcesStatusReport,
   TakeProposal,
+  TimelineEntry,
   TrustReviewEnvelope,
   TrustReviewItem,
+  WriteConflictsReport,
   WriteReceipt,
+  WriteRequestsReport,
 } from "@gbrain-cockpit/shared";
 import { isValidSourceId, TRUST_REF_RE } from "@gbrain-cockpit/shared";
 import { auditWrite } from "../audit";
@@ -38,6 +45,12 @@ export type ApiContext = BrainChannels;
 
 const SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,200}$/;
 const TYPE_RE = /^[a-z][a-z0-9-]{0,40}$/;
+/**
+ * Tag values are "plain strings like 'founder' or 'follow-up', not a slug"
+ * (add_tag's own description) — bounded + control-char-free is the whole
+ * contract; deliberately NOT TYPE_RE, which would reject real tags.
+ */
+const TAG_RE = /^[^\x00-\x1f\x7f]{1,64}$/;
 /** trust refs — the single shared pattern (shared/src, also used by the web client) */
 const REF_RE = TRUST_REF_RE;
 const ID_RE = /^\d{1,18}$/;
@@ -151,8 +164,17 @@ export async function handlePages(
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
     throw new BadRequestError("invalid limit (1..100)");
   }
-  // keyset cursor (gbrain's own list_pages paging): both values come from a
-  // previous response's last row and are regex-whitelisted before reuse
+  // Deep paging rides upstream's offset param — probed 0.60.558: offset
+  // windows are strictly descending, non-overlapping and stable across
+  // calls. The documented keyset pair (updated_after/updated_after_slug)
+  // is ALSO accepted here but on this build behaves as an ascending
+  // "newer-than" window filter (sort ignored), not a cursor — see
+  // internal/probes/probe-keyset.ts before ever switching back.
+  const offsetRaw = param(url, "offset") ?? "0";
+  const offset = Number.parseInt(offsetRaw, 10);
+  if (!Number.isInteger(offset) || offset < 0 || offset > 100_000) {
+    throw new BadRequestError("invalid offset (0..100000)");
+  }
   const updatedAfter = param(url, "updated_after");
   if (updatedAfter !== undefined) {
     requirePattern(updatedAfter, "updated_after", TIMESTAMP_RE);
@@ -161,13 +183,25 @@ export async function handlePages(
   if (updatedAfterSlug !== undefined) {
     requirePattern(updatedAfterSlug, "updated_after_slug", SLUG_RE);
   }
+  // slug dimension: literal slug_prefix narrowing ("kb/" style, probed)
+  const slugPrefix = param(url, "slug_prefix");
+  if (slugPrefix !== undefined) {
+    requirePattern(slugPrefix, "slug_prefix", SLUG_RE);
+  }
+  // tag dimension: free-input tag filter (param exists upstream; the probed
+  // brain has no tagged pages yet, so empty results there are honest)
+  const tag = param(url, "tag");
+  if (tag !== undefined) requirePattern(tag, "tag", TAG_RE);
   const sourceId = requireSourceId(url);
   const pages = await ctx.mcp.listPages({
     ...(type ? { type } : {}),
     limit,
     sort: "updated_desc",
+    ...(offset > 0 ? { offset } : {}),
     ...(updatedAfter ? { updatedAfter } : {}),
     ...(updatedAfterSlug ? { updatedAfterSlug } : {}),
+    ...(slugPrefix ? { slugPrefix } : {}),
+    ...(tag ? { tag } : {}),
     ...(sourceId ? { sourceId } : {}),
   });
   return Response.json(pages satisfies PageSummary[]);
@@ -198,11 +232,49 @@ export async function handlePage(
   // sources, a bare slug is resolved SILENTLY server-side — pass the source
   // whenever the caller has it (list/search/graph entries all carry it).
   const sourceId = requireSourceId(url);
-  const [page, versions] = await Promise.all([
+  // full=1 opts into the V1.1 provenance sections (links / backlinks /
+  // timeline). Without it the payload stays {page, versions} — the peek
+  // drawers' path keeps its 2-upstream-call cost (rate-budget discipline).
+  const full = url.searchParams.get("full") === "1";
+  if (!full) {
+    const [page, versions] = await Promise.all([
+      ctx.mcp.getPage(slug, sourceId),
+      ctx.mcp.versions(slug).catch(() => [] as PageVersion[]),
+    ]);
+    return Response.json({ page: page satisfies PageDetail, versions });
+  }
+  // Sections degrade in-band: a missing/failed section lands in `degraded`
+  // and the UI self-describes it; only the page itself is allowed to error.
+  // Sections attach only when fulfilled, so an old-server payload and a
+  // degraded section are indistinguishable on the client (by design).
+  const [pageR, versionsR, linksR, backlinksR, timelineR] = await Promise.allSettled([
     ctx.mcp.getPage(slug, sourceId),
-    ctx.mcp.versions(slug).catch(() => [] as PageVersion[]),
+    ctx.mcp.versions(slug),
+    ctx.mcp.getLinks(slug, sourceId),
+    ctx.mcp.getBacklinks(slug, sourceId),
+    ctx.mcp.getTimeline(slug),
   ]);
-  return Response.json({ page: page satisfies PageDetail, versions });
+  if (pageR.status === "rejected") throw pageR.reason;
+  const page = pageR.value;
+  const versions = versionsR.status === "fulfilled" ? versionsR.value : [];
+  const degraded: string[] = [];
+  if (versionsR.status === "rejected") degraded.push("versions");
+  const links = linksR.status === "fulfilled" ? linksR.value : undefined;
+  if (linksR.status === "rejected") degraded.push("links");
+  const backlinks =
+    backlinksR.status === "fulfilled" ? backlinksR.value : undefined;
+  if (backlinksR.status === "rejected") degraded.push("backlinks");
+  const timeline =
+    timelineR.status === "fulfilled" ? (timelineR.value as TimelineEntry[]) : undefined;
+  if (timelineR.status === "rejected") degraded.push("timeline");
+  return Response.json({
+    page: page satisfies PageDetail,
+    versions,
+    ...(links !== undefined ? { links: links satisfies LinkRow[] } : {}),
+    ...(backlinks !== undefined ? { backlinks: backlinks satisfies LinkRow[] } : {}),
+    ...(timeline !== undefined ? { timeline: timeline satisfies TimelineEntry[] } : {}),
+    ...(degraded.length > 0 ? { degraded } : {}),
+  });
 }
 
 export async function handleSearch(
@@ -248,6 +320,168 @@ function requireSourceId(url: URL): string | undefined {
     throw new BadRequestError("invalid source_id");
   }
   return raw;
+}
+
+// --- V1.1 write-receipt transparency & source diagnostics --------------------
+
+/** In-band status: a protocol error means "this gbrain lacks the tool"
+ *  (degraded); anything else is a channel failure (down). Same vocabulary
+ *  as handleSources. */
+function reportStatus(err: unknown): "degraded" | "down" {
+  return err instanceof McpError && err.kind === "protocol" ? "degraded" : "down";
+}
+
+/**
+ * GET /api/write-requests — the token's own write receipts, newest first
+ * (gbrain-side truth; the session audit log stays the other, client-side
+ * history). NOTE: distinct from singular GET /api/write-request, which polls
+ * ONE receipt by request_id.
+ */
+export async function handleWriteRequests(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const sourceId = requireSourceId(url);
+  const limitRaw = param(url, "limit") ?? "50";
+  const limit = Number.parseInt(limitRaw, 10);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new BadRequestError("invalid limit (1..100)");
+  }
+  try {
+    const items = await ctx.mcp.listWriteRequests({
+      ...(sourceId ? { sourceId } : {}),
+      limit,
+    });
+    const report: WriteRequestsReport = { status: "ok", items };
+    return Response.json(report);
+  } catch (err) {
+    const report: WriteRequestsReport = {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+/** GET /api/write-conflicts — pages whose writes keep ending source_changed. */
+export async function handleWriteConflicts(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const sourceId = requireSourceId(url);
+  try {
+    const items = await ctx.mcp.listWriteConflicts(
+      sourceId ? { sourceId } : {},
+    );
+    const report: WriteConflictsReport = { status: "ok", items };
+    return Response.json(report);
+  } catch (err) {
+    const report: WriteConflictsReport = {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+/**
+ * GET /api/sources/status — per-source diagnostics for the Health card.
+ * sources_status diagnoses ONE source per call (arg `id`), so this fans out
+ * over the (cached, grant-scoped) source list; a failing source degrades the
+ * whole report while its row carries the error.
+ */
+export async function handleSourcesStatus(ctx: ApiContext): Promise<Response> {
+  let sources: Array<{ id: string }>;
+  try {
+    sources = await ctx.mcp.sourcesList();
+  } catch (err) {
+    const report: SourcesStatusReport = {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+  const results = await Promise.allSettled(
+    sources.map((s) => ctx.mcp.sourcesStatus(s.id)),
+  );
+  const items: SourceDiagnostic[] = results.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    const err = r.reason;
+    return {
+      id: sources[i]?.id ?? "?",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  });
+  const failed = results.filter((r) => r.status === "rejected").length;
+  const report: SourcesStatusReport = {
+    status: failed === 0 ? "ok" : failed === results.length ? "down" : "degraded",
+    ...(failed > 0
+      ? {
+          error: `${failed}/${results.length} source diagnostic(s) failed`,
+        }
+      : {}),
+    items,
+  };
+  return Response.json(report);
+}
+
+/**
+ * POST /api/evidence — whole evidence for prior search hits (assemble_evidence,
+ * minimal V1.1 form: ≤3 triples per call, window unit around the hit chunk).
+ */
+export async function handleEvidence(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const rawHits = body.hits;
+  if (!Array.isArray(rawHits) || rawHits.length < 1 || rawHits.length > 3) {
+    throw new BadRequestError("hits must be an array of 1..3 search hits");
+  }
+  const hits = rawHits.map((h) => {
+    if (h === null || typeof h !== "object") {
+      throw new BadRequestError("each hit must be an object");
+    }
+    const hit = h as Record<string, unknown>;
+    const slug =
+      typeof hit.slug === "string" && SLUG_RE.test(hit.slug) ? hit.slug : undefined;
+    const sourceId =
+      typeof hit.source_id === "string" && isValidSourceId(hit.source_id)
+        ? hit.source_id
+        : undefined;
+    const chunkId =
+      typeof hit.chunk_id === "number" &&
+      Number.isInteger(hit.chunk_id) &&
+      hit.chunk_id >= 0 &&
+      hit.chunk_id <= 1_000_000_000
+        ? hit.chunk_id
+        : undefined;
+    if (slug === undefined || sourceId === undefined || chunkId === undefined) {
+      throw new BadRequestError(
+        "each hit needs valid slug, source_id and integer chunk_id",
+      );
+    }
+    return { sourceId, slug, chunkId };
+  });
+  try {
+    const payload = await ctx.mcp.assembleEvidence(hits, {
+      returnUnit: "window",
+    });
+    const report: EvidenceReport = {
+      status: "ok",
+      results: payload.results ?? [],
+      ...(Array.isArray(payload.unresolved) && payload.unresolved.length > 0
+        ? { unresolved: payload.unresolved }
+        : {}),
+    };
+    return Response.json(report);
+  } catch (err) {
+    const report: EvidenceReport = {
+      status: reportStatus(err),
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
 }
 
 // --- inbox ------------------------------------------------------------------

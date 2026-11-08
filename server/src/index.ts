@@ -11,6 +11,7 @@ import { serveStatic } from "./static";
 import {
   handleConfirm,
   handleEdgeAction,
+  handleEvidence,
   handleGraph,
   handleInbox,
   handlePage,
@@ -20,9 +21,12 @@ import {
   handleProfiles,
   handleSearch,
   handleSources,
+  handleSourcesStatus,
   handleTakePropose,
   handleTrustDrop,
+  handleWriteConflicts,
   handleWriteRequest,
+  handleWriteRequests,
   mapError,
 } from "./routes/api";
 import { getHealthReport, toCoarse } from "./routes/health";
@@ -161,6 +165,8 @@ const server = Bun.serve({
             return await handleSearch(channels, url);
           case "GET /api/sources":
             return await handleSources(channels);
+          case "GET /api/sources/status":
+            return await handleSourcesStatus(channels);
           case "GET /api/inbox":
             return await handleInbox(channels);
           case "POST /api/inbox/trust/drop":
@@ -175,6 +181,12 @@ const server = Bun.serve({
             return await handlePageWrite(channels, req);
           case "GET /api/write-request":
             return await handleWriteRequest(channels, url);
+          case "GET /api/write-requests":
+            return await handleWriteRequests(channels, url);
+          case "GET /api/write-conflicts":
+            return await handleWriteConflicts(channels, url);
+          case "POST /api/evidence":
+            return await handleEvidence(channels, req);
           default:
             return envelope(404, "E_NOT_FOUND", "unknown route");
         }

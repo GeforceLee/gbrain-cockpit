@@ -157,6 +157,10 @@
 
 .kv-row dd {
   margin: 0;
+  /* long opaque values (UUID revisions, source paths, quoted markers) must
+     wrap inside the row, never widen the panel off-screen */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* --- generic card grid --- */

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CheckStatus, HealthReport } from "@gbrain-cockpit/shared";
+import type {
+  CheckStatus,
+  HealthReport,
+  SourcesStatusReport,
+} from "@gbrain-cockpit/shared";
 import { PALETTE } from "../design/tokens";
 import { RadialGauge } from "../components/RadialGauge";
 import { ApiError, apiGet, setToken } from "../lib/api";
@@ -24,6 +28,12 @@ export function Health() {
   const [report, setReport] = useState<HealthReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // V1.1 per-source diagnostics (sources_status) — rides the same refresh,
+  // fails soft: a missing tool (older gbrain) reads "unavailable", never an
+  // error panel
+  const [sourcesStatus, setSourcesStatus] = useState<SourcesStatusReport | null>(
+    null,
+  );
 
   // probe is dependency-free so switching language (which swaps `t`) does not
   // re-fire the fetch effect; the error is stored raw and translated at render.
@@ -42,6 +52,9 @@ export function Health() {
     } finally {
       setBusy(false);
     }
+    apiGet<SourcesStatusReport>("/api/sources/status")
+      .then(setSourcesStatus)
+      .catch(() => setSourcesStatus(null));
   }, []);
 
   useEffect(() => {
@@ -206,6 +219,50 @@ export function Health() {
               </div>
             ) : (
               <p className="muted small">{t("health.pg.unset")}</p>
+            )}
+          </div>
+
+          <div className="hcard span4 sources-card">
+            <p className="cap" title={t("health.sourcesDesc")}>
+              {t("health.check.sources")}
+            </p>
+            {!sourcesStatus || sourcesStatus.status === "down" ? (
+              <p className="muted small">{t("health.sourcesUnavailable")}</p>
+            ) : (
+              <>
+                <dl className="kv">
+                  {(sourcesStatus.items ?? []).map((s) => {
+                    const pending = (
+                      s as {
+                        watermark?: { pending?: { count?: number } };
+                      }
+                    ).watermark?.pending?.count;
+                    const state = s.error
+                      ? firstLine(String(s.error))
+                      : String(s.clone_state ?? "?");
+                    return (
+                      <Row
+                        key={s.id}
+                        label={s.id}
+                        value={[
+                          state,
+                          typeof s.last_sync_at === "string"
+                            ? s.last_sync_at.slice(0, 10)
+                            : "",
+                          typeof pending === "number" && pending > 0
+                            ? `${t("health.sourcesPending")} ${pending}`
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      />
+                    );
+                  })}
+                </dl>
+                {(sourcesStatus.items ?? []).length === 0 && (
+                  <p className="muted small">{t("health.sourcesEmpty")}</p>
+                )}
+              </>
             )}
           </div>
 

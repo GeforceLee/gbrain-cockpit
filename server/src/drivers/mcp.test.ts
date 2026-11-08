@@ -445,3 +445,110 @@ describe("source params attach only when a source is picked", () => {
     expect(bodies[3]).toEqual({ slug: "a", include_content: true, source_id: "archive" });
   });
 });
+
+// --- V1.1 provenance wrappers (live-probed shapes, 2026-11-06) -----------------
+
+describe("V1.1 provenance wrapper arg shapes", () => {
+  /** Fetch stub answering every tools/call with `result` and recording
+   *  {tool, args} so assertions can pin exact wire shapes. */
+  function respondingFetch(result: unknown) {
+    const calls: Array<{ tool?: string; args?: Record<string, unknown> }> = [];
+    const fetchFn = (async (_input: unknown, init?: RequestInit) => {
+      const parsed = JSON.parse(String(init?.body ?? "{}")) as {
+        method?: string;
+        id?: number;
+        params?: { name?: string; arguments?: Record<string, unknown> };
+      };
+      if (parsed.method === "initialize") {
+        return jsonRes({ jsonrpc: "2.0", id: parsed.id, result: {} });
+      }
+      if (parsed.method === "tools/call") {
+        calls.push({ tool: parsed.params?.name, args: parsed.params?.arguments ?? {} });
+        return jsonRes({
+          jsonrpc: "2.0",
+          id: parsed.id,
+          result: { content: [{ type: "text", text: JSON.stringify(result) }] },
+        });
+      }
+      return new Response(null, { status: 202 });
+    }) as typeof fetch;
+    return { fetchFn, calls };
+  }
+
+  test("getLinks/getBacklinks: slug always, source_id attach-only", async () => {
+    const { fetchFn, calls } = respondingFetch([]);
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    await driver.getLinks("a");
+    await driver.getLinks("a", "main");
+    await driver.getBacklinks("a", "main");
+    expect(calls[0]).toEqual({ tool: "get_links", args: { slug: "a" } });
+    expect(calls[1]).toEqual({ tool: "get_links", args: { slug: "a", source_id: "main" } });
+    expect(calls[2]).toEqual({ tool: "get_backlinks", args: { slug: "a", source_id: "main" } });
+  });
+
+  test("getTimeline: bare slug only", async () => {
+    const { fetchFn, calls } = respondingFetch([]);
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    await driver.getTimeline("a");
+    expect(calls[0]).toEqual({ tool: "get_timeline", args: { slug: "a" } });
+  });
+
+  test("listPages slugPrefix/tag map to snake_case wire params", async () => {
+    const { fetchFn, calls } = respondingFetch([]);
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    await driver.listPages({ limit: 50, slugPrefix: "kb/", tag: "follow-up" });
+    expect(calls[0]).toEqual({
+      tool: "list_pages",
+      args: { limit: 50, slug_prefix: "kb/", tag: "follow-up" },
+    });
+  });
+
+  test("listWriteRequests/listWriteConflicts unwrap their envelopes", async () => {
+    const { fetchFn, calls } = respondingFetch({
+      requests: [{ request_id: "r-1", status: "committed" }],
+      conflicts: [{ slug: "a" }],
+    });
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    const reqs = await driver.listWriteRequests({ sourceId: "main", limit: 50 });
+    const conflicts = await driver.listWriteConflicts({ sourceId: "main" });
+    expect(calls[0]).toEqual({
+      tool: "list_write_requests",
+      args: { source_id: "main", limit: 50 },
+    });
+    expect(calls[1]).toEqual({
+      tool: "list_write_conflicts",
+      args: { source_id: "main" },
+    });
+    expect(reqs[0]!.request_id).toBe("r-1");
+    expect(conflicts[0]!.slug).toBe("a");
+  });
+
+  test("sourcesStatus sends {id} — the probed arg name, NOT source_id", async () => {
+    const { fetchFn, calls } = respondingFetch({ id: "main", clone_state: "healthy" });
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    const diag = await driver.sourcesStatus("main");
+    expect(calls[0]).toEqual({ tool: "sources_status", args: { id: "main" } });
+    expect(diag.clone_state).toBe("healthy");
+  });
+
+  test("assembleEvidence maps triples + optional return_unit", async () => {
+    const { fetchFn, calls } = respondingFetch({ results: [], unresolved: [] });
+    const driver = new McpDriver({ url: "http://u/mcp", token: "t", fetchFn });
+    await driver.assembleEvidence([{ sourceId: "main", slug: "a", chunkId: 1481 }]);
+    await driver.assembleEvidence(
+      [{ sourceId: "main", slug: "a", chunkId: 1481 }],
+      { returnUnit: "window" },
+    );
+    expect(calls[0]).toEqual({
+      tool: "assemble_evidence",
+      args: { hits: [{ source_id: "main", slug: "a", chunk_id: 1481 }] },
+    });
+    expect(calls[1]).toEqual({
+      tool: "assemble_evidence",
+      args: {
+        hits: [{ source_id: "main", slug: "a", chunk_id: 1481 }],
+        return_unit: "window",
+      },
+    });
+  });
+});

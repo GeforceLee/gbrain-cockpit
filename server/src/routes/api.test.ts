@@ -214,3 +214,293 @@ describe("handleInbox cliChannel reason", () => {
     expect(body.takes.status).toBe("ok");
   });
 });
+
+// --- V1.1 dimensions & provenance ----------------------------------------------
+// slug_prefix/tag narrowing, /api/page full=1 section degradation, and the
+// three in-band reports + evidence endpoint. All handler-direct like above.
+
+import {
+  handleEvidence,
+  handlePages as handlePagesV11,
+  handlePage as handlePageV11,
+  handleSourcesStatus,
+  handleWriteConflicts,
+  handleWriteRequests,
+} from "./api";
+import type {
+  EvidenceReport,
+  LinkRow,
+  SourcesStatusReport,
+  TimelineEntry,
+  WriteConflictsReport,
+  WriteRequestsReport,
+} from "@gbrain-cockpit/shared";
+
+/** Driver-level stub: methods throw their configured Error, else answer. */
+function v11Ctx(calls: {
+  links?: LinkRow[] | Error;
+  backlinks?: LinkRow[] | Error;
+  timeline?: TimelineEntry[] | Error;
+  writeRequests?: unknown[] | Error;
+  conflicts?: unknown[] | Error;
+  sources?: Array<{ id: string }> | Error;
+  sourcesStatus?: Record<string, unknown> | Error;
+  evidence?: unknown | Error;
+}) {
+  const seen: Record<string, unknown[]> = {};
+  const answer = <T>(slot: string, args: unknown[], value: T | Error | undefined, dflt: T): T => {
+    (seen[slot] ??= []).push(args);
+    if (value instanceof Error) throw value;
+    return (value ?? dflt) as T;
+  };
+  const mcp = {
+    getPage: async (slug: string, sourceId?: string) =>
+      answer("getPage", [slug, sourceId], undefined, { slug, source_id: sourceId }),
+    versions: async (slug: string) => answer("versions", [slug], undefined, []),
+    getLinks: async (slug: string, sourceId?: string) =>
+      answer("getLinks", [slug, sourceId], calls.links, [] as LinkRow[]),
+    getBacklinks: async (slug: string, sourceId?: string) =>
+      answer("getBacklinks", [slug, sourceId], calls.backlinks, [] as LinkRow[]),
+    getTimeline: async (slug: string) =>
+      answer("getTimeline", [slug], calls.timeline, [] as TimelineEntry[]),
+    listWriteRequests: async (p: unknown) =>
+      answer("listWriteRequests", [p], calls.writeRequests, [] as unknown[]),
+    listWriteConflicts: async (p: unknown) =>
+      answer("listWriteConflicts", [p], calls.conflicts, [] as unknown[]),
+    sourcesList: async () => {
+      if (calls.sources instanceof Error) throw calls.sources;
+      return calls.sources ?? [{ id: "main" }];
+    },
+    sourcesStatus: async (id: string) => {
+      (seen.sourcesStatus ??= []).push([id]);
+      if (calls.sourcesStatus instanceof Error) throw calls.sourcesStatus;
+      return calls.sourcesStatus ?? { id, clone_state: "healthy" };
+    },
+    assembleEvidence: async (hits: unknown, opts: unknown) => {
+      (seen.assembleEvidence ??= []).push([hits, opts]);
+      if (calls.evidence instanceof Error) throw calls.evidence;
+      return calls.evidence ?? { results: [], unresolved: [] };
+    },
+  } as unknown as McpDriver;
+  return {
+    ctx: { mcp, cli: null, pg: null, id: "t", profile: {}, cliBinResolved: null } as unknown as ApiContext,
+    seen,
+  };
+}
+
+describe("V1.1 /api/pages slug_prefix + tag", () => {
+  test("valid params forward as slugPrefix/tag; invalid are 400s before the driver", async () => {
+    const { ctx, seen } = stubCtx({});
+    await handlePagesV11(
+      ctx,
+      new URL("http://x/api/pages?slug_prefix=kb/&tag=follow-up"),
+    );
+    const args = seen.listPages![0] as { slugPrefix?: string; tag?: string };
+    expect(args.slugPrefix).toBe("kb/");
+    expect(args.tag).toBe("follow-up");
+
+    await expect(
+      handlePagesV11(ctx, new URL("http://x/api/pages?slug_prefix=kb$bad")),
+    ).rejects.toBeInstanceOf(BadRequestError);
+    await expect(
+      handlePagesV11(ctx, new URL("http://x/api/pages?tag=" + encodeURIComponent("a\nb"))),
+    ).rejects.toBeInstanceOf(BadRequestError);
+    expect(seen.listPages).toHaveLength(1); // invalid values never reached the driver
+  });
+
+  test("offset paging: valid forwards (>0 only), invalid is a 400 before the driver", async () => {
+    const { ctx, seen } = stubCtx({});
+    await handlePagesV11(ctx, new URL("http://x/api/pages?offset=15"));
+    expect((seen.listPages![0] as { offset?: number }).offset).toBe(15);
+    // offset 0 is the default — never attached (byte-identical first pages)
+    await handlePagesV11(ctx, new URL("http://x/api/pages"));
+    expect(
+      (seen.listPages![1] as { offset?: number }).offset,
+    ).toBeUndefined();
+    await expect(
+      handlePagesV11(ctx, new URL("http://x/api/pages?offset=-1")),
+    ).rejects.toBeInstanceOf(BadRequestError);
+    await expect(
+      handlePagesV11(ctx, new URL("http://x/api/pages?offset=abc")),
+    ).rejects.toBeInstanceOf(BadRequestError);
+    expect(seen.listPages).toHaveLength(2);
+  });
+});
+
+describe("V1.1 /api/page full=1 sections", () => {
+  test("default path stays two upstream calls (peek drawers)", async () => {
+    const { ctx, seen } = v11Ctx({});
+    const res = await handlePageV11(ctx, new URL("http://x/api/page?slug=a"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(["page", "versions"]);
+    expect(seen.getLinks).toBeUndefined();
+    expect(seen.getBacklinks).toBeUndefined();
+    expect(seen.getTimeline).toBeUndefined();
+  });
+
+  test("full=1 attaches sections; a failed section degrades in-band", async () => {
+    const { ctx } = v11Ctx({
+      links: new McpError("protocol", "tool get_links errored: unknown tool"),
+      backlinks: [{ from_slug: "b", from_source_id: "main", to_slug: "a", link_type: "mentions" }],
+      timeline: [{ date: "2026-11-01", text: "entry" }],
+    });
+    const res = await handlePageV11(
+      ctx,
+      new URL("http://x/api/page?slug=a&source_id=main&full=1"),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      page: { slug: string };
+      versions: unknown[];
+      links?: LinkRow[];
+      backlinks?: LinkRow[];
+      timeline?: TimelineEntry[];
+      degraded?: string[];
+    };
+    expect(body.page.slug).toBe("a");
+    expect(body.links).toBeUndefined(); // failed section absent, never an error
+    expect(body.degraded).toEqual(["links"]);
+    expect(body.backlinks).toHaveLength(1);
+    expect(body.timeline).toHaveLength(1);
+  });
+
+  test("page failure still errors even in full mode", async () => {
+    const ctx = {
+      mcp: {
+        getPage: async () => {
+          throw new McpError("timeout", "MCP request timed out");
+        },
+        versions: async () => [],
+        getLinks: async () => [],
+        getBacklinks: async () => [],
+        getTimeline: async () => [],
+      },
+    } as unknown as ApiContext;
+    // handler-direct: the rejection is what index.ts funnels through mapError
+    const err = await handlePageV11(
+      ctx,
+      new URL("http://x/api/page?slug=a&full=1"),
+    ).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(McpError);
+    const res = mapError(err);
+    expect(res.status).toBe(504);
+    expect(((await res.json()) as { code: string }).code).toBe("E_UPSTREAM");
+  });
+});
+
+describe("V1.1 write-receipt / conflicts / sources-status reports", () => {
+  test("write-requests ok + source passthrough; protocol failure degrades in-band", async () => {
+    const ok = v11Ctx({
+      writeRequests: [{ request_id: "r-1", slug: "a", status: "committed" }],
+    });
+    const res = await handleWriteRequests(
+      ok.ctx,
+      new URL("http://x/api/write-requests?source_id=main"),
+    );
+    const body = (await res.json()) as WriteRequestsReport;
+    expect(body.status).toBe("ok");
+    expect(body.items![0]!.request_id).toBe("r-1");
+    expect(ok.seen.listWriteRequests![0]).toEqual([{ sourceId: "main", limit: 50 }]);
+
+    const old = v11Ctx({
+      writeRequests: new McpError("protocol", "tool list_write_requests errored"),
+    });
+    const res2 = await handleWriteRequests(old.ctx, new URL("http://x/api/write-requests"));
+    expect(res2.status).toBe(200);
+    const body2 = (await res2.json()) as WriteRequestsReport;
+    expect(body2.status).toBe("degraded");
+
+    await expect(
+      handleWriteRequests(old.ctx, new URL("http://x/api/write-requests?limit=0")),
+    ).rejects.toBeInstanceOf(BadRequestError);
+  });
+
+  test("write-conflicts ok and in-band degraded", async () => {
+    const ok = v11Ctx({ conflicts: [{ slug: "a", source_id: "main" }] });
+    const res = await handleWriteConflicts(ok.ctx, new URL("http://x/api/write-conflicts?source_id=main"));
+    const body = (await res.json()) as WriteConflictsReport;
+    expect(body.status).toBe("ok");
+    expect(body.items![0]!.slug).toBe("a");
+
+    const down = v11Ctx({ conflicts: new Error("mcp dead") });
+    const res2 = await handleWriteConflicts(down.ctx, new URL("http://x/api/write-conflicts"));
+    expect(res2.status).toBe(200);
+    expect(((await res2.json()) as WriteConflictsReport).status).toBe("down");
+  });
+
+  test("sources/status: per-source fan-out, one failure degrades with its row kept", async () => {
+    const ctx = v11Ctx({ sources: [{ id: "main" }, { id: "archive" }] });
+    // make archive fail while main succeeds
+    (ctx.ctx.mcp as unknown as {
+      sourcesStatus: (id: string) => Promise<unknown>;
+    }).sourcesStatus = async (id: string) => {
+      if (id === "archive") throw new Error("no-git");
+      return { id, clone_state: "healthy" };
+    };
+    const res = await handleSourcesStatus(ctx.ctx);
+    const body = (await res.json()) as SourcesStatusReport;
+    expect(body.status).toBe("degraded");
+    expect(body.items).toHaveLength(2);
+    expect(body.items![0]!.clone_state).toBe("healthy");
+    expect(body.items![1]!.id).toBe("archive");
+    expect(String(body.items![1]!.error)).toContain("no-git");
+  });
+});
+
+describe("V1.1 POST /api/evidence", () => {
+  function evidenceReq(hits: unknown): Request {
+    return new Request("http://x/api/evidence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hits }),
+    });
+  }
+
+  test("valid hit maps camel→snake and wraps in-band", async () => {
+    const { ctx, seen } = v11Ctx({
+      evidence: { results: [{ slug: "a", chunk_text: "window text" }], unresolved: [] },
+    });
+    const res = await handleEvidence(
+      ctx,
+      evidenceReq([{ source_id: "main", slug: "a", chunk_id: 1481 }]),
+    );
+    const body = (await res.json()) as EvidenceReport;
+    expect(body.status).toBe("ok");
+    expect(body.results![0]!.chunk_text).toBe("window text");
+    expect(seen.assembleEvidence![0]).toEqual([
+      [{ sourceId: "main", slug: "a", chunkId: 1481 }],
+      { returnUnit: "window" },
+    ]);
+  });
+
+  test("validation: >3 hits, missing chunk_id, non-integer chunk_id are 400s", async () => {
+    const { ctx, seen } = v11Ctx({});
+    const bad = [
+      [1, 2, 3, 4],
+      [{ source_id: "main", slug: "a" }],
+      [{ source_id: "main", slug: "a", chunk_id: 1.5 }],
+      [{ source_id: "a/b", slug: "a", chunk_id: 1 }],
+    ];
+    for (const hits of bad) {
+      await expect(handleEvidence(ctx, evidenceReq(hits))).rejects.toBeInstanceOf(
+        BadRequestError,
+      );
+    }
+    expect(seen.assembleEvidence).toBeUndefined();
+  });
+
+  test("upstream failure answers in-band, never an envelope", async () => {
+    const { ctx } = v11Ctx({ evidence: new McpError("protocol", "unknown tool") });
+    const res = await handleEvidence(
+      ctx,
+      evidenceReq([{ source_id: "main", slug: "a", chunk_id: 1 }]),
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as EvidenceReport).status).toBe("degraded");
+  });
+});
+

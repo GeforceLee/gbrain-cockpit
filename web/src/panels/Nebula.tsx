@@ -4,13 +4,14 @@ import louvain from "graphology-communities-louvain";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 import type { EdgeProposal, GraphReport } from "@gbrain-cockpit/shared";
-import { GRAPH } from "../design/tokens";
+import { edgeTypeColor, GRAPH } from "../design/tokens";
 import { ApiError, apiGet } from "../lib/api";
 import { currentProfileId } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
-import { usePageBundle, type PageRef } from "../lib/pages";
+import { relationCount, usePageBundle, type PageRef } from "../lib/pages";
 import { firstLine } from "../lib/text";
 import { PageBody } from "../components/PageBody";
+import { Tag } from "../components/Tag";
 
 // Nebula — the whole-brain map on the read-only bypass (ARCHITECTURE §3.3/§6).
 // Human vocabulary (owner decision 2026-11-04): a node IS a page, an edge IS
@@ -59,11 +60,6 @@ function slugFamily(slug: string): string {
   const tail = slug.includes("/") ? (slug.split("/").pop() ?? slug) : slug;
   const fam = tail.replace(/\d+$/, "");
   return fam || tail;
-}
-
-/** relation color = link_type (semantic); unknown types stay neutral grey */
-function edgeTypeColor(type: string | undefined): string {
-  return (type && GRAPH.edgeTypes[type]) || GRAPH.edgeUnknown;
 }
 
 /** #rrggbb → rgba(…, alpha); anything else passes through untouched */
@@ -493,9 +489,11 @@ export function Nebula({
   }, [report, proposalEdges]);
 
   // selected is a node KEY; the drawer needs (slug, sourceId) — never parse
-  // the key (slugs contain slashes), read the node's own fields via nodeRef
+  // the key (slugs contain slashes), read the node's own fields via nodeRef.
+  // full bundle: the V1.1 light rows (tags + relation counts) ride the same
+  // fetch — 10s server-side cache keeps repeat peeks cheap.
   const peekRef = selected ? (baseData?.nodeRef.get(selected) ?? null) : null;
-  const peek = usePageBundle(peekRef);
+  const peek = usePageBundle(peekRef, { full: true });
 
   // --- view filtering (nodeReducer — no graph rebuild, no sigma remount) -------
 
@@ -1532,6 +1530,19 @@ export function Nebula({
     return [...seen.entries()].sort((a, b) => b[1] - a[1]);
   }, [report]);
 
+  // link-provenance counts over the SAME edge set (V1.1 出处 legend group) —
+  // display-only, from the pg payload we already hold: no new upstream call,
+  // and the counts can never disagree with the drawn routes.
+  const linkSourceLegend = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const e of report?.edges ?? []) {
+      const key =
+        typeof e.link_source === "string" && e.link_source ? e.link_source : "?";
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    return [...seen.entries()].sort((a, b) => b[1] - a[1]);
+  }, [report]);
+
   return (
     <section className="panel nebula">
       <div className="nebula-head">
@@ -1681,6 +1692,27 @@ export function Nebula({
                   <span className="mono">{String(peek.bundle.versions.length)}</span>
                 </div>
               )}
+              {peek.bundle?.page.tags && peek.bundle.page.tags.length > 0 && (
+                <div className="kv kv-tags">
+                  <span>{t("pages.tags")}</span>
+                  <span className="tag-set">
+                    {peek.bundle.page.tags.map((tag) => (
+                      <Tag key={String(tag)} variant="term">
+                        {String(tag)}
+                      </Tag>
+                    ))}
+                  </span>
+                </div>
+              )}
+              {peek.bundle && (peek.bundle.links !== undefined || peek.bundle.backlinks !== undefined) && (
+                <div className="kv">
+                  <span>{t("viewer.links")}</span>
+                  <span className="mono">
+                    {t("viewer.outLinks")} {relationCount(peek.bundle.links, "out")} ·{" "}
+                    {t("viewer.backlinks")} {relationCount(peek.bundle.backlinks, "in")}
+                  </span>
+                </div>
+              )}
               {viewGraph.pending.has(selected) && (
                 <p className="drawer-pending">
                   <span className="tag warn">{t("nebula.drawer.pending")}</span>
@@ -1807,6 +1839,16 @@ export function Nebula({
               <span className="sw-line" style={{ borderColor: edgeTypeColor(type) }} />
               {type} · {count}
             </button>
+          ))}
+          <span className="lg-cap">{t("nebula.legend.linkSources")}</span>
+          {linkSourceLegend.map(([src, count]) => (
+            <span
+              key={src}
+              className="li mono"
+              title={t("nebula.legend.linkSources")}
+            >
+              {src === "?" ? t("nebula.legend.unknownSource") : src} · {count}
+            </span>
           ))}
           <span className="li">
             <span className="sw-line dashed" style={{ borderColor: GRAPH.edgeNew }} />

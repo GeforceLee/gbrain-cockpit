@@ -396,6 +396,121 @@ export interface SourcesReport {
   error?: string;
 }
 
+// --- V1.1 dimensions & provenance (gbrain 0.60.558, live-probed 2026-11-06) --
+// Probe snapshots: internal/probes/mcp-probe-v1.1*.json (read-only tools only).
+
+/**
+ * One edge row from MCP get_links / get_backlinks: a flat record carrying the
+ * FULL identity of both endpoints (from_* = referrer, to_* = target), an
+ * excerpt of the linking context, and the edge's provenance — link_source is
+ * where the edge came from (markdown, mcp-remote-mention, manual…), origin_*
+ * names the page/field it was extracted from when applicable. The same
+ * from→to pair may appear once per provenance; that is the data, not a bug.
+ */
+export interface LinkRow {
+  from_slug?: string;
+  from_source_id?: string;
+  to_slug?: string;
+  to_source_id?: string;
+  link_type?: string;
+  context?: string;
+  link_source?: string;
+  origin_slug?: string | null;
+  origin_source_id?: string | null;
+  origin_field?: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * One read-only timeline entry (MCP get_timeline). The probed brain's pages
+ * carry none yet (all calls returned []), so only the two documented fields
+ * are modeled — everything else passes through and renders defensively.
+ */
+export interface TimelineEntry {
+  date?: string;
+  text?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * One receipt row from MCP list_write_requests (`{requests, next}` envelope,
+ * probed empty on 0.60.558). Status uses the write-receipt vocabulary; an
+ * unknown upstream value still renders (defensive chip).
+ */
+export interface WriteRequestRow {
+  request_id?: string;
+  slug?: string;
+  status?: WriteStatus;
+  created_at?: string;
+  [k: string]: unknown;
+}
+
+/** GET /api/write-requests — the token's own receipts, newest first (in-band). */
+export interface WriteRequestsReport {
+  status: CheckStatus;
+  items?: WriteRequestRow[];
+  error?: string;
+}
+
+/** One slug group from MCP list_write_conflicts (repeated source_changed). */
+export interface WriteConflictRow {
+  slug?: string;
+  source_id?: string;
+  [k: string]: unknown;
+}
+
+/** GET /api/write-conflicts — in-band like every other channel report. */
+export interface WriteConflictsReport {
+  status: CheckStatus;
+  items?: WriteConflictRow[];
+  error?: string;
+}
+
+/**
+ * One per-source diagnostic from MCP sources_status. NOTE: upstream's argument
+ * is `id` (not source_id — probed). clone_state vocabulary per description:
+ * healthy | missing | not-a-dir | no-git | url-drift | corrupted |
+ * not-applicable; unknown values render with the neutral fallback.
+ */
+export interface SourceDiagnostic {
+  id: string;
+  clone_state?: string;
+  last_sync_at?: string;
+  [k: string]: unknown;
+}
+
+/** GET /api/sources/status — per-source diagnostics, in-band degraded. */
+export interface SourcesStatusReport {
+  status: CheckStatus;
+  items?: SourceDiagnostic[];
+  error?: string;
+}
+
+/** One assembled evidence unit (MCP assemble_evidence results[] row). */
+export interface EvidenceRow {
+  slug?: string;
+  source_id?: string;
+  title?: string;
+  chunk_text?: string;
+  chunk_id?: number;
+  [k: string]: unknown;
+}
+
+/** What MCP assemble_evidence answers (results + unresolved passthrough). */
+export interface EvidencePayload {
+  results?: EvidenceRow[];
+  unresolved?: unknown[];
+  [k: string]: unknown;
+}
+
+/** POST /api/evidence — in-band report over assemble_evidence. */
+export interface EvidenceReport {
+  status: CheckStatus;
+  results?: EvidenceRow[];
+  unresolved?: unknown[];
+  error?: string;
+}
+
 // --- Inbox ------------------------------------------------------------------
 // Trust refs: tp<id> proposal, h<id> held write, f<id> standing preference /
 // fact candidate, a<id> allow rule, t<id> take (see `gbrain trust --help`).

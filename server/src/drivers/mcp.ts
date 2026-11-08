@@ -1,15 +1,21 @@
 import {
   COCKPIT_VERSION,
   type BrainIdentity,
+  type EvidencePayload,
+  type LinkRow,
   type McpWhoami,
   type PageDetail,
   type PageSummary,
   type PageVersion,
   type PagesFacets,
   type SearchHit,
+  type SourceDiagnostic,
   type SourceSummary,
   type TakeItem,
+  type TimelineEntry,
+  type WriteConflictRow,
   type WriteReceipt,
+  type WriteRequestRow,
   type WriteStatus,
 } from "@gbrain-cockpit/shared";
 
@@ -206,10 +212,31 @@ export class McpDriver {
     type?: string;
     limit?: number;
     sort?: string;
-    /** keyset cursor, documented by list_pages itself: continue after this
-     *  row (its updated_at + slug) — the upstream-native way to page deeper */
+    /**
+     * Deep paging — probed 0.60.558: offset windows are strictly descending,
+     * non-overlapping and repeat-stable. Attached only when > 0 so first
+     * pages stay byte-identical for older gbrains.
+     */
+    offset?: number;
+    /**
+     * Keyset cursor pair, documented by list_pages itself — but on the
+     * probed 0.60.558 remote these act as an ascending "newer-than" window
+     * filter (sort ignored), NOT a cursor. Kept wired for future builds;
+     * cockpit's own paging uses `offset` (see probe-keyset.ts).
+     */
     updatedAfter?: string;
     updatedAfterSlug?: string;
+    /**
+     * Literal slug prefix ("deals/" style — documented + probed 0.60.558):
+     * the slug dimension's server-side narrowing.
+     */
+    slugPrefix?: string;
+    /**
+     * Tag filter (documented via add_tag's description; param probed and
+     * accepted by list_pages on 0.60.558 — the probed brain simply has no
+     * tagged pages yet, hence empty results there).
+     */
+    tag?: string;
     /**
      * Narrow to one source (list_pages accepts source_id/source_ids on
      * 0.60.558 — narrow-only against the grant). Attached ONLY when the
@@ -222,10 +249,13 @@ export class McpDriver {
       ...(params.type ? { type: params.type } : {}),
       ...(params.limit ? { limit: params.limit } : {}),
       ...(params.sort ? { sort: params.sort } : {}),
+      ...(params.offset ? { offset: params.offset } : {}),
       ...(params.updatedAfter ? { updated_after: params.updatedAfter } : {}),
       ...(params.updatedAfterSlug
         ? { updated_after_slug: params.updatedAfterSlug }
         : {}),
+      ...(params.slugPrefix ? { slug_prefix: params.slugPrefix } : {}),
+      ...(params.tag ? { tag: params.tag } : {}),
       ...(params.sourceId ? { source_id: params.sourceId } : {}),
     });
   }
@@ -282,6 +312,105 @@ export class McpDriver {
 
   takesList(params: { active?: boolean } = {}): Promise<TakeItem[]> {
     return this.#cached<TakeItem[]>(10_000, "takes_list", { ...params });
+  }
+
+  // --- V1.1 dimensions & provenance (live-probed 0.60.558, 2026-11-06) --------
+  // Probe snapshots: internal/probes/mcp-probe-v1.1*.json. All read-only.
+
+  /**
+   * A page's outgoing edges. Rows carry BOTH endpoints' full identity plus a
+   * context excerpt and the edge's provenance. The same from→to pair may
+   * appear once per link_source (e.g. markdown AND mcp-remote-mention) — that
+   * is the data, not a bug; the UI shows rows as-is with the provenance badge.
+   */
+  getLinks(slug: string, sourceId?: string): Promise<LinkRow[]> {
+    return this.#cached<LinkRow[]>(10_000, "get_links", {
+      slug,
+      ...(sourceId ? { source_id: sourceId } : {}),
+    });
+  }
+
+  /** A page's incoming edges (referrer = the from_* side), ≤500/call. */
+  getBacklinks(slug: string, sourceId?: string): Promise<LinkRow[]> {
+    return this.#cached<LinkRow[]>(10_000, "get_backlinks", {
+      slug,
+      ...(sourceId ? { source_id: sourceId } : {}),
+    });
+  }
+
+  /** Read-only timeline entries (pages without a Timeline section answer []). */
+  getTimeline(slug: string): Promise<TimelineEntry[]> {
+    return this.#cached<TimelineEntry[]>(10_000, "get_timeline", { slug });
+  }
+
+  /**
+   * The token's own write receipts in one source, newest first — the
+   * gbrain-side truth behind write-receipt transparency. 10s cache: pure
+   * browsing dedupe; receipts are history, so a short cache never lies.
+   */
+  async listWriteRequests(
+    params: { sourceId?: string; limit?: number } = {},
+  ): Promise<WriteRequestRow[]> {
+    const result = await this.#cached<{ requests?: unknown }>(
+      10_000,
+      "list_write_requests",
+      {
+        ...(params.sourceId ? { source_id: params.sourceId } : {}),
+        ...(params.limit ? { limit: params.limit } : {}),
+      },
+    );
+    const raw = result?.requests;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (r): r is WriteRequestRow => r !== null && typeof r === "object",
+    );
+  }
+
+  /** Pages whose writes keep ending in a source_changed conflict, by slug. */
+  async listWriteConflicts(
+    params: { sourceId?: string } = {},
+  ): Promise<WriteConflictRow[]> {
+    const result = await this.#cached<{ conflicts?: unknown }>(
+      30_000,
+      "list_write_conflicts",
+      {
+        ...(params.sourceId ? { source_id: params.sourceId } : {}),
+      },
+    );
+    const raw = result?.conflicts;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (r): r is WriteConflictRow => r !== null && typeof r === "object",
+    );
+  }
+
+  /**
+   * Per-source diagnostic. NOTE: the upstream argument is `id`, NOT source_id
+   * (probed — an empty/source_id call answers invalid_params).
+   */
+  sourcesStatus(sourceId: string): Promise<SourceDiagnostic> {
+    return this.#cached<SourceDiagnostic>(60_000, "sources_status", {
+      id: sourceId,
+    });
+  }
+
+  /**
+   * Whole evidence for prior search hits — {source_id, slug, chunk_id}
+   * triples, chunk_id is a NUMBER. return_unit "window" delivers ~2× the
+   * search snippet around the hit (probed).
+   */
+  assembleEvidence(
+    hits: Array<{ sourceId: string; slug: string; chunkId: number }>,
+    opts: { returnUnit?: string } = {},
+  ): Promise<EvidencePayload> {
+    return this.#cached<EvidencePayload>(30_000, "assemble_evidence", {
+      hits: hits.map((h) => ({
+        source_id: h.sourceId,
+        slug: h.slug,
+        chunk_id: h.chunkId,
+      })),
+      ...(opts.returnUnit ? { return_unit: opts.returnUnit } : {}),
+    });
   }
 
   // --- writes (receipt protocol) ---------------------------------------------

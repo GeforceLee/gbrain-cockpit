@@ -148,6 +148,12 @@ export const GRAPH = {
   },
 } as const;
 
+/** Relation-type route color — shared by the Nebula legend/routes and the
+ *  Pages detail relation badges so the two surfaces never disagree. */
+export function edgeTypeColor(type: string | undefined): string {
+  return (type && GRAPH.edgeTypes[type]) || GRAPH.edgeUnknown;
+}
+
 export const EASINGS = {
   /** stamp drop */
   spring: "cubic-bezier(.34, 1.56, .64, 1)",

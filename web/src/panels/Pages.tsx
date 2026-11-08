@@ -12,6 +12,13 @@ import { useI18n, type MessageKey } from "../lib/i18n";
 import { pageRefQuery, useSlugSiblings, type PageBundle, type PageRef } from "../lib/pages";
 import { PageBody } from "../components/PageBody";
 import { Pager, usePageSize } from "../components/Pager";
+import { Tag } from "../components/Tag";
+import {
+  PageRelations,
+  PageTimelineSection,
+  PageVersionsSection,
+  WriteReceiptsSection,
+} from "./pages-detail";
 
 // Pages panel: list with type facets (enum from gbrain's schema_stats — never
 // hardcoded), detail view, and in-place editing on the full receipt protocol
@@ -33,11 +40,6 @@ type EditorState =
   | { mode: "saving" }
   | { mode: "receipt"; receipt: WriteReceipt };
 
-interface Cursor {
-  after: string;
-  slug: string;
-}
-
 export function Pages({
   focusPage,
   onConsumeFocus,
@@ -48,10 +50,10 @@ export function Pages({
   const { t } = useI18n();
   const [facets, setFacets] = useState<PagesFacets | null>(null);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
-  /** rows accumulated so far (keyset only pages forward through the brain) */
+  /** rows accumulated so far (paging walks forward through the brain) */
   const [rows, setRows] = useState<PageSummary[] | null>(null);
-  /** set while more rows are known to exist past the accumulated window */
-  const [moreCursor, setMoreCursor] = useState<Cursor | null>(null);
+  /** true while the last fetched batch was full — more pages may exist */
+  const [moreAvailable, setMoreAvailable] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = usePageSize("cockpit.pagesize.pages");
@@ -61,6 +63,13 @@ export function Pages({
   // options from /api/sources with an observed-source fallback.
   const [sourceFilter, setSourceFilter] = useState("");
   const [sources, setSources] = useState<string[] | null>(null);
+  // slug/tag dimensions (V1.1): text inputs debounce into server-side
+  // params (slug_prefix narrowing + the free-input tag filter — list rows
+  // carry no tags upstream, so there is no chip list to enumerate from)
+  const [slugInput, setSlugInput] = useState("");
+  const [slugFilter, setSlugFilter] = useState("");
+  const [tagInput, setTagInput] = useState("");
+  const [tagFilter, setTagFilter] = useState("");
   const [bundle, setBundle] = useState<PageBundle | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>({ mode: "idle" });
@@ -79,34 +88,31 @@ export function Pages({
   }, []);
 
   const fetchRows = useCallback(
-    async (cursor: Cursor | null, replace: boolean) => {
+    async (offset: number, replace: boolean) => {
       setFetching(true);
       setListError(null);
       try {
         const query = new URLSearchParams({ limit: String(pageSize) });
+        // deep paging rides upstream's offset windows — strictly descending,
+        // non-overlapping and repeat-stable (probed 0.60.558; the documented
+        // keyset pair turned out to act as an ascending "newer-than" filter)
+        if (offset > 0) query.set("offset", String(offset));
         if (typeFilter) query.set("type", typeFilter);
         if (sourceFilter) query.set("source_id", sourceFilter);
-        if (cursor) {
-          query.set("updated_after", cursor.after);
-          query.set("updated_after_slug", cursor.slug);
-        }
+        if (slugFilter) query.set("slug_prefix", slugFilter);
+        if (tagFilter) query.set("tag", tagFilter);
         const batch = await apiGet<PageSummary[]>(`/api/pages?${query}`);
         setRows((prev) => {
           if (replace) return batch;
-          // keyset ties can overlap one row; dedupe by the page identity
-          // (source_id, slug) on append — slug alone swallows same-slug twins
+          // offset windows shouldn't overlap; dedupe stays as the safety net
+          // (identity is (source_id, slug) — slug alone swallows twins)
           const seen = new Set((prev ?? []).map((p) => `${p.source_id ?? ""}/${p.slug}`));
           return [
             ...(prev ?? []),
             ...batch.filter((p) => !seen.has(`${p.source_id ?? ""}/${p.slug}`)),
           ];
         });
-        const last = batch[batch.length - 1];
-        setMoreCursor(
-          batch.length === pageSize && last?.updated_at
-            ? { after: last.updated_at, slug: last.slug }
-            : null,
-        );
+        setMoreAvailable(batch.length === pageSize);
       } catch (err) {
         if (replace) setRows(null);
         setListError(err instanceof ApiError ? err.message : String(err));
@@ -114,25 +120,28 @@ export function Pages({
         setFetching(false);
       }
     },
-    [typeFilter, sourceFilter, pageSize],
+    [typeFilter, sourceFilter, slugFilter, tagFilter, pageSize],
   );
 
   // filter / page-size changes restart from the first page
   useEffect(() => {
     setPage(0);
-    void fetchRows(null, true);
+    void fetchRows(0, true);
   }, [fetchRows]);
 
   function goToPage(next: number) {
     if (fetching) return;
-    const accumulatedPages = Math.max(1, Math.ceil((rows?.length ?? 0) / pageSize));
-    if (next >= accumulatedPages) {
-      if (!moreCursor) return;
+    next = Math.max(0, next);
+    const start = next * pageSize;
+    if (start < (rows?.length ?? 0)) {
+      // inside the accumulated window — walk locally
       setPage(next);
-      void fetchRows(moreCursor, false);
       return;
     }
-    setPage(Math.max(0, next));
+    // beyond it: fetch that offset page directly (blocked at the known end)
+    if (!moreAvailable) return;
+    setPage(next);
+    void fetchRows(start, false);
   }
 
   const openPage = useCallback(async (ref: PageRef) => {
@@ -141,11 +150,23 @@ export function Pages({
     setBundle(null);
     setEditor({ mode: "idle" });
     try {
-      setBundle(await apiGet<PageBundle>(`/api/page?${pageRefQuery(ref)}`));
+      // full=1: the V1.1 provenance sections (relations / timeline) ride the
+      // same fetch; the server degrades failed sections in-band
+      setBundle(await apiGet<PageBundle>(`/api/page?${pageRefQuery(ref)}&full=1`));
     } catch (err) {
       setDetailError(err instanceof ApiError ? err.message : String(err));
     }
   }, []);
+
+  // text filters debounce into the server-side params — typing never fires a
+  // request per keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSlugFilter(slugInput.trim());
+      setTagFilter(tagInput.trim());
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [slugInput, tagInput]);
 
   useEffect(() => {
     if (focusPage) {
@@ -244,7 +265,7 @@ export function Pages({
           `/api/page?${pageRefQuery({
             slug: bundle.page.slug,
             ...(bundle.page.source_id ? { sourceId: bundle.page.source_id } : {}),
-          })}`,
+          })}&full=1`,
         );
         setBundle(fresh);
       }
@@ -280,18 +301,22 @@ export function Pages({
     bundle?.page.source_id ?? selected?.sourceId,
   );
 
-  // pager math: the true total comes from facets (per-type when filtered);
-  // without facets it grows as keyset chunks accumulate
-  const filterTotal = typeFilter
-    ? facets?.by_type.find((f) => f.type === typeFilter)?.count
-    : facets?.total_pages;
+  // pager math: facet counts are the only true totals and they span ALL
+  // sources — under source/slug/tag narrowing they overestimate, so the
+  // pager there grows dynamically (one page ahead) as batches accumulate
+  const narrowed = sourceFilter !== "" || slugFilter !== "" || tagFilter !== "";
+  const filterTotal = narrowed
+    ? undefined
+    : typeFilter
+      ? facets?.by_type.find((f) => f.type === typeFilter)?.count
+      : facets?.total_pages;
   const rowsCount = rows?.length ?? 0;
   const accumulatedPages = Math.max(1, Math.ceil((rowsCount || 1) / pageSize));
   const totalPages = filterTotal
     ? Math.max(Math.ceil(filterTotal / pageSize), page + 1)
-    : moreCursor
-      ? accumulatedPages + 1
-      : accumulatedPages;
+    : moreAvailable
+      ? Math.max(accumulatedPages, page + 1) + 1
+      : Math.max(accumulatedPages, page + 1);
   const safePage = Math.min(page, totalPages - 1);
   const currentRows = (rows ?? []).slice(
     safePage * pageSize,
@@ -325,10 +350,36 @@ export function Pages({
               ))}
             </div>
           )}
+          {/* 写收据 — gbrain-side truth, lazy: fetches on first expand only.
+              Read-only profiles never fetch: receipts are this token's own
+              writes and a read grant has none (gbrain refuses the listing). */}
+          <WriteReceiptsSection
+            sourceId={sourceFilter || undefined}
+            readOnly={currentProfile()?.readOnly === true}
+            onOpenPage={(ref) => void openPage(ref)}
+          />
           <div className="list-tools">
             <span className="muted">
               {t("pages.listCaption")} · {filterTotal ?? rowsCount}
             </span>
+            <input
+              type="search"
+              className="text-filter mono"
+              value={slugInput}
+              onChange={(e) => setSlugInput(e.target.value)}
+              placeholder={t("pages.slugPlaceholder")}
+              aria-label={t("pages.filterBySlug")}
+              maxLength={120}
+            />
+            <input
+              type="search"
+              className="text-filter"
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              placeholder={t("pages.tagPlaceholder")}
+              aria-label={t("pages.filterByTag")}
+              maxLength={64}
+            />
             {((sources ?? []).length > 0 || sourceFilter !== "") && (
               <select
                 className="source-filter"
@@ -438,6 +489,33 @@ export function Pages({
                   label={t("pages.updated")}
                   value={(bundle.page.updated_at ?? "").replace("T", " ").slice(0, 19)}
                 />
+                {Array.isArray(bundle.page.tags) && bundle.page.tags.length > 0 && (
+                  <div className="kv-row">
+                    <dt>{t("pages.tags")}</dt>
+                    <dd className="tag-set">
+                      {bundle.page.tags.map((tag) => (
+                        <Tag key={String(tag)} variant="term">
+                          {String(tag)}
+                        </Tag>
+                      ))}
+                    </dd>
+                  </div>
+                )}
+                {typeof bundle.page.origin === "string" && bundle.page.origin && (
+                  <Row label={t("pages.origin")} value={bundle.page.origin} />
+                )}
+                {typeof bundle.page.created_at === "string" && bundle.page.created_at && (
+                  <Row
+                    label={t("pages.createdAt")}
+                    value={bundle.page.created_at.replace("T", " ").slice(0, 19)}
+                  />
+                )}
+                {typeof bundle.page.source_path === "string" && bundle.page.source_path && (
+                  <Row label={t("pages.sourceFile")} value={bundle.page.source_path} />
+                )}
+                {typeof bundle.page.quoted === "string" && bundle.page.quoted && (
+                  <Row label={t("pages.quoted")} value={bundle.page.quoted} />
+                )}
                 {bundle.page.trust_tier !== undefined && (
                   <Row label={t("pages.trust")} value={String(bundle.page.trust_tier)} />
                 )}
@@ -469,10 +547,23 @@ export function Pages({
               )}
 
               {editor.mode === "idle" && (
-                <PageBody
-                  className="page-content"
-                  content={bundle.page.content ?? ""}
-                />
+                <>
+                  <PageRelations
+                    links={bundle.links}
+                    backlinks={bundle.backlinks}
+                    degraded={bundle.degraded}
+                    onOpenPage={(ref) => void openPage(ref)}
+                  />
+                  <PageTimelineSection
+                    timeline={bundle.timeline}
+                    degraded={bundle.degraded}
+                  />
+                  <PageVersionsSection versions={bundle.versions} />
+                  <PageBody
+                    className="page-content"
+                    content={bundle.page.content ?? ""}
+                  />
+                </>
               )}
 
               {editor.mode === "editing" && (
