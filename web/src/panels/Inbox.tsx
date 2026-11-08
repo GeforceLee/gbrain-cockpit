@@ -14,8 +14,11 @@ import type {
   AdjudicationAction,
   ContradictionProposal,
   EdgeProposal,
+  ExtractionStub,
   InboxReport,
+  TakeItem,
   TakeProposal,
+  TakeQuality,
   TakeQueueCommands,
   TrustReviewItem,
 } from "@gbrain-cockpit/shared";
@@ -31,6 +34,7 @@ import { VerdictHistory } from "../components/VerdictHistory";
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { copyCommandText } from "../lib/clipboard";
 import { ApiError, apiGet, apiSend } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 import { currentProfile } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { isSlugLike, useSlugSiblings, type PageRef } from "../lib/pages";
@@ -52,6 +56,8 @@ type QueueId =
   | "edges"
   | "takes"
   | "contradictions"
+  | "extraction"
+  | "judgments"
   | "others";
 type TabId = "all" | Exclude<QueueId, "others">;
 
@@ -127,6 +133,32 @@ function safeRef(ref: string | undefined): string {
   return ref && TRUST_REF_RE.test(ref) ? ref : "?";
 }
 
+/** the "see on the graph" affordance — rendered wherever a document card has
+ *  a resolvable target (the cross-panel reverse edge into Nebula). */
+function GraphJumpButton({
+  entry,
+  onGraph,
+  t,
+}: {
+  entry: Entry;
+  onGraph?: (ref: PageRef) => void;
+  t: (k: MessageKey) => string;
+}) {
+  const src = stringField(entry.item, "source_id");
+  if (!onGraph || !isSlugLike(entry.target)) return null;
+  return (
+    <button
+      type="button"
+      className="linkish small"
+      onClick={() =>
+        onGraph({ slug: entry.target!, ...(src ? { sourceId: src } : {}) })
+      }
+    >
+      {t("pages.inGraph")}
+    </button>
+  );
+}
+
 /** numeric ids only (edge-proposal / take ids). */
 function safeId(id: string | undefined): string {
   return id && /^\d{1,18}$/.test(id) ? id : "?";
@@ -167,11 +199,14 @@ function ownerSafeCommand(
 export function Inbox({
   active,
   onOpenPage,
+  onOpenGraph,
   onTotal,
 }: {
   /** keep-alive: true while this panel is the visible one */
   active?: boolean;
   onOpenPage?: (ref: PageRef) => void;
+  /** "see on the graph" — the cross-panel reverse edge */
+  onOpenGraph?: (ref: PageRef) => void;
   /** sidebar count chip — reported after every fetch, no extra request */
   onTotal?: (total: number) => void;
 }) {
@@ -250,6 +285,8 @@ export function Inbox({
   const edges = report?.edgeProposals.items ?? [];
   const takes = report?.takes.items ?? [];
   const decideProposals = report?.contradictions.items ?? [];
+  const extractionStubs = report?.extraction.items ?? [];
+  const activeTakes = report?.activeTakes.items ?? [];
 
   const queueCounts: Record<QueueId, number> = {
     proposals: proposals.length,
@@ -258,6 +295,8 @@ export function Inbox({
     edges: edges.length,
     takes: takes.length,
     contradictions: dpTrustItems.length + decideProposals.length,
+    extraction: extractionStubs.length,
+    judgments: activeTakes.filter((x) => !x.resolved_outcome).length,
     others: others.length,
   };
 
@@ -279,6 +318,12 @@ export function Inbox({
       : {}),
     ...(report && report.contradictions.status !== "ok"
       ? { contradictions: firstLine(report.contradictions.error) }
+      : {}),
+    ...(report && report.extraction.status !== "ok"
+      ? { extraction: firstLine(report.extraction.error) }
+      : {}),
+    ...(report && report.activeTakes.status !== "ok"
+      ? { judgments: firstLine(report.activeTakes.error) }
       : {}),
   };
   const downNotices = (tabId: TabId): string[] =>
@@ -413,6 +458,63 @@ export function Inbox({
     };
   }
 
+  /** entity-stub entry (read-only lane — shapes are defensive until a real
+   *  brain carries stubs; the fields below are upstream's documented ones) */
+  function extractionEntry(stub: ExtractionStub): Entry {
+    const slug =
+      stringField(stub, "slug") ?? stringField(stub, "page_slug") ?? "?";
+    const name =
+      stringField(stub, "name") ?? stringField(stub, "title") ?? slug;
+    return {
+      key: `stub-${slug}-${name}`,
+      queueId: "extraction",
+      ref: "•",
+      refClass: "",
+      title: name,
+      sub: stringField(stub, "type") ?? stringField(stub, "kind"),
+      target: slug,
+      ...(stringField(stub, "source_id")
+        ? { sourceId: stringField(stub, "source_id") }
+        : {}),
+      tags: [{ variant: "soft", text: t("inbox.queue.extraction") }],
+      srcLines: [slug].filter(Boolean),
+      item: stub,
+    };
+  }
+
+  /** ACTIVE take awaiting judgment — the propose→accept→witness→resolve loop. */
+  function judgmentEntry(take: TakeItem): Entry {
+    const slug = take.ref ?? stringField(take, "page_slug") ?? "?";
+    const row = typeof take.row_num === "number" ? take.row_num : undefined;
+    const id = typeof take.id === "number" ? take.id : row;
+    return {
+      key: `judge-${slug}-${row ?? id ?? take.claim?.slice(0, 24)}`,
+      queueId: "judgments",
+      ref: row !== undefined ? `r${row}` : id !== undefined ? `#${id}` : "take",
+      refClass: "",
+      title: take.claim ?? slug,
+      sub: take.kind,
+      target: stringField(take, "page_slug") ?? slug,
+      ...(stringField(take, "source_id")
+        ? { sourceId: stringField(take, "source_id") }
+        : {}),
+      tags: [
+        { variant: "soft", text: t("inbox.queue.judgments") },
+        ...(take.holder
+          ? [{ variant: "warn" as TagVariant, text: take.holder }]
+          : []),
+        ...(take.resolved_outcome
+          ? [{ variant: "plain" as TagVariant, text: String(take.resolved_outcome) }]
+          : []),
+      ],
+      srcLines: [
+        stringField(take, "page_slug") ?? slug,
+        stringField(take, "since_date") ?? "",
+      ].filter(Boolean),
+      item: take,
+    };
+  }
+
   const allEntries: Entry[] = [
     ...proposals.map((i) => trustEntry("proposals", i)),
     ...heldWrites.map((i) => trustEntry("held", i)),
@@ -421,6 +523,8 @@ export function Inbox({
     ...takes.map(takeEntry),
     ...dpTrustItems.map((i) => trustEntry("contradictions", i)),
     ...decideProposals.map(contradictionEntry),
+    ...extractionStubs.map(extractionEntry),
+    ...activeTakes.map(judgmentEntry),
     ...others.map((i) => trustEntry("others", i)),
   ];
   /** inbox source filter: null = all sources (observed ids are the options —
@@ -496,8 +600,17 @@ export function Inbox({
     try {
       await apiSend(path, "POST", body);
       appendAudit(`${auditText} -> OK`, meta);
+      // cross-panel freshness: Nebula's pending overlay listens for this
+      window.dispatchEvent(new CustomEvent("cockpit:verdict"));
       if (stampState) setStamp(stampState);
       await refresh();
+      // pipeline feel: after a stamped verdict the desk advances to the NEXT
+      // item on its own — the stamp stays visible on the fresh selection
+      if (stampState && detail) {
+        const idx = visibleEntries.findIndex((e) => e.key === detail.key);
+        const next = idx >= 0 ? visibleEntries[idx + 1] : undefined;
+        if (next) setDetail(next); // NOT select(): the stamp must survive
+      }
       return true;
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : String(err);
@@ -507,15 +620,40 @@ export function Inbox({
     }
   }
 
+  // j/k walk the visible queue (the terminal mail-client feel; inert while
+  // typing, like the ⌘⌫/⌘↵ affordances in the rail)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "j" && e.key !== "k") return;
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target !== null &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
+      if (typing || visibleEntries.length === 0) return;
+      e.preventDefault();
+      const idx = detail ? visibleEntries.findIndex((e) => e.key === detail.key) : -1;
+      const next =
+        e.key === "j"
+          ? visibleEntries[Math.min(idx + 1, visibleEntries.length - 1)]!
+          : visibleEntries[Math.max(idx - 1, 0)]!;
+      select(next);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   function select(entry: Entry) {
     setDetail(entry);
     setStamp(null);
   }
 
-  // Page-level batch reject (takes tab, CLI one-key channel ONLY — terminal-
-  // confirmation actions are never batched, style-review hard constraint).
-  // Sequential sends with per-item audit lines; stops at the first failure so
-  // the audit trail always tells the truth about how far it got.
+  // Page-level batch reject (takes/edges tabs, CLI one-key channel ONLY —
+  // terminal-confirmation actions are never batched, style-review hard
+  // constraint). Sequential sends with per-item audit lines; stops at the
+  // first failure so the audit trail always tells the truth about how far it
+  // got.
   async function batchRejectPage(items: Entry[]) {
     if (batchBusy) return;
     setBatchBusy(true);
@@ -523,28 +661,40 @@ export function Inbox({
     setActionError(null);
     let done = 0;
     for (const entry of items) {
+      const isTake = entry.queueId === "takes";
       const take = entry.item as TakeProposal;
+      const edgeId = String((entry.item as EdgeProposal).id ?? "");
+      const auditRef = isTake ? String(take.id) : edgeId;
+      const auditLabel = (
+        isTake ? take.claim_text : entry.title
+      ).slice(0, 80);
       try {
-        await apiSend("/api/inbox/takes/propose", "POST", {
-          op: "reject",
-          id: String(take.id),
-        });
-        appendAudit(`takes.propose.reject ${take.id} -> OK`, {
-          ref: String(take.id),
-          label: take.claim_text.slice(0, 80),
+        await apiSend(
+          isTake ? "/api/inbox/takes/propose" : "/api/inbox/edge",
+          "POST",
+          isTake
+            ? { op: "reject", id: String(take.id) }
+            : { op: "reject", id: edgeId },
+        );
+        appendAudit(`${isTake ? "takes.propose" : "edge"}.reject ${auditRef} -> OK`, {
+          ref: auditRef,
+          label: auditLabel,
           verdict: "stop",
           verdictText: t("verdict.rejected"),
         });
         done++;
       } catch (err) {
         const msg = err instanceof ApiError ? err.message : String(err);
-        appendAudit(`takes.propose.reject ${take.id} -> ERR ${firstLine(msg)}`);
+        appendAudit(`${isTake ? "takes.propose" : "edge"}.reject ${auditRef} -> ERR ${firstLine(msg)}`);
         setActionError(msg);
         break;
       }
     }
     setBatchBusy(false);
-    if (done > 0) await refresh();
+    if (done > 0) {
+      window.dispatchEvent(new CustomEvent("cockpit:verdict"));
+      await refresh();
+    }
   }
 
   const tabs: { id: TabId; label: string; n: number }[] = [
@@ -559,6 +709,12 @@ export function Inbox({
       label: t("inbox.queue.contradictions"),
       n: queueCounts.contradictions,
     },
+    {
+      id: "extraction",
+      label: t("inbox.queue.extraction"),
+      n: queueCounts.extraction,
+    },
+    { id: "judgments", label: t("inbox.queue.judgments"), n: queueCounts.judgments },
   ];
 
   return (
@@ -626,12 +782,12 @@ export function Inbox({
 
       {error && (
         <p className="error inbox-error">
-          {t("common.errorLabel")}: {firstLine(error)}
+          {t("common.errorLabel")}: {errorMessage(error, t)}
         </p>
       )}
       {actionError && (
         <p className="error inbox-error" role="alert">
-          {t("common.errorLabel")}: {firstLine(actionError)}
+          {t("common.errorLabel")}: {errorMessage(actionError, t)}
         </p>
       )}
       {!report && !error && <p className="muted inbox-error">{t("common.loading")}</p>}
@@ -659,7 +815,9 @@ export function Inbox({
                   ))}
                 </select>
               ) : null}
-              {tab === "takes" && cliAvailable && pagedEntries.length > 0 && (
+              {(tab === "takes" || tab === "edges") &&
+                cliAvailable &&
+                pagedEntries.length > 0 && (
                 <button
                   type="button"
                   className={batchArmed ? "batch-arm" : ""}
@@ -707,6 +865,24 @@ export function Inbox({
               </p>
             )}
             {tab === "contradictions" && <ContradictionProbeNote report={report} />}
+            {tab === "takes" &&
+              report?.takes.failed?.status === "ok" &&
+              (report.takes.failed.items?.length ?? 0) > 0 && (
+                <p className="muted empty-note">
+                  {t("inbox.failedNote").replace(
+                    "{n}",
+                    String(report.takes.failed.items!.length),
+                  )}
+                </p>
+              )}
+            {tab === "extraction" && report && (
+              <p className="muted empty-note">
+                {t("inbox.extraction.unattributed")}:{" "}
+                {report.extraction.unattributedCount ?? 0} ·{" "}
+                {t("inbox.extraction.duplicates")}:{" "}
+                {report.extraction.duplicatesCount ?? 0}
+              </p>
+            )}
             {visibleEntries.length === 0 && downNotices(tab).length === 0 && (
               <p className="muted empty-note">{t("inbox.empty")}</p>
             )}
@@ -760,7 +936,7 @@ export function Inbox({
               <>
                 <div className="doc-layout">
                   <div className={`document ${stamp ? "shake" : ""}`}>
-                    <DocumentCard entry={detail} onPeek={setPeek} />
+                    <DocumentCard entry={detail} onPeek={setPeek} onGraph={onOpenGraph} />
                     {stamp ? (
                       <div className={`big-stamp ${stamp.variant}`}>
                         <span className="zh">{stamp.zh}</span>
@@ -829,15 +1005,26 @@ function ContradictionProbeNote({ report }: { report: InboxReport }) {
 function DocumentCard({
   entry,
   onPeek,
+  onGraph,
 }: {
   entry: Entry;
   /** open a page reference in the shared in-place drawer (never a jump) */
   onPeek?: (ref: PageRef) => void;
+  /** "see on the graph" — the cross-panel reverse edge */
+  onGraph?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
   const item = entry.item;
 
   if (entry.queueId === "edges") {
+    // human-readable first, raw as the fallback record (支柱二: the raw JSON
+    // dump was the lane's readability hole; known-looking fields render
+    // structured, everything else stays one fold away)
+    const from = stringField(item, "from_slug") ?? stringField(item, "from") ?? "?";
+    const to = stringField(item, "to_slug") ?? stringField(item, "to") ?? "?";
+    const rel = stringField(item, "link_type") ?? stringField(item, "relation") ?? "—";
+    const date = stringField(item, "since_date") ?? stringField(item, "date");
+    const context = stringField(item, "context");
     return (
       <>
         <div className="doc-head">
@@ -865,6 +1052,138 @@ function DocumentCard({
             ) : (
               <b>{entry.target ?? "—"}</b>
             )}
+            <GraphJumpButton entry={entry} onGraph={onGraph} t={t} />
+          </div>
+        </div>
+        <div className="meta3">
+          <div>
+            <p className="k">from</p>
+            <p className="v mono">{from}</p>
+          </div>
+          <div>
+            <p className="k">to</p>
+            <p className="v mono">{to}</p>
+          </div>
+          <div>
+            <p className="k">{t("inbox.doc.kind")}</p>
+            <p className="v">{rel}</p>
+            {date ? <p className="s mono">{date}</p> : null}
+          </div>
+        </div>
+        {context && (
+          <>
+            <p className="cap">{t("search.evidence")}</p>
+            <p className="doc-body">{context.slice(0, 500)}</p>
+          </>
+        )}
+        <details className="detail-block">
+          <summary className="cap">{t("inbox.doc.raw")}</summary>
+          <pre className="doc-raw">{JSON.stringify(item, null, 2)}</pre>
+        </details>
+      </>
+    );
+  }
+
+  if (entry.queueId === "judgments") {
+    const take = item as TakeItem;
+    const row = typeof take.row_num === "number" ? take.row_num : undefined;
+    const resolved = take.resolved_outcome;
+    return (
+      <>
+        <div className="doc-head">
+          <div>
+            <h2>{take.claim ?? entry.title}</h2>
+            <p className="refline mono">
+              {entry.ref} · {t("inbox.queue.judgments")}
+              {resolved ? ` · ${t("inbox.judge.resolved")}: ${String(resolved)}` : ""}
+            </p>
+          </div>
+          <div className="to">
+            <div className="mono to-cap">{t("inbox.doc.sourcePage")}</div>
+            {onPeek && isSlugLike(entry.target) ? (
+              <button
+                type="button"
+                className="linkish to-link"
+                onClick={() =>
+                  onPeek({
+                    slug: entry.target!,
+                    ...(stringField(item, "source_id")
+                      ? { sourceId: stringField(item, "source_id") }
+                      : {}),
+                  })
+                }
+              >
+                {entry.target}
+              </button>
+            ) : (
+              <b>{entry.target ?? "—"}</b>
+            )}
+            <GraphJumpButton entry={entry} onGraph={onGraph} t={t} />
+          </div>
+        </div>
+        <div className="meta3">
+          <div>
+            <p className="k">{t("inbox.doc.kind")}</p>
+            <p className="v">{take.kind ?? "?"}</p>
+          </div>
+          <div>
+            <p className="k">{t("inbox.doc.holder")}</p>
+            <p className="v">{take.holder ?? "?"}</p>
+          </div>
+          <div>
+            <p className="k">{t("inbox.doc.weightDomain")}</p>
+            <p className="v">{typeof take.weight === "number" ? take.weight : "?"}</p>
+            <p className="s">{stringField(item, "since_date") ?? "—"}</p>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  if (entry.queueId === "extraction") {
+    const stub = item as ExtractionStub;
+    return (
+      <>
+        <div className="doc-head">
+          <div>
+            <h2>{entry.title}</h2>
+            <p className="refline mono">• {t("inbox.queue.extraction")}</p>
+          </div>
+          <div className="to">
+            <div className="mono to-cap">{t("inbox.doc.target")}</div>
+            {onPeek && isSlugLike(entry.target) ? (
+              <button
+                type="button"
+                className="linkish to-link"
+                onClick={() =>
+                  onPeek({
+                    slug: entry.target!,
+                    ...(stringField(item, "source_id")
+                      ? { sourceId: stringField(item, "source_id") }
+                      : {}),
+                  })
+                }
+              >
+                {entry.target}
+              </button>
+            ) : (
+              <b>{entry.target ?? "—"}</b>
+            )}
+            <GraphJumpButton entry={entry} onGraph={onGraph} t={t} />
+          </div>
+        </div>
+        <div className="meta3">
+          <div>
+            <p className="k">{t("inbox.doc.kind")}</p>
+            <p className="v">{entry.sub ?? "?"}</p>
+          </div>
+          <div>
+            <p className="k">{t("inbox.extraction.unattributed")}</p>
+            <p className="v">—</p>
+          </div>
+          <div>
+            <p className="k">{t("inbox.extraction.duplicates")}</p>
+            <p className="v">—</p>
           </div>
         </div>
         <p className="cap">{t("inbox.doc.raw")}</p>
@@ -900,6 +1219,7 @@ function DocumentCard({
             ) : (
               <b>{take.page_slug}</b>
             )}
+            <GraphJumpButton entry={entry} onGraph={onGraph} t={t} />
             <div className="mono to-cap">take #{take.id}</div>
           </div>
         </div>
@@ -1023,6 +1343,7 @@ function DocumentCard({
           ) : (
             <b>{entry.target ?? t("inbox.doc.unknownTarget")}</b>
           )}
+          <GraphJumpButton entry={entry} onGraph={onGraph} t={t} />
           {revision ? <div className="mono to-cap">rev {revision}</div> : null}
         </div>
       </div>
@@ -1098,6 +1419,9 @@ function DecisionRail({
 }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  // the edge-lifecycle date input (persists across selections — an accidental
+  // re-type is cheaper than losing a carefully-picked date)
+  const [edgeDate, setEdgeDate] = useState("");
 
   // The single runtime source of truth for which channel an action travels
   // (shared/ADJUDICATION_CHANNELS) — the check card renders FROM the matrix,
@@ -1325,6 +1649,48 @@ function DecisionRail({
                 metaFor("stop", t("verdict.rejected"), `edge #${id}`),
               )),
           )}
+          {/* date/undo complete the edge lifecycle (whitelisted all along) */}
+          <div className="edge-extras">
+            <input
+              type="date"
+              className="edge-date"
+              aria-label={t("inbox.edgeDate")}
+              value={edgeDate}
+              onChange={(e) => setEdgeDate(e.target.value)}
+            />
+            <button
+              type="button"
+              className="small"
+              disabled={!edgeDate}
+              onClick={() =>
+                void act(
+                  "/api/inbox/edge",
+                  { op: "date", id, date: edgeDate },
+                  `edge.date ${id} ${edgeDate}`,
+                  undefined,
+                  metaFor("ok", t("inbox.edgeDateApply"), `edge #${id}`),
+                )
+              }
+            >
+              {t("inbox.edgeDateApply")}
+            </button>
+            <button
+              type="button"
+              className="small"
+              title={t("inbox.edgeUndo")}
+              onClick={() =>
+                void act(
+                  "/api/inbox/edge",
+                  { op: "undo", id },
+                  `edge.undo ${id}`,
+                  undefined,
+                  metaFor("ok", t("inbox.edgeUndo"), `edge #${id}`),
+                )
+              }
+            >
+              ↩ {t("inbox.edgeUndo")}
+            </button>
+          </div>
         </>
       ) : (
         <CopyCommand
@@ -1418,6 +1784,73 @@ function DecisionRail({
           channel: ch("takes.propose.reject"),
           verdict: cliAvailable ? "yes" : "na",
           note: cliAvailable ? t("channel.onekey") : t("channel.degraded"),
+        },
+        { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
+      ];
+      break;
+    }
+    case "judgments": {
+      // the four-verdict stamp set (FEATURES §4.1's promise, finally true):
+      // takes_resolve over MCP, one key per verdict, resolver stamped mcp:<client>
+      const take = entry.item as TakeItem;
+      const slug = stringField(take, "page_slug") ?? take.ref ?? "?";
+      const row = typeof take.row_num === "number" ? take.row_num : undefined;
+      const resolved = Boolean(take.resolved_outcome);
+      const stampFor = (quality: TakeQuality, zhKey: MessageKey) =>
+        stampOk(zhKey, "stamp.en.accept", t("inbox.judge.via"), () =>
+          act(
+            "/api/inbox/takes/resolve",
+            { slug, row, quality },
+            `takes.resolve ${slug}#${row} ${quality}`,
+            {
+              variant: "ok",
+              zh: t(zhKey),
+              en: quality,
+            },
+            metaFor("ok", t(zhKey), `${slug}#${row ?? "?"}`),
+          ),
+        );
+      rail = row !== undefined && !resolved ? (
+        <>
+          {stampFor("correct", "inbox.judge.correct")}
+          {stampFor("incorrect", "inbox.judge.incorrect")}
+          {stampFor("partial", "inbox.judge.partial")}
+          {stampFor("unresolvable", "inbox.judge.unresolvable")}
+        </>
+      ) : (
+        <p className="confirm-readonly">
+          {resolved
+            ? `${t("inbox.judge.resolved")}: ${String(take.resolved_outcome)}`
+            : t("inbox.queue.judgmentsDesc")}
+        </p>
+      );
+      rows = [
+        {
+          label: t("inbox.judge.correct"),
+          channel: ch("takes.resolve"),
+          verdict: "yes",
+          note: t("inbox.judge.via"),
+        },
+        {
+          label: t("inbox.judge.incorrect"),
+          channel: ch("takes.resolve"),
+          verdict: "yes",
+          note: t("inbox.judge.via"),
+        },
+        { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
+      ];
+      break;
+    }
+    case "extraction": {
+      // read-only lane: extraction_review is owner-token-only upstream — the
+      // rail explains instead of offering an action it cannot take
+      rail = <p className="confirm-readonly">{t("inbox.extraction.readonly")}</p>;
+      rows = [
+        {
+          label: t("channel.row.explain"),
+          channel: "copy-command",
+          verdict: "na",
+          note: t("channel.terminal"),
         },
         { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
       ];

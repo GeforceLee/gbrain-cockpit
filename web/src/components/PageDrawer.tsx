@@ -16,6 +16,7 @@ export function PageDrawer({
   page,
   onClose,
   onEdit,
+  onShowGraph,
   /** other same-slug pages found in other sources (bare-slug disambiguation) */
   siblings,
   onOpenSibling,
@@ -24,6 +25,8 @@ export function PageDrawer({
   onClose: () => void;
   /** "edit in Pages →" — the panel's own openPage (a deliberate jump) */
   onEdit?: (ref: PageRef) => void;
+  /** "see on the graph" — the cross-panel reverse edge into Nebula */
+  onShowGraph?: (ref: PageRef) => void;
   /**
    * Sibling pages sharing this slug in OTHER sources, when known. Upstream
    * resolves a bare slug SILENTLY (source_id ASC LIMIT 1) — cockpit converts
@@ -162,15 +165,26 @@ export function PageDrawer({
             <PageBody className="drawer-content" content={shown.content ?? ""} />
           )}
         </div>
-        {onEdit && (
+        {(onEdit || onShowGraph) && (
           <div className="drawer-actions">
-            <button
-              type="button"
-              className="linkish"
-              onClick={() => onEdit(page)}
-            >
-              {t("viewer.edit")}
-            </button>
+            {onEdit && (
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => onEdit(page)}
+              >
+                {t("viewer.edit")}
+              </button>
+            )}
+            {onShowGraph && (
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => onShowGraph(page)}
+              >
+                {t("viewer.graph")}
+              </button>
+            )}
           </div>
         )}
       </div>

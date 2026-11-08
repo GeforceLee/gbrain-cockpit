@@ -4,12 +4,14 @@ import type {
   PageVersion,
   TimelineEntry,
   WriteConflictsReport,
+  WriteReceipt,
   WriteRequestsReport,
 } from "@gbrain-cockpit/shared";
-import { ApiError, apiGet } from "../lib/api";
+import { ApiError, apiGet, apiSend } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { relationCount, type PageRef } from "../lib/pages";
 import { firstLine, plainExcerpt } from "../lib/text";
+import { appendAudit } from "../lib/auditLog";
 import { edgeTypeColor } from "../design/tokens";
 
 // V1.1 dimensions & provenance — the detail-side sections the Pages panel
@@ -304,6 +306,27 @@ export function WriteReceiptsSection({
   const [conflicts, setConflicts] = useState<WriteConflictsReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // per-row cancel feedback (cancel_write_request: own token, pre-publish)
+  const [cancelled, setCancelled] = useState<Record<string, string>>({});
+
+  async function cancelWrite(requestId: string) {
+    try {
+      const receipt = await apiSend<WriteReceipt>("/api/write-cancel", "POST", {
+        request_id: requestId,
+      });
+      setCancelled((prev) => ({
+        ...prev,
+        [requestId]: String(receipt.status ?? "?"),
+      }));
+      appendAudit(`write.cancel ${requestId.slice(0, 8)} -> ${receipt.status}`);
+      void fetchAll();
+    } catch (err) {
+      setCancelled((prev) => ({
+        ...prev,
+        [requestId]: err instanceof ApiError ? err.message : String(err),
+      }));
+    }
+  }
 
   const fetchAll = useCallback(async () => {
     setBusy(true);
@@ -392,33 +415,53 @@ export function WriteReceiptsSection({
             <p className="muted small">{t("pages.receiptsEmpty")}</p>
           ) : (
             <ul className="receipts-list">
-              {reqItems.map((r, i) => (
-                <li key={String(r.request_id ?? i)} className="mono small">
-                  <span className={`tag ${receiptTagClass(r.status)}`}>
-                    {String(r.status ?? "?")}
-                  </span>
-                  <span className="mono">{String(r.request_id ?? "?").slice(0, 8)}</span>
-                  {typeof r.slug === "string" && r.slug ? (
-                    <button
-                      type="button"
-                      className="linkish mono"
-                      onClick={() =>
-                        onOpenPage({
-                          slug: r.slug!,
-                          ...(typeof r.source_id === "string" && r.source_id
-                            ? { sourceId: r.source_id }
-                            : {}),
-                        })
-                      }
-                    >
-                      {r.slug}
-                    </button>
-                  ) : null}
-                  <span className="muted">
-                    {typeof r.created_at === "string" ? r.created_at.slice(0, 19) : ""}
-                  </span>
-                </li>
-              ))}
+              {reqItems.map((r, i) => {
+                const rid = String(r.request_id ?? i);
+                const cancellable =
+                  r.status === "queued" ||
+                  r.status === "running" ||
+                  r.status === "pending";
+                return (
+                  <li key={rid} className="mono small">
+                    <span className={`tag ${receiptTagClass(r.status)}`}>
+                      {String(r.status ?? "?")}
+                    </span>
+                    <span className="mono">{String(r.request_id ?? "?").slice(0, 8)}</span>
+                    {typeof r.slug === "string" && r.slug ? (
+                      <button
+                        type="button"
+                        className="linkish mono"
+                        onClick={() =>
+                          onOpenPage({
+                            slug: r.slug!,
+                            ...(typeof r.source_id === "string" && r.source_id
+                              ? { sourceId: r.source_id }
+                              : {}),
+                          })
+                        }
+                      >
+                        {r.slug}
+                      </button>
+                    ) : null}
+                    <span className="muted">
+                      {typeof r.created_at === "string" ? r.created_at.slice(0, 19) : ""}
+                    </span>
+                    {cancellable && (
+                      <button
+                        type="button"
+                        className="linkish small"
+                        title={t("pages.cancelWrite")}
+                        onClick={() => void cancelWrite(rid)}
+                      >
+                        ✕ {t("pages.cancelWrite")}
+                      </button>
+                    )}
+                    {cancelled[rid] && (
+                      <span className="muted">→ {cancelled[rid]}</span>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </>

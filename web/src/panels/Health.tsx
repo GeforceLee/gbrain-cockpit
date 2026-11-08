@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
+  AnomaliesReport,
+  BrainHealthReport,
   CheckStatus,
   HealthReport,
   SourcesStatusReport,
@@ -34,6 +36,10 @@ export function Health() {
   const [sourcesStatus, setSourcesStatus] = useState<SourcesStatusReport | null>(
     null,
   );
+  // 0.3.0: gbrain's own health bands + notices, and find_anomalies — same
+  // refresh, same fails-soft contract as the sources card
+  const [brainHealth, setBrainHealth] = useState<BrainHealthReport | null>(null);
+  const [anomalies, setAnomalies] = useState<AnomaliesReport | null>(null);
 
   // probe is dependency-free so switching language (which swaps `t`) does not
   // re-fire the fetch effect; the error is stored raw and translated at render.
@@ -55,6 +61,12 @@ export function Health() {
     apiGet<SourcesStatusReport>("/api/sources/status")
       .then(setSourcesStatus)
       .catch(() => setSourcesStatus(null));
+    apiGet<BrainHealthReport>("/api/brain-health")
+      .then(setBrainHealth)
+      .catch(() => setBrainHealth(null));
+    apiGet<AnomaliesReport>("/api/anomalies")
+      .then(setAnomalies)
+      .catch(() => setAnomalies(null));
   }, []);
 
   useEffect(() => {
@@ -263,6 +275,69 @@ export function Health() {
                   <p className="muted small">{t("health.sourcesEmpty")}</p>
                 )}
               </>
+            )}
+          </div>
+
+          <div className="hcard span4">
+            <p className="cap" title={t("health.brainHealthDesc")}>
+              {t("health.brainHealth")}
+            </p>
+            {!brainHealth || brainHealth.status !== "ok" ? (
+              <p className="muted small">{t("health.sourcesUnavailable")}</p>
+            ) : (
+              <>
+                <dl className="kv">
+                  {(
+                    [
+                      ["capacity", t("health.capacity")],
+                      ["write_failures", t("health.writeFailures")],
+                      ["ghost_pages", t("health.ghostPages")],
+                      ["unsearchable", t("health.unsearchable")],
+                      ["sync_blocked", t("health.syncBlocked")],
+                    ] as const
+                  ).map(([k, label]) => {
+                    const band = (
+                      brainHealth.health as Record<string, unknown> | undefined
+                    )?.[k];
+                    const text =
+                      band !== null && typeof band === "object"
+                        ? String(
+                            (band as Record<string, unknown>).band ??
+                              (band as Record<string, unknown>).status ??
+                              "?",
+                          )
+                        : String(band ?? "—");
+                    return <Row key={k} label={label} value={text} />;
+                  })}
+                </dl>
+                {(brainHealth.notices ?? []).length > 0 && (
+                  <details className="detail-block">
+                    <summary className="cap">
+                      {t("health.notices")} · {brainHealth.notices!.length}
+                    </summary>
+                    {brainHealth.notices!.map((n, i) => (
+                      <p key={i} className="muted small">
+                        {n.slice(0, 240)}
+                      </p>
+                    ))}
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="hcard span4">
+            <p className="cap" title={t("health.anomaliesDesc")}>
+              {t("health.anomalies")}
+            </p>
+            {!anomalies || anomalies.status !== "ok" ? (
+              <p className="muted small">{t("health.sourcesUnavailable")}</p>
+            ) : (anomalies.items ?? []).length === 0 ? (
+              <p className="muted small">{t("health.anomaliesEmpty")}</p>
+            ) : (
+              <pre className="mono small">
+                {JSON.stringify(anomalies.items, null, 2).slice(0, 800)}
+              </pre>
             )}
           </div>
 

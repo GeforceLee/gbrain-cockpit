@@ -1652,3 +1652,57 @@ button.batch-arm {
   max-height: 260px;
   overflow-y: auto;
 }
+
+/* --- 0.3.0 additions ------------------------------------------------------- */
+
+/* search dual-entry mode toggle (literal | semantic) */
+.mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--ink-15);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.mode-toggle button {
+  border: 0;
+  background: transparent;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--ink-60);
+}
+.mode-toggle button.on {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* fuzzy slug jump chips above search results */
+.direct-slugs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 6px 0 0;
+}
+.direct-slugs .slug-jump {
+  display: inline-flex;
+  gap: 2px;
+  align-items: baseline;
+}
+
+/* edge lifecycle extras (date + undo) in the decision rail */
+.edge-extras {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.edge-extras input[type="date"] {
+  padding: 4px 6px;
+  border: 1px solid var(--ink-15);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+}

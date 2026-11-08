@@ -40,6 +40,10 @@ function App() {
   // camera survive every switch — leaving a panel never resets it
   const [visited, setVisited] = useState<readonly PanelId[]>([DEFAULT_PANEL]);
   const [focusPage, setFocusPage] = useState<PageRef | null>(null);
+  // cross-panel graph jump: any surface's "see on the graph" lands here and
+  // Nebula consumes it (selects the node + focus view) — the reverse edge of
+  // the one-way star topology where everything jumped to Pages
+  const [nebulaFocus, setNebulaFocus] = useState<PageRef | null>(null);
   const [searchSeed, setSearchSeed] = useState<string | null>(null);
   const [tokenReady, setTokenReady] = useState(() => !!getToken());
   // Pending-item count for the sidebar chip — reported by the Inbox panel
@@ -65,6 +69,7 @@ function App() {
     if (!brain.loaded) return;
     setInboxTotal(null);
     setFocusPage(null);
+    setNebulaFocus(null);
     setSearchSeed(null);
     clearAudit();
   }, [profileId, brain.loaded]);
@@ -115,6 +120,14 @@ function App() {
   );
   const consumeFocus = useCallback(() => setFocusPage(null), []);
   const consumeSeed = useCallback(() => setSearchSeed(null), []);
+  const openInGraph = useCallback(
+    (ref: PageRef) => {
+      setNebulaFocus(ref);
+      show("nebula");
+    },
+    [show],
+  );
+  const consumeNebulaFocus = useCallback(() => setNebulaFocus(null), []);
 
   function submitSearch() {
     const value = query.trim();
@@ -327,20 +340,31 @@ function App() {
                       <Inbox
                         active={panelId === "inbox"}
                         onOpenPage={openPage}
+                        onOpenGraph={openInGraph}
                         onTotal={setInboxTotal}
                       />
                     ) : null}
                     {id === "nebula" && visited.includes(id) ? (
-                      <Nebula active={panelId === "nebula"} onOpenPage={openPage} />
+                      <Nebula
+                        active={panelId === "nebula"}
+                        onOpenPage={openPage}
+                        focusPage={nebulaFocus}
+                        onConsumeFocus={consumeNebulaFocus}
+                      />
                     ) : null}
                     {id === "pages" && visited.includes(id) ? (
-                      <Pages focusPage={focusPage} onConsumeFocus={consumeFocus} />
+                      <Pages
+                        focusPage={focusPage}
+                        onConsumeFocus={consumeFocus}
+                        onOpenGraph={openInGraph}
+                      />
                     ) : null}
                     {id === "search" && visited.includes(id) ? (
                       <Search
                         seed={searchSeed}
                         onConsumeSeed={consumeSeed}
                         onOpenPage={openPage}
+                        onOpenGraph={openInGraph}
                       />
                     ) : null}
                     {id === "health" && visited.includes(id) ? <Health /> : null}

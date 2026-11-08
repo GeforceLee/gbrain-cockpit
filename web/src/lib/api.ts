@@ -30,6 +30,8 @@ export async function apiGet<T>(path: string): Promise<T> {
 
   const res = await fetch(path, {
     headers: withProfile({ authorization: `Bearer ${token}` }),
+    // a hung cockpit must not leave the UI busy forever (V1.0 promise, paid)
+    signal: AbortSignal.timeout(30_000),
   });
   const body = (await res.json().catch(() => null)) as (Envelope & T) | null;
   if (!res.ok) {
@@ -61,6 +63,7 @@ export async function apiSend<T>(
       "content-type": "application/json",
     }),
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(30_000),
   });
   const body = (await res.json().catch(() => null)) as (Envelope & T) | null;
   if (!res.ok) {

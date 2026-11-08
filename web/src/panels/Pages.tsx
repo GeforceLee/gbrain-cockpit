@@ -43,9 +43,11 @@ type EditorState =
 export function Pages({
   focusPage,
   onConsumeFocus,
+  onOpenGraph,
 }: {
   focusPage: PageRef | null;
   onConsumeFocus: () => void;
+  onOpenGraph?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
   const [facets, setFacets] = useState<PagesFacets | null>(null);
@@ -186,7 +188,23 @@ export function Pages({
     if (receipt.status !== "pending" && receipt.status !== "queued" && receipt.status !== "running") {
       return;
     }
+    // total deadline: even a healthy-looking endless "queued" must converge
+    // to unknown — a deferred write upstream can outlive any patience, and
+    // the receipts section is the honest place to check later
+    const deadline = Date.now() + 5 * 60_000;
     const timer = setInterval(async () => {
+      if (Date.now() > deadline) {
+        appendAudit(`page.write ${receipt.request_id} -> POLL-DEADLINE`);
+        setEditor({
+          mode: "receipt",
+          receipt: {
+            request_id: receipt.request_id,
+            status: "unknown",
+            detail: t("pages.pollDeadline"),
+          },
+        });
+        return;
+      }
       try {
         const next = await apiGet<WriteReceipt>(
           `/api/write-request?request_id=${encodeURIComponent(receipt.request_id)}`,
@@ -213,6 +231,7 @@ export function Pages({
       }
     }, 2500);
     return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
   /** structured meta for the Recent-Verdicts table (page writes) */
@@ -454,6 +473,17 @@ export function Pages({
               </button>
               <h2 className="mono small">{selected?.slug}</h2>
             </div>
+            {selected && onOpenGraph && (
+              // the neighborhood a page lives in is a graph question — one
+              // click lands Nebula on this node in the orbit view
+              <button
+                type="button"
+                className="linkish"
+                onClick={() => onOpenGraph(selected)}
+              >
+                {t("pages.inGraph")}
+              </button>
+            )}
             {bundle && editor.mode === "idle" && (
               // Read-grant profile (no write scope): a save could only ever
               // fail upstream — show the reason instead of an impossible

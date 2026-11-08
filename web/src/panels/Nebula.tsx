@@ -4,6 +4,7 @@ import louvain from "graphology-communities-louvain";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 import type { EdgeProposal, GraphReport } from "@gbrain-cockpit/shared";
+import { buildGraphKey } from "@gbrain-cockpit/shared";
 import { edgeTypeColor, GRAPH } from "../design/tokens";
 import { ApiError, apiGet } from "../lib/api";
 import { currentProfileId } from "../lib/brain";
@@ -248,10 +249,15 @@ function computeLayout(graph: Graph): void {
 export function Nebula({
   active,
   onOpenPage,
+  focusPage,
+  onConsumeFocus,
 }: {
   /** keep-alive: true while this panel is the visible one */
   active?: boolean;
   onOpenPage?: (ref: PageRef) => void;
+  /** cross-panel "see on the graph" target — consumed once: select + orbit */
+  focusPage?: PageRef | null;
+  onConsumeFocus?: () => void;
 }) {
   const { t } = useI18n();
   const [report, setReport] = useState<GraphReport | null>(null);
@@ -332,7 +338,7 @@ export function Nebula({
   const [proposalEdges, setProposalEdges] = useState<
     [string, string, string?, string?][]
   >([]);
-  useEffect(() => {
+  const loadProposalEdges = useCallback(() => {
     apiGet<{ edgeProposals?: { items?: EdgeProposal[] } }>("/api/inbox")
       .then((inbox) => {
         setProposalEdges(
@@ -345,6 +351,16 @@ export function Nebula({
       })
       .catch(() => setProposalEdges([]));
   }, []);
+  useEffect(() => {
+    loadProposalEdges();
+  }, [loadProposalEdges]);
+  // verdict freshness: the amber pending overlay must disappear the moment a
+  // proposal is adjudicated in the Inbox — one event, one refetch
+  useEffect(() => {
+    const onVerdict = () => loadProposalEdges();
+    window.addEventListener("cockpit:verdict", onVerdict);
+    return () => window.removeEventListener("cockpit:verdict", onVerdict);
+  }, [loadProposalEdges]);
 
   // Esc closes the drawer — same deselect as clicking the empty stage
   useEffect(() => {
@@ -487,6 +503,26 @@ export function Nebula({
       nodeRef, sourceCount: sourceCount.size,
     };
   }, [report, proposalEdges]);
+
+  // cross-panel focus target (App's "see on the graph"): select the node and
+  // switch to the orbit view once the base graph is ready — the payload may
+  // still be in flight on a first-ever jump, so this waits for baseData
+  useEffect(() => {
+    if (!focusPage || !baseData) return;
+    const key = buildGraphKey(focusPage.sourceId, focusPage.slug);
+    const node =
+      baseData.full.nodes().find((n) => n === key) ??
+      baseData.full.nodes().find((n) => {
+        const label = baseData.full.getNodeAttribute(n, "label");
+        return typeof label === "string" && label === focusPage.slug;
+      });
+    if (node) {
+      setSelected(node);
+      setView("orbit");
+      localStorage.setItem(VIEW_KEY, "orbit");
+    }
+    onConsumeFocus?.();
+  }, [focusPage, baseData, onConsumeFocus]);
 
   // selected is a node KEY; the drawer needs (slug, sourceId) — never parse
   // the key (slugs contain slashes), read the node's own fields via nodeRef.

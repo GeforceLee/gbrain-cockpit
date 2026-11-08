@@ -21,16 +21,23 @@ export function Search({
   seed,
   onConsumeSeed,
   onOpenPage,
+  onOpenGraph,
 }: {
   seed?: string | null;
   onConsumeSeed?: () => void;
   onOpenPage: (ref: PageRef) => void;
+  onOpenGraph?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // dual entry: literal = cheap hybrid `search`; semantic = the `query` tool
+  // (concept/people/company mix) — the panel's own description is finally true
+  const [mode, setMode] = useState<"literal" | "semantic">("literal");
+  // fuzzy slug matches (resolve_slugs) — the "I know the page name" jump
+  const [slugs, setSlugs] = useState<string[] | null>(null);
   // hit opened in the shared in-place drawer
   const [peek, setPeek] = useState<PageRef | null>(null);
   // source filter: "" = all; options from /api/sources, falling back to the
@@ -91,12 +98,21 @@ export function Search({
       .catch(() => setSources(null));
   }, []);
 
-  const runQuery = useCallback(async (q: string, sourceId: string) => {
+  const runQuery = useCallback(async (q: string, sourceId: string, m: "literal" | "semantic") => {
     setBusy(true);
     setError(null);
     try {
-      const suffix = sourceId ? `&source_id=${encodeURIComponent(sourceId)}` : "";
+      const suffix =
+        (sourceId ? `&source_id=${encodeURIComponent(sourceId)}` : "") +
+        `&mode=${m}`;
       setHits(await apiGet<SearchHit[]>(`/api/search?q=${encodeURIComponent(q)}${suffix}`));
+      // fuzzy slug resolution rides the same submit — the jump chips render
+      // above the results, one fetch each way, both cheap
+      apiGet<{ status?: string; slugs?: string[] }>(
+        `/api/resolve-slugs?partial=${encodeURIComponent(q)}${sourceId ? `&source_id=${sourceId}` : ""}`,
+      )
+        .then((r) => setSlugs(r.status === "ok" ? (r.slugs ?? []) : []))
+        .catch(() => setSlugs([]));
     } catch (err) {
       setHits(null);
       setError(err instanceof ApiError ? err.message : String(err));
@@ -109,7 +125,7 @@ export function Search({
   useEffect(() => {
     if (!seed) return;
     setQuery(seed);
-    void runQuery(seed, "");
+    void runQuery(seed, "", "literal");
     onConsumeSeed?.();
   }, [seed, runQuery, onConsumeSeed]);
 
@@ -117,7 +133,7 @@ export function Search({
     e.preventDefault();
     const q = query.trim();
     if (!q) return;
-    await runQuery(q, sourceFilter);
+    await runQuery(q, sourceFilter, mode);
   }
 
   // observed sources from the current hits — the option list when
@@ -135,6 +151,7 @@ export function Search({
         page={peek}
         onClose={() => setPeek(null)}
         onEdit={onOpenPage}
+        onShowGraph={onOpenGraph}
         siblings={siblings.map((s) => ({ slug: peek!.slug, sourceId: s.source_id }))}
         onOpenSibling={(ref) => setPeek(ref)}
       />
@@ -167,7 +184,54 @@ export function Search({
         <button type="submit" disabled={busy || !query.trim()}>
           {busy ? t("common.loading") : t("search.run")}
         </button>
+        <div className="mode-toggle" role="group" aria-label={t("search.mode.label")} title={t("search.modeHint")}>
+          <button
+            type="button"
+            aria-pressed={mode === "literal"}
+            className={mode === "literal" ? "on" : ""}
+            onClick={() => setMode("literal")}
+          >
+            {t("search.mode.literal")}
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === "semantic"}
+            className={mode === "semantic" ? "on" : ""}
+            onClick={() => setMode("semantic")}
+          >
+            {t("search.mode.semantic")}
+          </button>
+        </div>
       </form>
+      {slugs !== null && slugs.length > 0 && (
+        // fuzzy slug hits: the "I know the page name" jumps — click opens the
+        // shared drawer in place, and the graph jump sits beside each
+        <p className="direct-slugs">
+          <span className="muted small">{t("search.direct")}:</span>{" "}
+          {slugs.slice(0, 8).map((s) => (
+            <span key={s} className="slug-jump">
+              <button
+                type="button"
+                className="linkish mono"
+                title={t("search.directDesc")}
+                onClick={() => setPeek({ slug: s })}
+              >
+                {s}
+              </button>
+              {onOpenGraph && (
+                <button
+                  type="button"
+                  className="linkish small"
+                  title={t("viewer.graph")}
+                  onClick={() => onOpenGraph({ slug: s })}
+                >
+                  ⌖
+                </button>
+              )}
+            </span>
+          ))}
+        </p>
+      )}
       {error && (
         <p className="error">
           {t("common.errorLabel")}: {error}
