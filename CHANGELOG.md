@@ -8,9 +8,33 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-08
+
+The full-adjudication-desk release: every kind of pending work gbrain produces is now visible, readable and actionable in one place, verified against gbrain 0.60.611 (leewin, both brains).
+
+### Added — Inbox
+- **Contradictions queue (lane five)**: gbrain's decide sweep proposals (`decide proposals list/accept/reject/undo`, CLI whitelist — no typed-token gate upstream) plus the dp<id> twins from trust review, classified into the lane; their verbs are the decide family, never trust confirm/drop. The lane header carries the eval probe's last-run state, with upstream's own "never ran" note passed through verbatim so an empty queue never masquerades as "no contradictions".
+- **Entity-stub queue (lane six, read-only)**: `extraction_pending`'s three lists (pending stubs + unattributed/duplicates counts). The dispose verb `extraction_review` is owner-token-only upstream — the rail explains instead of faking an action.
+- **Judgments queue (lane seven)**: ACTIVE takes with the four-verdict stamp set (correct/incorrect/partial/unresolvable) over MCP `takes_resolve` — the propose→accept→witness→resolve loop finally closes; gbrain stamps the resolver `mcp:<client>`, forever distinguishable from the owner's own verdicts.
+- **Held-extraction companion view**: `takes propose --failed` pages surface read-only on the takes lane; releasing them stays an owner action.
+- **Edge lifecycle completed**: batch reject for the edges tab (the takes pattern — sequential, per-item audit, stops at first failure), the date annotation and undo that the channel matrix carried all along.
+- **Pipeline feel**: the desk advances to the next item after every stamped verdict; j/k walk the queue; every action dispatches `cockpit:verdict` so Nebula's pending overlay refetches; the takes degraded rail shows server-built, source-scoped accept AND reject command pairs (the 0.2.2 multi-source bug's degraded form — hotfix folded into this release) with a finality warning; the edges document card renders structured fields first, raw JSON one fold away.
+- **Verdict history, server side**: the Recent-Verdicts table grows the JSONL audit tail (cross-session) and the decided take_proposals rows (`acted_at`/`acted_by` probed present on 0.60.611 — no table-whitelist expansion was needed).
+
+### Added — panels web
+- **"See on the graph" everywhere**: Search hits, slug-jump chips, the page drawer, Pages detail and every Inbox document target jump Nebula onto that node in the orbit view — the panel graph finally has edges back into Nebula.
+- **Search dual entry, real**: literal = the cheap hybrid `search`; semantic = the `query` tool (probed: the argument is `query`, not `q`). Fuzzy slug jumps (resolve_slugs) render above the results.
+- **Health, gbrain's own**: write-capacity band, write failures, ghost pages, unsearchable chunks, sync blocks (`get_brain_health`), the latest `_meta.gbrain_notices` (stripped at the driver's single choke point, kept in a ring), and `find_anomalies`.
+- **Write cancel**: per-receipt cancel in the write-receipts section (`cancel_write_request` — this token's accepted-but-unpublished writes only; gbrain's own guard).
+- Receipt polling converges: a 5-minute total deadline moves an endless "queued" to unknown instead of spinning; every fetch carries a 30s timeout; error rows map codes to user language with the raw server text as detail.
+
 ### Fixed
-- The Inbox's degraded copy-command no longer pastes a known-bad command on multi-source brains. When the CLI channel is down, the takes decision rail now renders SERVER-built command pairs — accept AND reject — instead of the single accept-only template: the direct-call form (`GBRAIN_SOURCE=<row's source> GBRAIN_HOME=<home> <real binary>`) whenever the profile has the `gbrainBin`/`gbrainHome` pair (same shape as the one-key path's guard exec), the plain wrapper form only for rows in the default source, and an explainer note instead of a command for non-default sources on profiles without the pair (the 0.2.2 multi-source bug, degraded form). The reject block carries a finality warning (takes reject has no undo), and the client-side `takesAcceptCommand` template is gone — the server is the single template source.
-- Docs: the Pages pagination line claimed "keyset pagination on gbrain's own cursor"; deep paging has ridden upstream `offset` windows since 0.2.2 (the keyset pair probed as an ascending newer-than filter on gbrain 0.60.558).
+- The takes degraded copy-command on multi-source brains pasted a known-bad wrapper form (0.2.2 bug, degraded form) — now server-built, source-scoped, accept and reject both.
+- A broken `cliBin` no longer skips the takes guard's construction — the direct-call pair survives a missing wrapper, so the degraded rail keeps its scoped templates.
+- `takes.propose.list` dropped from the channel matrix (stale since 0.2.2).
+- MCP cached reads gain the single-flight merging the architecture doc always promised.
+- CI builds the web bundle (vite/rollup failures now surface on push); releases ship the web bundle as an artifact next to the binaries and smoke-test that the linux binary serves it.
+- web's first tests: the markdown sanitize pipeline (script/iframe/img/form never survive; links hardened; ingest unwrapper's strict anchors) under jsdom — happy-dom's parse/serialize round-trip mangles sanitizer input and would have tested a fiction.
 
 ## [0.2.2] - 2026-11-08
 
@@ -112,7 +136,8 @@ First public release. Full notes: [v0.1.0 release](https://github.com/GeforceLee
 - Token auth (fail-closed), owner-presence copy-command actions, session
   audit log, tag-built binaries for `darwin-arm64` / `linux-x64`.
 
-[Unreleased]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.1.1...v0.2.0
