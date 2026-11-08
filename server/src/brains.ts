@@ -100,18 +100,22 @@ export class BrainRegistry {
             bin: null,
             note: `configured cliBin "${p.cliBin}" not found (not on PATH / not executable)`,
           });
-          continue;
+        } else {
+          resolution.set(p.id, { bin });
         }
-        resolution.set(p.id, { bin });
       } else {
         const bin = await this.#discoverGbrain(deps);
         resolution.set(p.id, { bin });
       }
       // Source-scoped takes adjudication opt-in: resolve the direct-call
-      // binary AND run the guard's database assertion once here. Unlike a
-      // broken cliBin (copy-command still exists), a broken gbrainBin/gbrainHome
-      // has NO fallback — silently degrading would reintroduce the invisible-
-      // proposals bug this guard exists to fix — so it fails closed.
+      // binary AND run the guard's database assertion once here — INDEPENDENT
+      // of the cliBin outcome above: the guard's direct calls bypass the
+      // wrapper, so a broken wrapper must not silently strip the profile's
+      // scoped copy-command templates along with its one-key channel. Unlike
+      // a broken cliBin (copy-command still exists), a broken
+      // gbrainBin/gbrainHome has NO fallback — silently degrading would
+      // reintroduce the invisible-proposals bug this guard exists to fix —
+      // so it fails closed.
       if (p.gbrainBin && p.gbrainHome) {
         const bin = await locateGbrainBin(p.gbrainBin, deps);
         if (!bin) {

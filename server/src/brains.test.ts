@@ -253,6 +253,28 @@ describe("BrainRegistry takesGuard", () => {
     expect(reg.resolve("bip")!.takesGuard).toBeNull();
   });
 
+  test("a broken cliBin degrades the CLI channel but keeps the guard — scoped copy-commands survive", async () => {
+    // The guard's direct calls bypass the wrapper, so a missing wrapper must
+    // not silently strip the profile's source-scoped command templates along
+    // with its one-key channel (the degraded rail is their only consumer).
+    const cfg = loadProfiles(
+      { COCKPIT_PROFILES_FILE: "/x" },
+      {
+        readFile: () =>
+          brainFile({
+            cliBin: "gbrain-nowhere",
+            gbrainBin: "/opt/gbrain-real/gbrain",
+            gbrainHome: "/srv/brain-bip-home",
+          }),
+      },
+    );
+    const reg = await BrainRegistry.create(cfg, guardDeps("bip"));
+    const ch = reg.resolve("bip")!;
+    expect(ch.cli).toBeNull(); // wrapper gone → one-key channel down
+    expect(ch.takesGuard).not.toBeNull(); // direct-call pair intact
+    expect(ch.takesGuard!.bin).toBe("/opt/gbrain-real/gbrain");
+  });
+
   test("unexecutable gbrainBin is fatal — there is no fallback channel", async () => {
     const cfg = loadProfiles(
       { COCKPIT_PROFILES_FILE: "/x" },
