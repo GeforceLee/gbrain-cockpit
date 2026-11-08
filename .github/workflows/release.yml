@@ -50,7 +50,9 @@ jobs:
       # release without the web bundle ships a UI-less half product, so the
       # bundle itself is an artifact, and the smoke below proves it's there.
       - name: Bundle web-dist for release
-        run: tar -czf dist-bin/web-dist.tar.gz -C web dist
+        run: |
+          mkdir -p dist-bin
+          tar -czf dist-bin/web-dist.tar.gz -C web dist
 
       - name: Compile linux binary
         run: bun run compile:linux
