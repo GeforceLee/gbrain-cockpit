@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import { OWNER_BIN_RE } from "@gbrain-cockpit/shared";
+import type { TakeQueueCommands } from "@gbrain-cockpit/shared";
 
 // Source-scoped takes adjudication guard (Inbox multi-source fix).
 //
@@ -23,6 +25,62 @@ import { readFile } from "node:fs/promises";
 
 /** upstream's own env-tier charset (src/core/source-resolver.ts tier 2) */
 const GBRAIN_SOURCE_ENV_RE = /^[a-z0-9-]{1,32}$/;
+
+/**
+ * Absolute, metachar-free path for gbrainHome — it becomes env-prefix text
+ * the owner pastes into a shell, so spaces/quotes/globs are rejected by
+ * construction (same discipline as shared's OWNER_BIN_RE for the bin).
+ */
+const OWNER_HOME_RE = /^\/[A-Za-z0-9._/-]{1,200}$/;
+
+/**
+ * Copy-command templates for the takes queue's degraded rail (CLI channel
+ * down). Built per source with a literal `{id}` placeholder — the id itself
+ * never enters server-built shell text; the client substitutes it after its
+ * own digits-only check, so even a hostile row id cannot become shell text.
+ *
+ * Shape rules (mirror the one-key path's guard exec exactly):
+ * - direct-call pair configured → `GBRAIN_SOURCE=<src> GBRAIN_HOME=<home>
+ *   <real-bin> takes propose --{accept|reject} {id}` for EVERY source,
+ *   including `default` (deterministic, immune to the owner's shell env);
+ * - no pair → the plain wrapper form, correct ONLY for rows in the default
+ *   source (gbrain's resolver falls back to `default` without GBRAIN_SOURCE);
+ * - anything else (non-default source, no pair) yields NO command — a pasted
+ *   `not_found` failure is the exact bug this replaces, so the template set
+ *   names the source `unavailable` and the UI explains instead.
+ */
+export function buildTakeQueueCommands(
+  rows: Array<{ source_id?: string }>,
+  opts: { cliBin: string; guard?: { bin: string; home: string } },
+): TakeQueueCommands {
+  const commands: TakeQueueCommands = { bySource: {}, unavailable: [] };
+  const guard =
+    opts.guard &&
+    OWNER_BIN_RE.test(opts.guard.bin) &&
+    OWNER_HOME_RE.test(opts.guard.home)
+      ? opts.guard
+      : undefined;
+  const sources = new Set(rows.map((r) => r.source_id ?? "default"));
+  for (const source of sources) {
+    if (guard && GBRAIN_SOURCE_ENV_RE.test(source)) {
+      const prefix = `GBRAIN_SOURCE=${source} GBRAIN_HOME=${guard.home} ${guard.bin}`;
+      commands.bySource[source] = {
+        accept: `${prefix} takes propose --accept {id}`,
+        reject: `${prefix} takes propose --reject {id}`,
+      };
+      continue;
+    }
+    if (source === "default" && OWNER_BIN_RE.test(opts.cliBin)) {
+      commands.bySource[source] = {
+        accept: `${opts.cliBin} takes propose --accept {id}`,
+        reject: `${opts.cliBin} takes propose --reject {id}`,
+      };
+      continue;
+    }
+    commands.unavailable.push(source);
+  }
+  return commands;
+}
 
 /**
  * The database name a postgres URL points at — the basename of its path.
@@ -107,6 +165,12 @@ export class TakesActionGuard {
 
   get bin(): string {
     return this.#bin;
+  }
+
+  /** The brain home this guard asserts against (copy-command templates need
+   *  the same direct-call pair the one-key exec uses). */
+  get home(): string {
+    return this.#home;
   }
 
   /** Startup check — fail closed on a misconfigured pair before serving. */

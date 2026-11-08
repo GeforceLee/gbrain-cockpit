@@ -154,7 +154,10 @@ export const zhCN = {
   "inbox.via.mcp": "一键 · MCP confirm",
   "inbox.via.copy": "复制命令 · 终端确认 · ⌘↵",
   "inbox.edgeHint": "需要驳回时,把命令中的 accept 改为 reject(同一 ID)。",
-  "inbox.takeHint": "需要驳回时,把 --accept 改为 --reject(同一 ID)。",
+  "inbox.takeHint": "接受用这条;驳回用下一条(同一提案 ID)。命令已按该提案所属源生成。",
+  "inbox.takeFinality": "驳回即终局:此队列没有撤销,执行前请确认。",
+  "inbox.takeUnscoped":
+    "该提案属于非默认来源,而此实例未配置直调材料(gbrainBin/gbrainHome),无法生成可靠的复制命令——请在 brain 主机终端裁决,或为该实例配置直调。",
   "inbox.queue.proposals": "信任提案",
   "inbox.queue.proposalsDesc":
     "dream 或代理想写入、被信任规则拦下等你裁决的提案。接受需你本人在 brain 主机终端确认(gbrain 安全设计),永不在此代劳。",

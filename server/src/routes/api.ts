@@ -17,6 +17,7 @@ import type {
   SourcesReport,
   SourcesStatusReport,
   TakeProposal,
+  TakesQueue,
   TimelineEntry,
   TrustReviewEnvelope,
   TrustReviewItem,
@@ -30,7 +31,7 @@ import type { BrainRegistry, BrainChannels } from "../brains";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
 import { McpError } from "../drivers/mcp";
-import { TakesSourceGuardError } from "../drivers/takes-source";
+import { TakesSourceGuardError, buildTakeQueueCommands } from "../drivers/takes-source";
 import { cliReason } from "./health";
 
 // API surface (core-loop milestone). Every handler receives an already
@@ -538,9 +539,7 @@ async function edgeQueue(
   }
 }
 
-async function takesQueue(
-  ctx: ApiContext,
-): Promise<InboxQueue<TakeProposal>> {
+async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
   // The pending-takes queue reads the read-only bypass, NOT the CLI:
   // gbrain's `takes propose` list scopes to ONE source per run
   // (resolveSourceId → 'default' without GBRAIN_SOURCE), so on a
@@ -557,7 +556,21 @@ async function takesQueue(
   }
   try {
     const items = await ctx.pg.pendingTakeProposals();
-    return { status: "ok", items };
+    return {
+      status: "ok",
+      items,
+      // Degraded-rail copy-commands are built SERVER-side: only the server
+      // holds the direct-call materials (gbrainBin/gbrainHome never leave
+      // it), and on a multi-source brain the naive `${bin} takes propose`
+      // wrapper form is known-bad for any row outside the default source —
+      // the 0.2.2 bug, degraded form (hotfix 0.2.3).
+      commands: buildTakeQueueCommands(items, {
+        cliBin: ctx.profile.cliBin ?? "gbrain",
+        ...(ctx.takesGuard
+          ? { guard: { bin: ctx.takesGuard.bin, home: ctx.takesGuard.home } }
+          : {}),
+      }),
+    };
   } catch (err) {
     return {
       status: "down",

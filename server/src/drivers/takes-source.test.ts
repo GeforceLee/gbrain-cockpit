@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildScopedTakesEnv,
+  buildTakeQueueCommands,
   dbBasename,
   TakesActionGuard,
   TakesSourceGuardError,
@@ -115,5 +116,73 @@ describe("TakesActionGuard", () => {
     await guard.assertStartup(); // matching → resolves
     files.set("/srv/brain-bip-home/.gbrain/config.json", CONFIG("elsewhere"));
     await expect(guard.assertStartup()).rejects.toThrow(/wrong brain/);
+  });
+
+  test("home getter exposes the pair copy-command templates need", () => {
+    const { guard } = makeGuard();
+    expect(guard.home).toBe("/srv/brain-bip-home");
+  });
+});
+
+describe("buildTakeQueueCommands", () => {
+  const guard = { bin: "/opt/gbrain-real/gbrain", home: "/srv/brain-bip-home" };
+
+  test("direct-call pair: every source gets the scoped {id} template, default included", () => {
+    const cmds = buildTakeQueueCommands(
+      [
+        { source_id: "yon-bip" },
+        { source_id: "default" },
+        { source_id: "yon-bip" },
+      ],
+      { cliBin: "gbrain-bip", guard },
+    );
+    expect(Object.keys(cmds.bySource).sort()).toEqual(["default", "yon-bip"]);
+    expect(cmds.bySource["yon-bip"]!.accept).toBe(
+      "GBRAIN_SOURCE=yon-bip GBRAIN_HOME=/srv/brain-bip-home /opt/gbrain-real/gbrain takes propose --accept {id}",
+    );
+    expect(cmds.bySource["yon-bip"]!.reject).toBe(
+      "GBRAIN_SOURCE=yon-bip GBRAIN_HOME=/srv/brain-bip-home /opt/gbrain-real/gbrain takes propose --reject {id}",
+    );
+    expect(cmds.bySource["default"]!.accept).toContain("GBRAIN_SOURCE=default");
+    expect(cmds.unavailable).toEqual([]);
+  });
+
+  test("no pair, single-source brain: plain wrapper form for default rows", () => {
+    const cmds = buildTakeQueueCommands(
+      [{ source_id: "default" }, {}], // no source_id lands under "default" too
+      { cliBin: "gbrain" },
+    );
+    expect(cmds.bySource["default"]!.accept).toBe(
+      "gbrain takes propose --accept {id}",
+    );
+    expect(cmds.bySource["default"]!.reject).toBe(
+      "gbrain takes propose --reject {id}",
+    );
+    expect(cmds.unavailable).toEqual([]);
+  });
+
+  test("no pair, non-default source: NO command — the source is named unavailable", () => {
+    // the 0.2.2 bug, degraded form: pasting the wrapper command here is a
+    // guaranteed not_found, so the template set must refuse to build one
+    const cmds = buildTakeQueueCommands([{ source_id: "yon-bip" }], {
+      cliBin: "gbrain-bip",
+    });
+    expect(cmds.bySource).toEqual({});
+    expect(cmds.unavailable).toEqual(["yon-bip"]);
+  });
+
+  test("shell-hostile guard materials fall back instead of building paste text", () => {
+    const cmds = buildTakeQueueCommands([{ source_id: "yon-bip" }], {
+      cliBin: "gbrain",
+      guard: { bin: "/opt/gbrain $(rm -rf /)", home: "/srv/brain-bip-home" },
+    });
+    expect(cmds.bySource).toEqual({});
+    expect(cmds.unavailable).toEqual(["yon-bip"]);
+  });
+
+  test("empty queue yields an empty template set", () => {
+    const cmds = buildTakeQueueCommands([], { cliBin: "gbrain" });
+    expect(cmds.bySource).toEqual({});
+    expect(cmds.unavailable).toEqual([]);
   });
 });

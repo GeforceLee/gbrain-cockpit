@@ -8,7 +8,6 @@ import {
   buildGraphKey,
   edgeAcceptCommand,
   isValidSourceId,
-  takesAcceptCommand,
   trustConfirmCommand,
   trustDropCommand,
   trustExplainCommand,
@@ -124,15 +123,11 @@ describe("owner command builders", () => {
     expect(edgeAcceptCommand(bin, "12345")).toBe(
       "gbrain-bip edge-proposals accept 12345",
     );
-    expect(takesAcceptCommand(bin, "99")).toBe(
-      "gbrain-bip takes propose --accept 99",
-    );
   });
   test("reject bad refs/ids before a string is ever rendered", () => {
     expect(() => trustConfirmCommand(bin, "tp;rm -rf")).toThrow();
     expect(() => trustDropCommand(bin, "xp1")).toThrow(); // bad prefix
     expect(() => edgeAcceptCommand(bin, "12a")).toThrow();
-    expect(() => takesAcceptCommand(bin, "-1")).toThrow();
   });
   test("reject bad bins — argv[0] and paste-text share one charset", () => {
     expect(() => trustConfirmCommand("my gbrain", "tp1")).toThrow();

@@ -200,12 +200,6 @@ export function edgeAcceptCommand(bin: string, id: string): string {
   return `${bin} edge-proposals accept ${id}`;
 }
 
-export function takesAcceptCommand(bin: string, id: string): string {
-  assertOwnerBin(bin);
-  assertCliId(id);
-  return `${bin} takes propose --accept ${id}`;
-}
-
 /**
  * The unique graph node id for a page: `sourceId/slug` when the source is
  * known (source ids never contain `/` — SOURCE_ID_RE), bare `slug` in the
@@ -596,10 +590,38 @@ export interface InboxQueue<T> {
   error?: string;
 }
 
+/**
+ * Server-built copy-command templates for the takes queue's degraded rail
+ * (CLI channel down). One pair per SOURCE — the only per-row variable besides
+ * the id — carrying a literal `{id}` placeholder the client substitutes after
+ * its own digits-only validation. Scoped entries are the direct-call form
+ * (GBRAIN_SOURCE + GBRAIN_HOME + the REAL binary), identical in shape to the
+ * one-key path's guard exec; plain wrapper-form entries exist only for rows
+ * in the default source, where gbrain's source resolver lands anyway.
+ */
+export interface TakeCommandPair {
+  accept: string;
+  reject: string;
+}
+
+export interface TakeQueueCommands {
+  /** keyed by source_id; rows without one land under "default" */
+  bySource: Record<string, TakeCommandPair>;
+  /** sources no trustworthy command could be built for (no direct-call pair
+   *  and not the default source) — the UI explains instead of pasting a
+   *  command known to fail (the 0.2.2 multi-source bug, degraded form) */
+  unavailable: string[];
+}
+
+/** The pending-takes queue, plus its degraded-rail command templates. */
+export interface TakesQueue extends InboxQueue<TakeProposal> {
+  commands?: TakeQueueCommands;
+}
+
 export interface InboxReport {
   trust: InboxQueue<TrustReviewItem>;
   edgeProposals: InboxQueue<EdgeProposal>;
-  takes: InboxQueue<TakeProposal>;
+  takes: TakesQueue;
   cliChannel: CliChannelStatus;
 }
 

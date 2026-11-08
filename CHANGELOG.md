@@ -8,6 +8,10 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+### Fixed
+- The Inbox's degraded copy-command no longer pastes a known-bad command on multi-source brains. When the CLI channel is down, the takes decision rail now renders SERVER-built command pairs — accept AND reject — instead of the single accept-only template: the direct-call form (`GBRAIN_SOURCE=<row's source> GBRAIN_HOME=<home> <real binary>`) whenever the profile has the `gbrainBin`/`gbrainHome` pair (same shape as the one-key path's guard exec), the plain wrapper form only for rows in the default source, and an explainer note instead of a command for non-default sources on profiles without the pair (the 0.2.2 multi-source bug, degraded form). The reject block carries a finality warning (takes reject has no undo), and the client-side `takesAcceptCommand` template is gone — the server is the single template source.
+- Docs: the Pages pagination line claimed "keyset pagination on gbrain's own cursor"; deep paging has ridden upstream `offset` windows since 0.2.2 (the keyset pair probed as an ascending newer-than filter on gbrain 0.60.558).
+
 ## [0.2.2] - 2026-11-08
 
 ### Fixed
@@ -108,6 +112,9 @@ First public release. Full notes: [v0.1.0 release](https://github.com/GeforceLee
 - Token auth (fail-closed), owner-presence copy-command actions, session
   audit log, tag-built binaries for `darwin-arm64` / `linux-x64`.
 
-[Unreleased]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/GeforceLee/gbrain-cockpit/releases/tag/v0.1.0

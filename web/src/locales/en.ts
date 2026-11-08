@@ -155,7 +155,11 @@ export const en = {
   "inbox.via.mcp": "one-key · MCP confirm",
   "inbox.via.copy": "copy command · terminal confirm · ⌘↵",
   "inbox.edgeHint": "To reject, change accept to reject in the command (same id).",
-  "inbox.takeHint": "To reject, change --accept to --reject (same id).",
+  "inbox.takeHint":
+    "Use this to accept; the next block rejects (same proposal id). Commands are built for the proposal's own source.",
+  "inbox.takeFinality": "Reject is final — this queue has no undo.",
+  "inbox.takeUnscoped":
+    "This proposal belongs to a non-default source and this brain lacks the direct-call pair (gbrainBin/gbrainHome), so no trustworthy command can be built — adjudicate at the brain host terminal, or configure the pair on this profile.",
   "inbox.queue.proposals": "Trust proposals",
   "inbox.queue.proposalsDesc":
     "Writes dream or an agent proposed that trust rules held for your adjudication. Accepting requires you, in person, at the brain host terminal (gbrain safety design) — never here.",

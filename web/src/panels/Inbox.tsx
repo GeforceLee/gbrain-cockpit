@@ -3,7 +3,6 @@ import {
   ADJUDICATION_CHANNELS,
   TRUST_REF_RE,
   edgeAcceptCommand,
-  takesAcceptCommand,
   trustConfirmCommand,
   trustDropCommand,
   trustExplainCommand,
@@ -14,6 +13,7 @@ import type {
   EdgeProposal,
   InboxReport,
   TakeProposal,
+  TakeQueueCommands,
   TrustReviewItem,
 } from "@gbrain-cockpit/shared";
 import { AuditBlock } from "../components/AuditBlock";
@@ -121,6 +121,14 @@ function safeRef(ref: string | undefined): string {
 function safeId(id: string | undefined): string {
   return id && /^\d{1,18}$/.test(id) ? id : "?";
 }
+
+/**
+ * Server-built take copy-commands are our own API's output, but they are
+ * still pasted into the owner's shell — so they pass the same metachar-free
+ * gate as gbrain's own command text before reaching a copy block (anything
+ * odd degrades to the explainer note, never a paste).
+ */
+const TAKE_CMD_RE = /^[A-Za-z0-9 =_./-]{1,300}$/;
 
 /**
  * Gate gbrain's own command text before it reaches a copy block: it must be
@@ -697,6 +705,7 @@ export function Inbox({
                     cliCommand={cliCommand}
                     canConfirm={canConfirm}
                     act={act}
+                    takeCommands={report.takes.commands}
                   />
                 </div>
                 <AuditBlock />
@@ -910,6 +919,7 @@ function DecisionRail({
   cliCommand,
   canConfirm,
   act,
+  takeCommands,
 }: {
   entry: Entry;
   cliAvailable: boolean;
@@ -917,6 +927,8 @@ function DecisionRail({
   cliCommand: string;
   /** live whoami capability; undefined = unknown (never guessed) */
   canConfirm?: boolean;
+  /** server-built degraded-rail templates for the takes queue */
+  takeCommands?: TakeQueueCommands;
   act: (
     path: string,
     body: unknown,
@@ -1181,6 +1193,24 @@ function DecisionRail({
     case "takes": {
       const take = entry.item as TakeProposal;
       const id = safeId(String(take.id));
+      // Degraded rail (CLI down): server-built, source-scoped command pairs —
+      // on a multi-source brain the naive wrapper form pastes a guaranteed
+      // not_found, so the templates carry GBRAIN_SOURCE/GBRAIN_HOME when the
+      // profile has the direct-call pair, and otherwise the source is named
+      // `unavailable` and we explain instead of pasting a known-bad command.
+      const tpl = takeCommands?.bySource?.[take.source_id ?? "default"];
+      const degradedCmds =
+        !cliAvailable && tpl && id !== "?"
+          ? {
+              accept: tpl.accept.replace("{id}", id),
+              reject: tpl.reject.replace("{id}", id),
+            }
+          : null;
+      const pasteSafe =
+        degradedCmds !== null &&
+        TAKE_CMD_RE.test(degradedCmds.accept) &&
+        TAKE_CMD_RE.test(degradedCmds.reject);
+      if (degradedCmds && pasteSafe) acceptCmd = degradedCmds.accept;
       rail = cliAvailable ? (
         <>
           {stampOk("inbox.edgeAccept", "stamp.en.accept", t("inbox.via.cliTake"), () =>
@@ -1206,11 +1236,16 @@ function DecisionRail({
               )),
           )}
         </>
+      ) : degradedCmds && pasteSafe ? (
+        <>
+          <CopyCommand command={degradedCmds.accept} hint={t("inbox.takeHint")} />
+          <CopyCommand
+            command={degradedCmds.reject}
+            hint={t("inbox.takeFinality")}
+          />
+        </>
       ) : (
-        <CopyCommand
-          command={takesAcceptCommand(cliCommand, id)}
-          hint={t("inbox.takeHint")}
-        />
+        <p className="confirm-readonly">{t("inbox.takeUnscoped")}</p>
       );
       rows = [
         {
