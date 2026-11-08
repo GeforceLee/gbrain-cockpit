@@ -8,6 +8,22 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-08
+
+### Fixed
+- The Inbox takes queue is cross-source now. Live-probed on gbrain 0.60.558: `takes propose` (list and `--accept`/`--reject` alike) scopes to ONE source per run (`resolveSourceId` → `default` with no `GBRAIN_SOURCE`), so on a multi-source brain every non-default source's proposals were invisible and unadjudicatable. The queue now reads `take_proposals` through the read-only bypass (same columns and newest-first order as upstream, minus its 500-row clamp; needs `GRANT SELECT ON take_proposals` for the read-only role), and adjudication still runs on the CLI but execs the REAL gbrain binary with the proposal row's own `GBRAIN_SOURCE` + the profile's `GBRAIN_HOME` — opt-in per profile via `gbrainBin`/`gbrainHome`, with the brain config's database name re-asserted before every exec (the isolated-brain wrappers' own guard, replicated; wrappers stay untouched and keep unsetting `GBRAIN_SOURCE`). The `takes propose list` verb left the CLI whitelist — the queue is no longer CLI-shaped.
+- Pages deep pagination actually walks the brain now. The documented `list_pages` keyset pair (`updated_after`/`updated_after_slug`) turned out — live-probed on gbrain 0.60.558 — to act as an ascending "newer-than" window filter (the `sort` is ignored), so the old cursor paging returned the first page's rows again or dead-ended; cockpit now pages through upstream's `offset` windows (probed strictly descending, non-overlapping, repeat-stable). Under source/slug/tag narrowing the pager no longer shows the unfiltered facet total either — it grows one page ahead as batches accumulate.
+
+### Added
+- V1.1 dimensions & provenance (live-probed against gbrain 0.60.558):
+  - **Three filter dimensions in Pages**: slug-prefix box (server-side `slug_prefix` narrowing) and a tag box (upstream's `tag` filter — list rows never carry tags upstream, so it is a free-input filter) alongside the existing type facets and source filter.
+  - **Detail view with full provenance**: tags, origin, created date, source file; a **relations** section (`get_links` outgoing + `get_backlinks` incoming, each row with type, per-edge provenance and a context excerpt, click to jump); a read-only **timeline** (`get_timeline`); the **version-history** list. Failed or unsupported sections land in a `degraded` list and self-describe — `GET /api/page?full=1` opts in while the peek bundle stays at two upstream calls (rate-budget discipline).
+  - **Write-receipt transparency**: a lazy write-receipts section backed by `list_write_requests` (this token's receipts, gbrain-side truth) and `list_write_conflicts` (a banner of pages repeatedly ending in `source_changed`), next to the existing per-save receipt slot and session audit table.
+  - **Search evidence**: per-hit evidence expansion via `assemble_evidence` (window around the matched chunk) plus an origin chip on every hit.
+  - **Health**: per-source diagnostics card (`sources_status` — clone state, last sync, pending writes).
+  - **Graph legend**: a link-provenance group counted client-side over the bypass payload's `link_source` (no new upstream call).
+  - Peek drawers (shared PageDrawer and the graph node drawer) gain tags and outgoing/backlink counts riding the same full bundle.
+
 ## [0.2.1] - 2026-11-06
 
 ### Fixed
