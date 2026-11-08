@@ -35,7 +35,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 
 - Type facets straight from your brain's own `schema_stats` (nothing hardcoded), with counts
 - **Three filter dimensions**: type facets, a slug-prefix box (server-side `slug_prefix` narrowing) and a tag box (upstream's `tag` filter — list rows never carry tags upstream, so this is a free-input filter, not a chip list); plus the source filter, all server-side
-- Deep keyset pagination on gbrain's own cursor — every page of a 10k-page brain is reachable, not just the first window
+- Deep pagination through upstream's `offset` windows — every page of a 10k-page brain is reachable, not just the first window
 - In-place editing on the full write-receipt protocol: optimistic-lock conflict instead of silent overwrite, idempotent request ids, receipt polling on timeout (never a re-send)
 - **Write-receipts section** (lazy, fetched on expand): what gbrain itself recorded for this token's writes — status, request id, slug, time — plus a banner of pages whose writes keep ending in `source_changed` conflicts; the upstream truth next to the session-side audit table
 - **Detail view with full provenance**: tags, origin (which channel wrote the page), created date, source file, trust tier, revision; **relations** — outgoing (`get_links`) and backlinks (`get_backlinks`), each row with its type, per-edge provenance and a context excerpt, click to jump; a read-only **timeline**; the **version-history** list. A missing or failed section self-describes as unavailable instead of erroring
