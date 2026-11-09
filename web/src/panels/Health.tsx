@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AnomaliesReport,
   BrainHealthReport,
   CheckStatus,
   HealthReport,
+  OpsDreamRunsReport,
+  OpsGrantReadResult,
+  OpsSourceDriftReport,
   SourcesStatusReport,
 } from "@gbrain-cockpit/shared";
 import { PALETTE } from "../design/tokens";
 import { RadialGauge } from "../components/RadialGauge";
-import { ApiError, apiGet, setToken } from "../lib/api";
+import { CopyCommand } from "../components/CopyCommand";
+import { ApiError, apiGet, apiSend, setToken } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
 // The Health panel exercises the whole stack live: auth, the API client, the
@@ -40,6 +44,9 @@ export function Health() {
   // refresh, same fails-soft contract as the sources card
   const [brainHealth, setBrainHealth] = useState<BrainHealthReport | null>(null);
   const [anomalies, setAnomalies] = useState<AnomaliesReport | null>(null);
+  // 0.4.0 ops cards: source-visibility drift + dream proposal activity
+  const [drift, setDrift] = useState<OpsSourceDriftReport | null>(null);
+  const [dreamRuns, setDreamRuns] = useState<OpsDreamRunsReport | null>(null);
 
   // probe is dependency-free so switching language (which swaps `t`) does not
   // re-fire the fetch effect; the error is stored raw and translated at render.
@@ -67,6 +74,12 @@ export function Health() {
     apiGet<AnomaliesReport>("/api/anomalies")
       .then(setAnomalies)
       .catch(() => setAnomalies(null));
+    apiGet<OpsSourceDriftReport>("/api/ops/sources-drift")
+      .then(setDrift)
+      .catch(() => setDrift(null));
+    apiGet<OpsDreamRunsReport>("/api/ops/dream-runs")
+      .then(setDreamRuns)
+      .catch(() => setDreamRuns(null));
   }, []);
 
   useEffect(() => {
@@ -341,6 +354,10 @@ export function Health() {
             )}
           </div>
 
+          <DriftCard drift={drift} refresh={() => void probe()} />
+
+          <HeartbeatCard runs={dreamRuns} />
+
           <div className="hcard span8 checklist">
             <p className="cap">{t("health.checklist")}</p>
             <div className="row">
@@ -387,6 +404,251 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="kv-row">
       <dt>{label}</dt>
       <dd className="mono">{value}</dd>
+    </div>
+  );
+}
+
+// --- 0.4.0 ops cards ----------------------------------------------------------
+
+/**
+ * Source-visibility drift (0.4.0): the pg bypass sees the whole database,
+ * MCP only sees granted sources. Rows with pages but no grant would render
+ * nowhere in the app — this card names them and offers the one-click union
+ * rescope (admin tier, step-up) or the paste-safe copy-command.
+ */
+function DriftCard({
+  drift,
+  refresh,
+}: {
+  drift: OpsSourceDriftReport | null;
+  refresh: () => void;
+}) {
+  const { t } = useI18n();
+  // step-up state lives HERE in memory only — the admin token is never
+  // persisted, and it clears with the card (disarm / unmount / reload).
+  const [armed, setArmed] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const disarmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // the Inbox batch-arm precedent: 4s to change your mind
+    if (armed) {
+      disarmTimer.current = setTimeout(() => setArmed(false), 4000);
+    }
+    return () => {
+      if (disarmTimer.current) clearTimeout(disarmTimer.current);
+    };
+  }, [armed]);
+
+  const missing = drift?.missing ?? [];
+  const pgSources = drift?.pgSources;
+
+  async function grant() {
+    setSending(true);
+    setActionError(null);
+    try {
+      const body = await apiSend<OpsGrantReadResult>(
+        "/api/ops/grant-read",
+        "POST",
+        {},
+        { token: adminToken },
+      );
+      setAdminToken(""); // step-up material is single-use by design
+      setArmed(false);
+      setResult(
+        body.added.length === 0
+          ? t("health.drift.noop")
+          : `${t("health.drift.done")}: ${body.added.join(", ")}`,
+      );
+      refresh();
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? `${err.message} (${err.code})` : String(err),
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="hcard span8">
+      <p className="cap" title={t("health.driftDesc")}>
+        {t("health.drift")}
+      </p>
+      {!drift || drift.status === "down" ? (
+        <p className="muted small">{t("health.drift.unavailable")}</p>
+      ) : (
+        <>
+          <dl className="kv">
+            {(pgSources ?? []).map((s) => {
+              const isMissing = missing.includes(s.source_id);
+              return (
+                <div className="kv-row" key={s.source_id}>
+                  <dt>
+                    {s.source_id}{" "}
+                    <span className="muted small">
+                      · {s.pages} {t("health.drift.pages")}
+                    </span>
+                  </dt>
+                  <dd
+                    className="mono"
+                    style={{
+                      color: isMissing ? PALETTE.warnStamp : PALETTE.ok,
+                    }}
+                  >
+                    {isMissing ? t("health.drift.missing") : t("health.drift.granted")}
+                  </dd>
+                </div>
+              );
+            })}
+            {(pgSources ?? []).length === 0 && (
+              <p className="muted small">{t("health.drift.emptyPg")}</p>
+            )}
+          </dl>
+          {missing.length > 0 ? (
+            <p className="muted small" style={{ color: PALETTE.warnStamp }}>
+              {t("health.drift.found")}: {missing.join(", ")}
+            </p>
+          ) : (
+            <p className="muted small">{t("health.drift.ok")}</p>
+          )}
+
+          {drift.action.available && missing.length > 0 && (
+            <div className="drift-action">
+              {!armed ? (
+                <button type="button" onClick={() => setArmed(true)}>
+                  {t("health.drift.grantBtn")}
+                </button>
+              ) : (
+                <>
+                  <input
+                    type="password"
+                    value={adminToken}
+                    onChange={(e) => setAdminToken(e.target.value)}
+                    placeholder={t("health.drift.tokenHint")}
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    className="batch-arm"
+                    onClick={() => void grant()}
+                    disabled={sending || adminToken.length === 0}
+                  >
+                    {sending ? t("health.drift.sending") : t("health.drift.grantConfirm")}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {!drift.action.available && drift.action.reason && missing.length > 0 && (
+            <p className="muted small">
+              {drift.action.reason === "cli-unavailable"
+                ? t("health.drift.reasonCli")
+                : drift.action.reason === "not-oauth-profile"
+                  ? t("health.drift.reasonNotOauth")
+                  : t("health.drift.reasonPg")}
+            </p>
+          )}
+          {result && <p className="muted small">{result}</p>}
+          {actionError && (
+            <p className="error" role="alert">
+              {firstLine(actionError)}
+            </p>
+          )}
+          {drift.action.command && missing.length > 0 && (
+            <CopyCommand
+              command={drift.action.command}
+              hint={t("health.drift.cmdHint")}
+            />
+          )}
+          {drift.status === "degraded" && drift.error && (
+            <p className="muted small">{firstLine(drift.error)}</p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Proposal ACTIVITY + upstream's cycle verdict — never claims "dream didn't run". */
+function HeartbeatCard({ runs }: { runs: OpsDreamRunsReport | null }) {
+  const { t } = useI18n();
+  const AMBER_MS = 30 * 3600_000;
+  const RED_MS = 54 * 3600_000;
+  const last = runs?.lastActivityAt ? Date.parse(runs.lastActivityAt) : null;
+  const ageMs = last !== null ? Date.now() - last : null;
+  const freshness = runs?.cycleFreshness;
+  const freshnessColor =
+    freshness?.status === "ok"
+      ? PALETTE.ok
+      : freshness?.status === "warn"
+        ? PALETTE.warn
+        : freshness?.status === "fail"
+          ? PALETTE.stop
+          : undefined;
+  return (
+    <div className="hcard span4">
+      <p className="cap" title={t("health.heartbeatDesc")}>
+        {t("health.heartbeat")}
+      </p>
+      {!runs || runs.status === "down" ? (
+        <p className="muted small">{t("health.heartbeat.unavailable")}</p>
+      ) : (
+        <>
+          <dl className="kv">
+            <Row
+              label={t("health.heartbeat.lastActivity")}
+              value={
+                runs.neverRan || !runs.lastActivityAt
+                  ? t("health.heartbeat.never")
+                  : runs.lastActivityAt.replace("T", " ").slice(0, 16)
+              }
+            />
+            <Row
+              label={t("health.heartbeat.pending")}
+              value={String(runs.pendingTotal ?? 0)}
+            />
+            {freshness && (
+              <Row
+                label={t("health.heartbeat.cycle")}
+                value={
+                  freshness.status === "unknown"
+                    ? t("health.heartbeat.cycleUnknown")
+                    : freshness.status
+                }
+              />
+            )}
+          </dl>
+          {ageMs !== null && ageMs > AMBER_MS && (
+            <p
+              className="muted small"
+              style={{ color: ageMs > RED_MS ? PALETTE.stop : PALETTE.warn }}
+            >
+              {ageMs > RED_MS
+                ? t("health.heartbeat.staleRed")
+                : t("health.heartbeat.staleAmber")}
+            </p>
+          )}
+          {(runs.runs ?? []).slice(0, 3).map((r) => (
+            <p
+              key={r.runId}
+              className="mono small"
+              style={freshnessColor ? { color: freshnessColor } : undefined}
+            >
+              {r.end.replace("T", " ").slice(0, 16)} · {t("health.heartbeat.takes")}{" "}
+              {r.takes} · {t("health.heartbeat.pending")} {r.pending}
+            </p>
+          ))}
+          {freshness?.message && (
+            <p className="muted small" title={freshness.message}>
+              {freshness.message.slice(0, 140)}
+            </p>
+          )}
+        </>
+      )}
     </div>
   );
 }

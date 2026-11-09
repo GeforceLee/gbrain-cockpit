@@ -101,12 +101,13 @@ export function dbBasename(url: string): string {
 /**
  * The child env for one source-scoped exec: the server's environment minus
  * the two gbrain instance variables the wrappers also unset (GBRAIN_SOURCE,
- * GBRAIN_BRAIN_ID), plus the per-row scoping pair.
+ * GBRAIN_BRAIN_ID), plus the per-row scoping pair. Generalized 0.4.0: the
+ * source is optional for brain-scoped (non-takes) management execs, which
+ * set GBRAIN_HOME only — same strip discipline, no source pin.
  */
-export function buildScopedTakesEnv(
+export function buildScopedEnv(
   processEnv: Record<string, string | undefined>,
-  sourceId: string,
-  gbrainHome: string,
+  opts: { sourceId?: string; gbrainHome: string },
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(processEnv)) {
@@ -114,8 +115,8 @@ export function buildScopedTakesEnv(
     if (key === "GBRAIN_SOURCE" || key === "GBRAIN_BRAIN_ID") continue;
     env[key] = value;
   }
-  env.GBRAIN_SOURCE = sourceId;
-  env.GBRAIN_HOME = gbrainHome;
+  if (opts.sourceId !== undefined) env.GBRAIN_SOURCE = opts.sourceId;
+  env.GBRAIN_HOME = opts.gbrainHome;
   return env;
 }
 
@@ -194,7 +195,24 @@ export class TakesActionGuard {
     await this.#assertDatabase();
     return {
       bin: this.#bin,
-      env: buildScopedTakesEnv(process.env, sourceId, this.#home),
+      env: buildScopedEnv(process.env, {
+        sourceId,
+        gbrainHome: this.#home,
+      }),
+    };
+  }
+
+  /**
+   * 0.4.0 management exec: same direct-call bin + database assertion, but
+   * BRAIN-scoped (GBRAIN_HOME only — GBRAIN_SOURCE stays unset, and any
+   * inherited one is stripped) — for `auth …` / `sources list` / `doctor`
+   * verbs that operate on the whole brain, not one source.
+   */
+  async brainExec(): Promise<ScopedExec> {
+    await this.#assertDatabase();
+    return {
+      bin: this.#bin,
+      env: buildScopedEnv(process.env, { gbrainHome: this.#home }),
     };
   }
 

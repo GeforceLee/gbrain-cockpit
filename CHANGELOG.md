@@ -8,6 +8,13 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+### Added — management surface (0.4.0)
+- **Source-visibility drift card** (Health): the read-only bypass sees every source with pages in the database, MCP only the granted ones — sources with pages but no grant are invisible in every panel, and this card names them the moment they appear. Rows carry granted/missing badges with live page counts.
+- **One-key grant widening** (`POST /api/ops/grant-read`): a zero-parameter union rescope of cockpit's own OAuth client — current federated_read ∪ (pg sources ∩ CLI-verified active sources). Pure union (never revokes), never names an id upstream would reject (upstream rescope does NOT check federated ids for activeness — granting an archived one would brick token issuance), single-flight per profile, verified by re-read, then the MCP access token is force-renewed so the new scope is live immediately. Requires the new `COCKPIT_ADMIN_TOKEN` tier (step-up paste in the UI, never persisted); non-co-located or legacy-token deployments degrade to a server-built copy-command with the union list pre-computed.
+- **Proposal-activity / cycle card** (Health): dream proposal runs grouped by `proposal_run_id` (new fixed read-only SELECT — activity, honestly labeled: a healthy mature brain proposes zero takes on many nights) plus upstream's own `doctor --only cycle_freshness` verdict (warn 6h / fail 24h on `last_full_cycle_at`), message shown verbatim, never parsed. 30h/54h staleness hints.
+- **Two-tier cockpit auth** (D6 amendment): optional `COCKPIT_ADMIN_TOKEN` alongside `COCKPIT_TOKEN`; management reads ride the base token, management writes need the admin tier (403 carries two distinct self-describing messages: not-configured vs not-provided). Audit entries for management actions record the `owner (admin)` principal.
+- **Management channel matrix** (`MANAGEMENT_CHANNELS` in shared, compile-time like the adjudication matrix): `auth clients` / `sources list` / `auth rescope --client <id> --federated-read <list>` (structurally limited to exactly that shape — upstream's `--token`/`--takes-holders` reshaping forms are unreachable) / `doctor --only cycle_freshness --json` (--only locked to this one check id). The upstream admin HTTP API is deliberately NOT used: it authenticates with the owner bootstrap credential, which cockpit never holds.
+
 ## [0.3.0] - 2026-11-08
 
 The full-adjudication-desk release: every kind of pending work gbrain produces is now visible, readable and actionable in one place, verified against gbrain 0.60.611 (leewin, both brains).

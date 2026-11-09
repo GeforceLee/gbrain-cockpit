@@ -860,3 +860,343 @@ describe("handleTakePropose source scoping", () => {
     expect(calls.length).toBe(0);
   });
 });
+
+// --- 0.4.0 ops surface: source drift / dream runs / grant-read ----------------
+
+import {
+  handleOpsDreamRuns,
+  handleOpsGrantRead,
+  handleOpsSourceDrift,
+} from "./api";
+import type {
+  OpsDreamRunsReport,
+  OpsGrantReadResult,
+  OpsSourceDriftReport,
+} from "@gbrain-cockpit/shared";
+import type { Principal } from "../auth";
+
+const CLIENT_ID =
+  "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+interface OpsStub {
+  id?: string;
+  oauth?: boolean;
+  cli?: boolean;
+  pgSources?: Array<{ source_id: string; pages: number }>;
+  pgError?: Error;
+  activeSources?: Array<{ id: string; archived?: boolean }>;
+  granted?: string[];
+  clientsError?: Error;
+  dreamRuns?: Array<{ runId: string; start: string; end: string; takes: number; pending: number }>;
+  doctor?: { checks: Array<{ name: string; status: string; message?: string }> };
+}
+
+function opsCtx(stub: OpsStub) {
+  const calls: Record<string, unknown[]> = {};
+  const note = (k: string, v: unknown) => {
+    (calls[k] ??= []).push(v);
+  };
+  const ctx = {
+    id: stub.id ?? "ops-test",
+    profile: {
+      cliBin: "gbrain",
+      ...(stub.oauth ? { oauth: { clientId: CLIENT_ID } } : {}),
+    },
+    cliBinResolved: stub.cli ? "/usr/bin/gbrain" : null,
+    takesGuard: null,
+    cli: stub.cli
+      ? ({
+          sourcesListJson: async () =>
+            stub.clientsError ? Promise.reject(stub.clientsError) : { sources: stub.activeSources ?? [] },
+          authClients: async () => {
+            note("authClients", null);
+            return {
+              clients: stub.oauth
+                ? [{ client_id: CLIENT_ID, federated_read: stub.granted ?? [] }]
+                : [],
+            };
+          },
+          authRescope: async (clientId: string, list: string[]) => {
+            note("authRescope", { clientId, list });
+            stub.granted = list; // the verify re-read sees the new list
+          },
+          doctorCycleFreshness: async () => stub.doctor ?? { checks: [] },
+        } as unknown as CliDriver)
+      : null,
+    pg: {
+      sourcesWithPages: async () => {
+        if (stub.pgError) throw stub.pgError;
+        return stub.pgSources ?? [];
+      },
+      dreamRuns: async () => {
+        if (stub.pgError) throw stub.pgError;
+        return stub.dreamRuns ?? [];
+      },
+    },
+    mcp: {
+      whoami: async () => ({ scopes: ["read"], federated_read: stub.granted }),
+      forceRenew: async () => {
+        note("forceRenew", null);
+      },
+      invalidateAll: () => {
+        note("invalidateAll", null);
+      },
+    },
+  } as unknown as ApiContext;
+  return { ctx, calls };
+}
+
+const BASE: Principal = { name: "owner", tier: "base" };
+const ADMIN: Principal = { name: "owner", tier: "admin" };
+
+describe("handleOpsSourceDrift", () => {
+  test("flags active-with-pages-but-ungranted sources and builds the union copy-command", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-a",
+      oauth: true,
+      cli: true,
+      pgSources: [
+        { source_id: "iuap-apcom-migration", pages: 250 },
+        { source_id: "iuap-apcom-docs", pages: 1874 },
+      ],
+      activeSources: [
+        { id: "iuap-apcom-migration" },
+        { id: "iuap-apcom-docs" },
+      ],
+      granted: ["iuap-apcom-migration"],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.status).toBe("ok");
+    expect(body.missing).toEqual(["iuap-apcom-docs"]);
+    expect(body.action.available).toBe(true);
+    expect(body.action.command).toBe(
+      `gbrain auth rescope --client ${CLIENT_ID} --federated-read iuap-apcom-migration,iuap-apcom-docs`,
+    );
+  });
+
+  test("archived sources are never flagged — re-granting one bricks token issuance", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-b",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "old-friend", pages: 9 }],
+      activeSources: [{ id: "old-friend", archived: true }, { id: "default" }],
+      granted: ["default"],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.missing).toEqual([]);
+    expect(body.action.command).toBeUndefined();
+  });
+
+  test("CLI down: in-band reason, whoami federated_read fallback, no command", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-c",
+      oauth: true,
+      cli: false,
+      pgSources: [{ source_id: "sneaky", pages: 5 }],
+      granted: [],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.action).toEqual({ available: false, reason: "cli-unavailable" });
+    expect(body.grantedSources).toEqual([]); // whoami fallback carried it
+    expect(body.missing).toEqual(["sneaky"]);
+  });
+
+  test("pg down degrades the report and pins the action reason", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-d",
+      oauth: true,
+      cli: true,
+      pgError: new Error("read-only bypass not configured"),
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.status).toBe("degraded");
+    expect(body.action.reason).toBe("pg-unavailable");
+  });
+
+  test("legacy-token profiles are not applicable", async () => {
+    const { ctx } = opsCtx({ id: "drift-e", oauth: false, cli: true });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.action.reason).toBe("not-oauth-profile");
+  });
+
+  test("zero drift stays green with no command", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-f",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "a", pages: 1 }],
+      activeSources: [{ id: "a" }],
+      granted: ["a"],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.missing).toEqual([]);
+    expect(body.action.available).toBe(true);
+    expect(body.action.command).toBeUndefined();
+  });
+});
+
+describe("handleOpsDreamRuns", () => {
+  const RUNS = [
+    {
+      runId: "propose-20261106045917-78e25ac9",
+      start: "2026-11-06T05:06:30Z",
+      end: "2026-11-06T05:07:42Z",
+      takes: 6,
+      pending: 3,
+    },
+  ];
+
+  test("carries runs, pending total, last activity and the doctor verdict verbatim", async () => {
+    const { ctx } = opsCtx({
+      id: "dream-a",
+      cli: true,
+      dreamRuns: RUNS,
+      doctor: {
+        checks: [
+          {
+            name: "cycle_freshness",
+            status: "fail",
+            message: "Source 'yon-bip' last cycled 69h ago",
+          },
+        ],
+      },
+    });
+    const body = (await (await handleOpsDreamRuns(ctx)).json()) as OpsDreamRunsReport;
+    expect(body.status).toBe("ok");
+    expect(body.neverRan).toBe(false);
+    expect(body.lastActivityAt).toBe("2026-11-06T05:07:42Z");
+    expect(body.pendingTotal).toBe(3);
+    expect(body.cycleFreshness).toEqual({
+      status: "fail",
+      message: "Source 'yon-bip' last cycled 69h ago",
+    });
+  });
+
+  test("empty table is neverRan, never an error; doctor band maps unknown shapes", async () => {
+    const { ctx } = opsCtx({
+      id: "dream-b",
+      cli: true,
+      doctor: { checks: [{ name: "cycle_freshness", status: "weird-future-band" }] },
+    });
+    const body = (await (await handleOpsDreamRuns(ctx)).json()) as OpsDreamRunsReport;
+    expect(body.neverRan).toBe(true);
+    expect(body.lastActivityAt).toBeUndefined();
+    expect(body.cycleFreshness?.status).toBe("unknown");
+  });
+
+  test("pg down answers in-band down; no CLI leaves cycleFreshness unset", async () => {
+    const down = opsCtx({ id: "dream-c", cli: true, pgError: new Error("db gone") });
+    const bodyDown = (await (await handleOpsDreamRuns(down.ctx)).json()) as OpsDreamRunsReport;
+    expect(bodyDown.status).toBe("down");
+
+    const noCli = opsCtx({ id: "dream-d", cli: false });
+    const bodyNoCli = (await (await handleOpsDreamRuns(noCli.ctx)).json()) as OpsDreamRunsReport;
+    expect(bodyNoCli.status).toBe("ok");
+    expect(bodyNoCli.cycleFreshness).toBeUndefined();
+  });
+});
+
+describe("handleOpsGrantRead", () => {
+  test("base principal gets 403 with the step-up message when admin is configured", async () => {
+    const { ctx } = opsCtx({ id: "grant-a", oauth: true, cli: true });
+    const res = await handleOpsGrantRead(ctx, BASE, true);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe("E_FORBIDDEN");
+    expect(body.error).toContain("COCKPIT_ADMIN_TOKEN");
+    expect(body.error).toContain("step-up");
+  });
+
+  test("base principal gets the not-configured message when no admin token exists", async () => {
+    const { ctx } = opsCtx({ id: "grant-b", oauth: true, cli: true });
+    const res = await handleOpsGrantRead(ctx, BASE, false);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("not configured");
+  });
+
+  test("admin principal: pure union rescope, verify, force-renew, invalidate, audit-able shape", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-c",
+      oauth: true,
+      cli: true,
+      pgSources: [
+        { source_id: "a", pages: 10 },
+        { source_id: "b", pages: 20 },
+      ],
+      activeSources: [{ id: "a" }, { id: "b" }, { id: "archived-x", archived: true }],
+      granted: ["a"],
+    });
+    const res = await handleOpsGrantRead(ctx, ADMIN, true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as OpsGrantReadResult;
+    expect(body.added).toEqual(["b"]);
+    expect(body.federatedRead).toEqual(["a", "b"]);
+    // replace-semantics: the rescope argv carried the WHOLE new list
+    expect(calls["authRescope"]).toEqual([
+      { clientId: CLIENT_ID, list: ["a", "b"] },
+    ]);
+    expect(calls["forceRenew"]).toHaveLength(1);
+    expect(calls["invalidateAll"]).toHaveLength(1);
+  });
+
+  test("idempotent: nothing to add → no rescope, added stays empty", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-d",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "a", pages: 1 }],
+      activeSources: [{ id: "a" }],
+      granted: ["a"],
+    });
+    const body = (await (await handleOpsGrantRead(ctx, ADMIN, true)).json()) as OpsGrantReadResult;
+    expect(body.added).toEqual([]);
+    expect(calls["authRescope"]).toBeUndefined();
+  });
+
+  test("concurrent double-clicks share one run (single-flight)", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-e",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "b", pages: 2 }],
+      activeSources: [{ id: "b" }],
+      granted: [],
+    });
+    const [r1, r2] = await Promise.all([
+      handleOpsGrantRead(ctx, ADMIN, true),
+      handleOpsGrantRead(ctx, ADMIN, true),
+    ]);
+    const b1 = (await r1.json()) as OpsGrantReadResult;
+    const b2 = (await r2.json()) as OpsGrantReadResult;
+    expect(b1.added).toEqual(["b"]);
+    expect(b2.added).toEqual(["b"]);
+    expect(calls["authRescope"]).toHaveLength(1);
+  });
+
+  test("archived candidates are never granted (upstream would not refuse them)", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-f",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "ghost", pages: 3 }],
+      activeSources: [{ id: "ghost", archived: true }],
+      granted: [],
+    });
+    const body = (await (await handleOpsGrantRead(ctx, ADMIN, true)).json()) as OpsGrantReadResult;
+    expect(body.added).toEqual([]);
+    expect(calls["authRescope"]).toBeUndefined();
+  });
+
+  test("no CLI channel or non-OAuth profile refuse with the upstream envelope class", async () => {
+    const noCli = opsCtx({ id: "grant-g", oauth: true, cli: false });
+    await expect(handleOpsGrantRead(noCli.ctx, ADMIN, true)).rejects.toThrow(
+      /CLI channel unavailable/,
+    );
+    const legacy = opsCtx({ id: "grant-h", oauth: false, cli: true });
+    await expect(handleOpsGrantRead(legacy.ctx, ADMIN, true)).rejects.toThrow(
+      /not an OAuth client/,
+    );
+  });
+});

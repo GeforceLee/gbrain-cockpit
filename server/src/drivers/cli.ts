@@ -2,10 +2,14 @@ import { execFile } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import { promisify } from "node:util";
 import {
+  FEDERATED_LIST_RE,
+  OWNER_CLIENT_ID_RE,
   TRUST_REF_RE,
+  validateFederatedReadList,
   type CliChannelStatus,
   type ContradictionProposal,
   type EdgeProposal,
+  type OpsClientGrant,
   type TrustReviewEnvelope,
 } from "@gbrain-cockpit/shared";
 
@@ -176,6 +180,50 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
     words: ["decide", "proposals", "undo"],
     args: [{ kind: "positional", name: "id", regex: ID_RE }],
     json: false,
+  },
+  // --- management verbs (0.4.0, MANAGEMENT_CHANNELS; probes 2026-11-09 on
+  // 0.60.558 — internal/probes/ops-management-0.60.558-20261109.md). The
+  // structural shape is the security story: `auth rescope` accepts ONLY
+  // --client + --federated-read here — upstream's real verb also reshapes
+  // legacy tokens (--token/--takes-holders), and those forms must never be
+  // reachable through cockpit. Values arrive server-derived (zero request
+  // data reaches argv), the regexes below still gate every byte.
+  "auth clients": {
+    words: ["auth", "clients"],
+    args: [{ kind: "flag", literal: "--json" }],
+    json: true,
+  },
+  "auth rescope": {
+    words: ["auth", "rescope"],
+    args: [
+      { kind: "value", literal: "--client", name: "clientId", regex: OWNER_CLIENT_ID_RE },
+      {
+        kind: "value",
+        literal: "--federated-read",
+        name: "sources",
+        regex: FEDERATED_LIST_RE,
+      },
+    ],
+    json: false,
+  },
+  // owner-view source registry incl. the `archived` flag — the active-source
+  // gate for grant-read (upstream rescope does NOT check federated ids for
+  // activeness; granting an archived one would brick token issuance).
+  "sources list": {
+    words: ["sources", "list"],
+    args: [{ kind: "flag", literal: "--json" }],
+    json: true,
+  },
+  // one check, by name: cycle_freshness reads sources.config→
+  // last_full_cycle_at (upstream's own "pipeline ran" verdict). --only is
+  // locked to this single check id — arbitrary doctor checks are NOT
+  // whitelisted (several are slow/heavy; probed 1.26s for this one).
+  "doctor cycle freshness": {
+    words: ["doctor"],
+    args: [
+      { kind: "value", literal: "--only", name: "check", regex: /^cycle_freshness$/ },
+      { kind: "flag", literal: "--json" }],
+    json: true,
   },
 };
 
@@ -399,8 +447,66 @@ export class CliDriver {
     return this.#runJson("takes propose failed", {});
   }
 
-  async #runJson<T>(key: string, values: Record<string, string>): Promise<T> {
-    const { stdout } = await this.#runRaw(key, values);
+  // --- management verbs (0.4.0, MANAGEMENT_CHANNELS) ---------------------------
+
+  /** Owner-view OAuth client registry (`auth clients --json`, own row included). */
+  async authClients(
+    opts: ScopedExecOpts = {},
+  ): Promise<{ clients?: OpsClientGrant[]; [k: string]: unknown }> {
+    return this.#runJson("auth clients", {}, opts);
+  }
+
+  /**
+   * Widen a client's federated read scope. REPLACE semantics upstream:
+   * `sources` must be the client's whole NEW list (current ∪ additions —
+   * the route computes it server-side), list-validated on top of the
+   * whitelist regexes.
+   */
+  async authRescope(
+    clientId: string,
+    sources: string[],
+    opts: ScopedExecOpts = {},
+  ): Promise<{ output: string }> {
+    const list = validateFederatedReadList(sources).join(",");
+    return this.#runText("auth rescope", { clientId, sources: list }, opts);
+  }
+
+  /** Owner-view source registry incl. the `archived` flag (active-source gate). */
+  async sourcesListJson(
+    opts: ScopedExecOpts = {},
+  ): Promise<{
+    sources?: { id: string; archived?: boolean; [k: string]: unknown }[];
+    [k: string]: unknown;
+  }> {
+    return this.#runJson("sources list", {}, opts);
+  }
+
+  /**
+   * The cycle_freshness doctor check — upstream's own "did the content
+   * pipeline run" verdict (sources.config→last_full_cycle_at, warn 6h/fail
+   * 24h). Structured consumption is name/status ONLY; `message` is human
+   * prose the UI echoes verbatim, never parsed.
+   */
+  async doctorCycleFreshness(
+    opts: ScopedExecOpts = {},
+  ): Promise<{
+    checks?: {
+      name?: string;
+      status?: string;
+      message?: string;
+      [k: string]: unknown;
+    }[];
+    [k: string]: unknown;
+  }> {
+    return this.#runJson("doctor cycle freshness", { check: "cycle_freshness" }, opts);
+  }
+
+  async #runJson<T>(
+    key: string,
+    values: Record<string, string>,
+    opts?: ScopedExecOpts,
+  ): Promise<T> {
+    const { stdout } = await this.#runRaw(key, values, opts);
     try {
       return JSON.parse(stdout) as T;
     } catch {

@@ -402,3 +402,148 @@ describe("PgReadonlyDriver multi-source identity", () => {
     expect(snapshot.fingerprint).toMatch(/^p2\//); // no "s" marker
   });
 });
+
+// --- 0.4.0 ops reads: sources-with-pages + dream runs ------------------------
+
+const SQL_SOURCES_WITH_PAGES =
+  "SELECT source_id, count(*)::int AS pages FROM pages GROUP BY source_id " +
+  "ORDER BY pages DESC, source_id ASC";
+const SQL_DREAM_RUNS =
+  "SELECT proposal_run_id, min(proposed_at) AS run_start, max(proposed_at) AS run_end, " +
+  "count(*)::int AS takes, count(*) FILTER (WHERE status = 'pending')::int AS pending " +
+  "FROM take_proposals GROUP BY proposal_run_id " +
+  "ORDER BY run_end DESC LIMIT 30";
+
+describe("PgReadonlyDriver sourcesWithPages (ops drift)", () => {
+  test("unconfigured throws without querying", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([], log) });
+    await expect(driver.sourcesWithPages()).rejects.toThrow();
+    expect(log.length).toBe(0);
+  });
+
+  test("groups pages per source through the ONE fixed statement, newest-size first", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery(
+        [
+          COLUMNS_WITH_SOURCE,
+          {
+            text: SQL_SOURCES_WITH_PAGES,
+            rows: [
+              { source_id: "iuap-apcom-docs", pages: 1874 },
+              { source_id: "yon-bip", pages: "12" }, // pg int arrives as number, string tolerated
+            ],
+          },
+        ],
+        log,
+      ),
+    });
+    const sources = await driver.sourcesWithPages();
+    expect(sources).toEqual([
+      { source_id: "iuap-apcom-docs", pages: 1874 },
+      { source_id: "yon-bip", pages: 12 },
+    ]);
+    expect(log).toEqual([
+      COLUMNS_WITH_SOURCE.text,
+      SQL_SOURCES_WITH_PAGES,
+    ]); // the whole SQL surface, in order
+  });
+
+  test("a pre-source-column schema returns [] without the group-by (no axis, no drift)", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery([COLUMNS], log),
+    });
+    expect(await driver.sourcesWithPages()).toEqual([]);
+    expect(log).toEqual([COLUMNS.text]);
+  });
+
+  test("query failures propagate (drift card degrades in-band, never crashes)", async () => {
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: async () => {
+        throw new Error("permission denied for table pages");
+      },
+    });
+    await expect(driver.sourcesWithPages()).rejects.toThrow(/permission denied/);
+  });
+});
+
+describe("PgReadonlyDriver dreamRuns (ops heartbeat)", () => {
+  test("unconfigured throws without querying", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([], log) });
+    await expect(driver.dreamRuns()).rejects.toThrow();
+    expect(log.length).toBe(0);
+  });
+
+  test("aggregates runs with Date and string timestamps through the ONE fixed statement", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery(
+        [
+          {
+            text: SQL_DREAM_RUNS,
+            rows: [
+              {
+                proposal_run_id: "propose-20261106045917-78e25ac9",
+                run_start: new Date("2026-11-06T05:06:30.345Z"),
+                run_end: "2026-11-06T05:07:42.515Z",
+                takes: 6,
+                pending: 3,
+              },
+              {
+                proposal_run_id: "propose-20261109005024-12d7d823",
+                run_start: "2026-11-09T00:50:24Z",
+                run_end: "2026-11-09T00:50:26Z",
+                takes: 0,
+                pending: 0,
+              },
+            ],
+          },
+        ],
+        log,
+      ),
+    });
+    const runs = await driver.dreamRuns();
+    expect(runs).toEqual([
+      {
+        runId: "propose-20261106045917-78e25ac9",
+        start: "2026-11-06T05:06:30.345Z",
+        end: "2026-11-06T05:07:42.515Z",
+        takes: 6,
+        pending: 3,
+      },
+      {
+        runId: "propose-20261109005024-12d7d823",
+        start: "2026-11-09T00:50:24.000Z",
+        end: "2026-11-09T00:50:26.000Z",
+        takes: 0,
+        pending: 0,
+      },
+    ]);
+    expect(log).toEqual([SQL_DREAM_RUNS]); // the whole SQL surface, once
+  });
+
+  test("an empty table is a valid never-proposed state, not an error", async () => {
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery([{ text: SQL_DREAM_RUNS, rows: [] }]),
+    });
+    expect(await driver.dreamRuns()).toEqual([]);
+  });
+
+  test("query failures propagate (heartbeat degrades in-band, never crashes)", async () => {
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: async () => {
+        throw new Error("permission denied for table take_proposals");
+      },
+    });
+    await expect(driver.dreamRuns()).rejects.toThrow(/permission denied/);
+  });
+});

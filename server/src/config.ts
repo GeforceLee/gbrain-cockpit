@@ -23,6 +23,13 @@ export interface Config {
   readonly bind: string;
   readonly port: number;
   readonly cockpitToken: string;
+  /**
+   * Optional management tier (0.4.0, D6 amendment): unlocks management
+   * writes only. Unset ⇒ management writes answer 403 in-band and the UI
+   * falls back to copy-commands — single-token installs behave exactly as
+   * before. Never equals the base token (validated).
+   */
+  readonly adminToken: string | null;
 }
 
 export function loadConfig(
@@ -39,10 +46,22 @@ export function loadConfig(
     );
   }
 
+  const adminToken = env.COCKPIT_ADMIN_TOKEN?.trim() || null;
+  if (adminToken === cockpitToken) {
+    // One value for both tiers would collapse admin onto every read+adjudicate
+    // request — the exact privilege merge the split exists to prevent.
+    const generated = randomBytes(32).toString("base64url");
+    throw new ConfigError(
+      "COCKPIT_ADMIN_TOKEN must differ from COCKPIT_TOKEN.",
+      `generated a strong admin token for you:\n  COCKPIT_ADMIN_TOKEN=${generated}\nput it in .env (or the environment) and start again.`,
+    );
+  }
+
   return {
     bind: env.COCKPIT_BIND?.trim() || "127.0.0.1",
     port: parsePort(env.COCKPIT_PORT ?? "8787"),
     cockpitToken,
+    adminToken,
   };
 }
 

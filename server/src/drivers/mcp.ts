@@ -215,6 +215,17 @@ export class McpDriver {
     this.#cache.clear();
   }
 
+  /**
+   * 0.4.0 ops: force-discard the cached OAuth access token and mint a fresh
+   * one now. Called after `auth rescope` — the widened federated_read only
+   * exists on tokens minted AFTER the grant change, and without this the
+   * drift card would stay red (honestly wrong) until natural expiry.
+   * No-op for static-token profiles.
+   */
+  async forceRenew(): Promise<void> {
+    await this.#ensureRenewed(true);
+  }
+
   /** The latest upstream behavior-disclosure notices (ARCHITECTURE §7). */
   get lastNotices(): readonly string[] {
     return this.#notices;

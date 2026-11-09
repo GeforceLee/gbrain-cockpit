@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildScopedTakesEnv,
+  buildScopedEnv,
   buildTakeQueueCommands,
   dbBasename,
   TakesActionGuard,
@@ -30,23 +30,32 @@ describe("dbBasename", () => {
   });
 });
 
-describe("buildScopedTakesEnv", () => {
-  test("scopes the child env: source+home set, instance vars stripped", () => {
-    const env = buildScopedTakesEnv(
+describe("buildScopedEnv", () => {
+  test("source-scoped form: source+home set, instance vars stripped", () => {
+    const env = buildScopedEnv(
       {
         PATH: "/usr/bin",
         GBRAIN_SOURCE: "stale-from-shell",
         GBRAIN_BRAIN_ID: "other-brain",
         HOME: "/home/op",
       },
-      "mail-import",
-      "/srv/brain-bip-home",
+      { sourceId: "mail-import", gbrainHome: "/srv/brain-bip-home" },
     );
     expect(env.GBRAIN_SOURCE).toBe("mail-import");
     expect(env.GBRAIN_HOME).toBe("/srv/brain-bip-home");
     expect(env.GBRAIN_BRAIN_ID).toBeUndefined(); // wrapper unsets BOTH vars
     expect(env.PATH).toBe("/usr/bin");
     expect(env.HOME).toBe("/home/op");
+  });
+
+  test("brain-scoped form (0.4.0 management execs): home set, NO source pin", () => {
+    const env = buildScopedEnv(
+      { PATH: "/usr/bin", GBRAIN_SOURCE: "leaked-from-shell", GBRAIN_BRAIN_ID: "x" },
+      { gbrainHome: "/srv/brain-bip-home" },
+    );
+    expect(env.GBRAIN_SOURCE).toBeUndefined(); // auth/sources/doctor verbs are whole-brain
+    expect(env.GBRAIN_HOME).toBe("/srv/brain-bip-home");
+    expect(env.GBRAIN_BRAIN_ID).toBeUndefined();
   });
 });
 
@@ -74,6 +83,22 @@ describe("TakesActionGuard", () => {
     expect(scoped.bin).toBe("/opt/gbrain-real/gbrain");
     expect(scoped.env.GBRAIN_SOURCE).toBe("mail-import");
     expect(scoped.env.GBRAIN_HOME).toBe("/srv/brain-bip-home");
+  });
+
+  test("brainExec (0.4.0): same assertion, home-scoped env with no source pin", async () => {
+    const { guard, files } = makeGuard();
+    files.set("/srv/brain-bip-home/.gbrain/config.json", CONFIG("bip"));
+    const scoped = await guard.brainExec();
+    expect(scoped.bin).toBe("/opt/gbrain-real/gbrain");
+    expect(scoped.env.GBRAIN_HOME).toBe("/srv/brain-bip-home");
+    expect(scoped.env.GBRAIN_SOURCE).toBeUndefined();
+    expect(scoped.env.GBRAIN_BRAIN_ID).toBeUndefined();
+  });
+
+  test("brainExec refuses on the same database mismatch as scopedExec", async () => {
+    const { guard, files } = makeGuard({ expectedDb: "bip" });
+    files.set("/srv/brain-bip-home/.gbrain/config.json", CONFIG("postgres"));
+    await expect(guard.brainExec()).rejects.toBeInstanceOf(TakesSourceGuardError);
   });
 
   test("database mismatch refuses the exec, naming databases only — never the URL", async () => {

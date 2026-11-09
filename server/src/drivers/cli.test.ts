@@ -365,3 +365,149 @@ describe("wrapper stderr banners", () => {
     }
   });
 });
+
+// --- 0.4.0 management verbs (probes 2026-11-09, 0.60.558) --------------------
+
+const CLIENT_ID =
+  "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+describe("management verbs: buildArgv shape", () => {
+  test("auth clients and sources list are flag-only JSON reads", () => {
+    expect(buildArgv("auth clients", {})).toEqual(["auth", "clients", "--json"]);
+    expect(buildArgv("sources list", {})).toEqual(["sources", "list", "--json"]);
+  });
+
+  test("auth rescope carries exactly --client + --federated-read", () => {
+    expect(
+      buildArgv("auth rescope", { clientId: CLIENT_ID, sources: "a,b-c" }),
+    ).toEqual(["auth", "rescope", "--client", CLIENT_ID, "--federated-read", "a,b-c"]);
+  });
+
+  test("doctor --only is locked to the cycle_freshness check id", () => {
+    expect(buildArgv("doctor cycle freshness", { check: "cycle_freshness" })).toEqual([
+      "doctor",
+      "--only",
+      "cycle_freshness",
+      "--json",
+    ]);
+    // any other check id — including upstream's slow/heavy checks — is refused
+    expect(() =>
+      buildArgv("doctor cycle freshness", { check: "persistence_capacity" }),
+    ).toThrow(CliValidationError);
+    expect(() =>
+      buildArgv("doctor cycle freshness", { check: "all" }),
+    ).toThrow(CliValidationError);
+  });
+
+  test("injection shapes are refused: rescope values", () => {
+    // client id must be gbrain's minted shape
+    for (const bad of ["../../etc", "cl_abc", "gbrain_cl_", `gbrain_cl_${"z".repeat(64)}`, "--token"]) {
+      expect(() =>
+        buildArgv("auth rescope", { clientId: bad, sources: "a" }),
+      ).toThrow(CliValidationError);
+    }
+    // federated list: leading dash, empty segment, flag-shaped value, whitespace
+    for (const bad of ["-a", "a,,b", "--json", "a b", "A,B", "a;b"]) {
+      expect(() =>
+        buildArgv("auth rescope", { clientId: CLIENT_ID, sources: bad }),
+      ).toThrow(CliValidationError);
+    }
+  });
+
+  test("legacy-token reshaping forms of rescope are structurally unreachable", () => {
+    // upstream's real verb also takes --token/--takes-holders; the spec has
+    // no slot for them, so they can only arrive as a VALUE and die on regex
+    expect(() =>
+      buildArgv("auth rescope", { clientId: CLIENT_ID, sources: "--takes-holders world" }),
+    ).toThrow(CliValidationError);
+    expect(() =>
+      buildArgv("auth rescope --token t", { clientId: CLIENT_ID, sources: "a" }),
+    ).toThrow(/not whitelisted/);
+  });
+
+  test("missing values are rejected", () => {
+    expect(() => buildArgv("auth rescope", { clientId: CLIENT_ID })).toThrow(
+      CliValidationError,
+    );
+    expect(() => buildArgv("auth rescope", { sources: "a" })).toThrow(
+      CliValidationError,
+    );
+  });
+});
+
+describe("management verbs: CliDriver", () => {
+  test("authClients parses the clients envelope", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: JSON.stringify({
+        window_days: 30,
+        clients: [{ client_id: CLIENT_ID, federated_read: ["a", "b"] }],
+      }),
+      stderr: "",
+    }));
+    const out = await driver.authClients();
+    expect(out.clients?.[0]?.client_id).toBe(CLIENT_ID);
+    expect(calls[0]!.argv).toEqual(["auth", "clients", "--json"]);
+  });
+
+  test("authRescope validates the list before any exec (union shape, deduped)", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: "OAuth client rescoped: cockpit-ui",
+      stderr: "",
+    }));
+    await driver.authRescope(CLIENT_ID, ["a", "b", "a"]);
+    expect(calls[0]!.argv).toEqual([
+      "auth",
+      "rescope",
+      "--client",
+      CLIENT_ID,
+      "--federated-read",
+      "a,b",
+    ]);
+    await expect(driver.authRescope(CLIENT_ID, [])).rejects.toThrow();
+    await expect(driver.authRescope(CLIENT_ID, ["--evil"])).rejects.toThrow();
+  });
+
+  test("authRescope routes through the scoped exec when the guard provides one", async () => {
+    const { driver, calls } = makeDriver(async () => ({ stdout: "ok", stderr: "" }));
+    await driver.authRescope(CLIENT_ID, ["a"], {
+      bin: "/real/gbrain",
+      env: { GBRAIN_HOME: "/home/dev/gbrain-bip" },
+    });
+    expect(calls[0]!.bin).toBe("/real/gbrain");
+    expect(calls[0]!.env?.GBRAIN_HOME).toBe("/home/dev/gbrain-bip");
+  });
+
+  test("sourcesListJson parses the owner-view registry incl. archived", async () => {
+    const { driver } = makeDriver(async () => ({
+      stdout: JSON.stringify({
+        sources: [
+          { id: "default", archived: false },
+          { id: "old-friend", archived: true },
+        ],
+      }),
+      stderr: "",
+    }));
+    const out = await driver.sourcesListJson();
+    expect(out.sources?.map((s) => [s.id, s.archived])).toEqual([
+      ["default", false],
+      ["old-friend", true],
+    ]);
+  });
+
+  test("doctorCycleFreshness returns the check envelope; non-JSON stdout is protocol drift", async () => {
+    const { driver } = makeDriver(async () => ({
+      stdout: JSON.stringify({
+        status: "unhealthy",
+        checks: [
+          { name: "cycle_freshness", status: "fail", message: "Source 'yon-bip' last cycled 69h ago" },
+        ],
+      }),
+      stderr: "",
+    }));
+    const out = await driver.doctorCycleFreshness();
+    expect(out.checks?.[0]?.status).toBe("fail");
+
+    const { driver: bad } = makeDriver(async () => ({ stdout: "not json", stderr: "" }));
+    await expect(bad.doctorCycleFreshness()).rejects.toBeInstanceOf(CliExecutionError);
+  });
+});

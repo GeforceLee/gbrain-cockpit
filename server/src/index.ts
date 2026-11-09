@@ -26,6 +26,9 @@ import {
   handleSearch,
   handleSources,
   handleSourcesStatus,
+  handleOpsSourceDrift,
+  handleOpsDreamRuns,
+  handleOpsGrantRead,
   handleTakePropose,
   handleTakeResolve,
   handleTrustDrop,
@@ -74,7 +77,10 @@ for (const v of brainsConfig.ignoredLegacyVars) {
   );
 }
 
-const verifier = new TokenVerifier(cfg.cockpitToken);
+const verifier = new TokenVerifier({
+  base: cfg.cockpitToken,
+  admin: cfg.adminToken,
+});
 
 // Static web root: explicit env wins (compiled-binary deployments), then the
 // repo checkout layout; absent both (dev loop via vite) static stays off.
@@ -174,6 +180,22 @@ const server = Bun.serve({
             return await handleSources(channels);
           case "GET /api/sources/status":
             return await handleSourcesStatus(channels);
+          // 0.4.0 ops surface: reads on the base token, grant-read gated to
+          // the admin tier inside the handler (two distinct 403 messages).
+          case "GET /api/ops/sources-drift":
+            return await handleOpsSourceDrift(channels);
+          case "GET /api/ops/dream-runs":
+            return await handleOpsDreamRuns(channels);
+          case "POST /api/ops/grant-read": {
+            const res = await handleOpsGrantRead(
+              channels,
+              principal,
+              verifier.adminConfigured,
+            );
+            // derived whoami hints may change with the widened grant
+            registry.invalidateProfileInfos();
+            return res;
+          }
           case "GET /api/inbox":
             return await handleInbox(channels);
           case "POST /api/inbox/trust/drop":
@@ -227,6 +249,11 @@ const server = Bun.serve({
 
 console.log(`[cockpit] v${COCKPIT_VERSION} listening on http://${cfg.bind}:${cfg.port}`);
 console.log("[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>'");
+console.log(
+  verifier.adminConfigured
+    ? "[cockpit] auth: management writes require the COCKPIT_ADMIN_TOKEN tier"
+    : "[cockpit] auth: COCKPIT_ADMIN_TOKEN unset — management writes answer 403 and degrade to copy-commands",
+);
 
 process.on("SIGINT", () => {
   console.log("[cockpit] shutting down");
