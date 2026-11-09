@@ -35,6 +35,8 @@ export const en = {
   "nav.search.en": "Search",
   "nav.health.zh": "健康",
   "nav.health.en": "Health",
+  "nav.admin.zh": "管理",
+  "nav.admin.en": "Admin",
 
   "panel.inbox.title": "Inbox",
   "panel.inbox.desc":
@@ -49,6 +51,24 @@ export const en = {
   "panel.health.title": "Health",
   "panel.health.desc":
     "gbrain service status, channel connectivity and latency, dream state.",
+  "panel.admin.title": "Admin",
+  "panel.admin.desc":
+    "visible when the deployment configures the admin tier: the OAuth client registry (read-only), revoke via copy-command, and the grant-widening entry.",
+  "admin.clients": "client grants",
+  "admin.clientsDesc": "the OAuth client registry (auth clients, owner view, read-only; the highlighted row is cockpit itself)",
+  "admin.clientsUnavailable": "CLI channel unavailable — the registry is only readable on a co-located deployment",
+  "admin.clientsDegraded": "read failed — self-check with the terminal command",
+  "admin.clientsEmpty": "no OAuth clients on this brain yet",
+  "admin.clientsHint": "terminal read for when co-location is unavailable (human view)",
+  "admin.selfRow": "this cockpit",
+  "admin.revokedRow": "revoked",
+  "admin.scopes": "scopes",
+  "admin.surface": "surface",
+  "admin.federatedRead": "federated read",
+  "admin.revoke": "revoke…",
+  "admin.revokeHint": "owner terminal only: hard-deletes the client and cascades to all its tokens (irreversible)",
+  "admin.revokeSelfHint": "this is cockpit's own client — revoking it cuts this profile's MCP channel",
+  "admin.revokeFooter": "revoke and scope reshaping are copy-commands the owner runs on the brain host; the ONLY one-key management write is grant-widening (a union, never a revoke).",
 
   "pages.filterByType": "Filter by type",
   "pages.allTypes": "all",

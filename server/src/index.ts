@@ -27,6 +27,7 @@ import {
   handleSources,
   handleSourcesStatus,
   handleOpsSourceDrift,
+  handleOpsClients,
   handleOpsDreamRuns,
   handleOpsGrantRead,
   handleTakePropose,
@@ -163,7 +164,7 @@ const server = Bun.serve({
       try {
         switch (route) {
           case "GET /api/profiles":
-            return await handleProfiles(registry);
+            return await handleProfiles(registry, verifier.adminConfigured);
           case "GET /api/healthz":
             return Response.json(await getHealthReport(channels));
           case "GET /api/graph":
@@ -184,6 +185,8 @@ const server = Bun.serve({
           // the admin tier inside the handler (two distinct 403 messages).
           case "GET /api/ops/sources-drift":
             return await handleOpsSourceDrift(channels);
+          case "GET /api/ops/clients":
+            return await handleOpsClients(channels);
           case "GET /api/ops/dream-runs":
             return await handleOpsDreamRuns(channels);
           case "POST /api/ops/grant-read": {

@@ -114,7 +114,7 @@ gbrain-cockpit/
 ├── server/   Bun + TypeScript,零运行时 npm 依赖
 │   └── src/  drivers/{mcp,cli,pg-readonly}.ts、routes/、auth、config、static
 ├── web/      React 18 + Vite + sigma.js(图谱走 canvas)
-│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health}、locales/{zh-CN,en}
+│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health,Admin}、locales/{zh-CN,en}
 ├── shared/   通道矩阵类型、错误码、版本号——前后端共同编译的单一来源
 └── docs/     本文及其同级文档
 ```

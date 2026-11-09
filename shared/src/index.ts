@@ -234,6 +234,15 @@ export interface ProfileInfo {
 export interface ProfilesResponse {
   defaultId: string;
   profiles: ProfileInfo[];
+  /**
+   * Whether this cockpit deployment has the management tier configured
+   * (COCKPIT_ADMIN_TOKEN set) — a DEPLOYMENT capability, not a browser
+   * state: the Admin panel is visible to any base-token session on a
+   * two-tier install (management reads ride the base token; only the
+   * grant write asks for the admin token at step-up). Absent/false ⇒ the
+   * sixth panel never renders; single-token installs see zero change.
+   */
+  adminTier?: boolean;
 }
 
 // --- Owner copy-commands -----------------------------------------------------
@@ -320,6 +329,31 @@ export function authRescopeCommand(
   }
   const list = validateFederatedReadList(sources).join(",");
   return `${bin} auth rescope --client ${clientId} --federated-read ${list}`;
+}
+
+/**
+ * The revoke copy-command — owner-terminal ONLY by design (upstream
+ * hard-deletes the client and cascades to its tokens+codes; the same
+ * owner-presence class as trust verbs). Never a whitelist verb, never a
+ * one-key route, never in MANAGEMENT_CHANNELS. Shape pinned by probe:
+ * `auth revoke-client <client_id>` (positional; 0.60.558, 2026-11-09).
+ */
+export function authRevokeClientCommand(bin: string, clientId: string): string {
+  assertOwnerBin(bin);
+  if (!OWNER_CLIENT_ID_RE.test(clientId)) {
+    throw new Error(`owner command client id rejected by OWNER_CLIENT_ID_RE: ${clientId}`);
+  }
+  return `${bin} auth revoke-client ${clientId}`;
+}
+
+/**
+ * The human-view registry read for the CLI-down degradation hint — plain
+ * `auth clients`, NOT the --json form (the owner pasting this wants the
+ * readable table, not raw JSON; --json stays on the whitelist verb).
+ */
+export function authClientsListCommand(bin: string): string {
+  assertOwnerBin(bin);
+  return `${bin} auth clients`;
 }
 
 /**
@@ -996,6 +1030,22 @@ export interface OpsGrantReadResult {
   /** sources added by THIS call; empty = idempotent no-op (already granted) */
   added: string[];
   federatedRead: string[];
+}
+
+/**
+ * GET /api/ops/clients — the OAuth client registry (`auth clients --json`,
+ * owner view via the CLI whitelist). Base token: a read. `selfClientId`
+ * names cockpit's own row (from the profile's credentials file); absent on
+ * legacy-token profiles. Revoked rows are surfaced as `revoked: true` —
+ * the UI badges them instead of offering actions.
+ */
+export interface OpsClientsReport {
+  status: CheckStatus;
+  clients?: OpsClientGrant[];
+  selfClientId?: string;
+  /** human-view read command for the CLI-down degradation hint */
+  command?: string;
+  error?: string;
 }
 
 // --- Graph (read-only bypass) -------------------------------------------------

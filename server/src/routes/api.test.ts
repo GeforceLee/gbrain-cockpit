@@ -1262,3 +1262,117 @@ describe("handlePageFacets source scoping", () => {
     ).rejects.toThrow();
   });
 });
+
+// --- 0.4.x Admin panel: /api/ops/clients + adminTier --------------------------
+
+import { handleOpsClients, handleProfiles } from "./api";
+import type { OpsClientsReport, ProfilesResponse } from "@gbrain-cockpit/shared";
+
+const SELF_CLIENT_ID =
+  "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+const OTHER_CLIENT_ID =
+  "gbrain_cl_aaaaf6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+describe("handleOpsClients", () => {
+  function clientsCtx(opts: {
+    cli?: boolean;
+    oauth?: boolean;
+    guard?: { brainExec: () => Promise<{ bin: string; env: Record<string, string> }> };
+    fail?: Error;
+  }) {
+    const guardCalls: unknown[] = [];
+    const guard = opts.guard;
+    const ctx = {
+      id: "clients-test",
+      profile: {
+        cliBin: "gbrain",
+        ...(opts.oauth ? { oauth: { clientId: SELF_CLIENT_ID } } : {}),
+      },
+      takesGuard: guard
+        ? {
+            brainExec: async () => {
+              guardCalls.push(null);
+              return guard.brainExec();
+            },
+          }
+        : null,
+      cli: opts.cli
+        ? ({
+            authClients: async () => {
+              if (opts.fail) throw opts.fail;
+              return {
+                clients: [
+                  { client_id: SELF_CLIENT_ID, client_name: "cockpit-ui", scopes: "read", federated_read: ["a", "b"], surface: "full" },
+                  { client_id: OTHER_CLIENT_ID, client_name: "other", scopes: "read", federated_read: [] },
+                ],
+              };
+            },
+          } as unknown as CliDriver)
+        : null,
+    } as unknown as ApiContext;
+    return { ctx, guardCalls };
+  }
+
+  test("ok: rows + selfClientId on an OAuth profile, no guard → plain exec", async () => {
+    const { ctx, guardCalls } = clientsCtx({ cli: true, oauth: true });
+    const body = (await (await handleOpsClients(ctx)).json()) as OpsClientsReport;
+    expect(body.status).toBe("ok");
+    expect(body.selfClientId).toBe(SELF_CLIENT_ID);
+    expect(body.clients).toHaveLength(2);
+    expect(guardCalls).toHaveLength(0);
+  });
+
+  test("ok: guard profile routes the exec through brainExec (isolated brain)", async () => {
+    const { ctx, guardCalls } = clientsCtx({
+      cli: true,
+      oauth: true,
+      guard: { brainExec: async () => ({ bin: "/real/gbrain", env: { GBRAIN_HOME: "/h" } }) },
+    });
+    const body = (await (await handleOpsClients(ctx)).json()) as OpsClientsReport;
+    expect(body.status).toBe("ok");
+    expect(guardCalls).toHaveLength(1);
+  });
+
+  test("legacy-token profile: registry reads fine, selfClientId absent", async () => {
+    const { ctx } = clientsCtx({ cli: true, oauth: false });
+    const body = (await (await handleOpsClients(ctx)).json()) as OpsClientsReport;
+    expect(body.status).toBe("ok");
+    expect(body.selfClientId).toBeUndefined();
+    expect(body.clients).toHaveLength(2);
+  });
+
+  test("CLI channel absent → down in-band with the human-view paste hint", async () => {
+    const { ctx } = clientsCtx({ cli: false });
+    const res = await handleOpsClients(ctx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as OpsClientsReport;
+    expect(body.status).toBe("down");
+    expect(body.command).toBe("gbrain auth clients");
+    expect(body.command).not.toContain("--json");
+  });
+
+  test("CLI present but the exec fails → degraded in-band, never an envelope error", async () => {
+    const { ctx } = clientsCtx({ cli: true, oauth: true, fail: new Error("exit 2: boom") });
+    const res = await handleOpsClients(ctx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as OpsClientsReport;
+    expect(body.status).toBe("degraded");
+    expect(body.error).toContain("boom");
+    expect(body.command).toBe("gbrain auth clients");
+  });
+});
+
+describe("handleProfiles adminTier", () => {
+  function registryStub() {
+    return {
+      profileInfos: async () => ({ defaultId: "default", profiles: [{ id: "default", name: "gbrain" }] }),
+    } as unknown as Parameters<typeof handleProfiles>[0];
+  }
+
+  test("carries the deployment capability both ways", async () => {
+    const on = (await (await handleProfiles(registryStub(), true)).json()) as ProfilesResponse;
+    expect(on.adminTier).toBe(true);
+    const off = (await (await handleProfiles(registryStub(), false)).json()) as ProfilesResponse;
+    expect(off.adminTier).toBe(false);
+  });
+});

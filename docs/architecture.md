@@ -115,7 +115,7 @@ gbrain-cockpit/
 ├── server/   Bun + TypeScript, zero runtime npm deps
 │   └── src/  drivers/{mcp,cli,pg-readonly}.ts, routes/, auth, config, static
 ├── web/      React 18 + Vite + sigma.js (graph on canvas)
-│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health}, locales/{zh-CN,en}
+│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health,Admin}, locales/{zh-CN,en}
 ├── shared/   channel matrix types, error codes, version — single source both sides compile against
 └── docs/     this file and its siblings
 ```

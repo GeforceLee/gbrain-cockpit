@@ -7,7 +7,9 @@ import {
   OWNER_BIN_RE,
   PROFILE_ID_RE,
   SOURCE_ID_RE,
+  authClientsListCommand,
   authRescopeCommand,
+  authRevokeClientCommand,
   buildGraphKey,
   contradictionAcceptCommand,
   contradictionRejectCommand,
@@ -237,5 +239,30 @@ describe("buildGraphKey", () => {
     );
     expect(buildGraphKey(undefined, "some/slug")).toBe("some/slug");
     expect(buildGraphKey("main", "plain-slug")).toBe("main/plain-slug");
+  });
+});
+
+describe("authRevokeClientCommand", () => {
+  const clientId =
+    "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+  test("builds the pinned positional form (probed 0.60.558)", () => {
+    expect(authRevokeClientCommand("gbrain", clientId)).toBe(
+      `gbrain auth revoke-client ${clientId}`,
+    );
+  });
+
+  test("refuses bad bins and client ids — never pastes a guess", () => {
+    expect(() => authRevokeClientCommand("gbrain;rm", clientId)).toThrow();
+    expect(() => authRevokeClientCommand("gbrain", "cl_abc")).toThrow();
+    expect(() => authRevokeClientCommand("gbrain", "../../etc")).toThrow();
+  });
+});
+
+describe("authClientsListCommand", () => {
+  test("human view, no --json (readable table for the paste)", () => {
+    expect(authClientsListCommand("gbrain")).toBe("gbrain auth clients");
+    expect(authClientsListCommand("/opt/gbrain")).toBe("/opt/gbrain auth clients");
+    expect(() => authClientsListCommand("gbrain x")).toThrow();
   });
 });

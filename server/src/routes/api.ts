@@ -16,6 +16,7 @@ import type {
   InboxQueue,
   LinkRow,
   OpsClientGrant,
+  OpsClientsReport,
   OpsDreamRun,
   OpsDreamRunsReport,
   OpsGrantReadResult,
@@ -41,6 +42,7 @@ import type {
   WriteRequestsReport,
 } from "@gbrain-cockpit/shared";
 import {
+  authClientsListCommand,
   authRescopeCommand,
   isValidSourceId,
   TRUST_REF_RE,
@@ -1106,9 +1108,52 @@ export async function handleInbox(ctx: ApiContext): Promise<Response> {
 /** GET /api/profiles — the switcher's data: ids, labels, zero secrets. */
 export async function handleProfiles(
   registry: BrainRegistry,
+  adminConfigured: boolean,
 ): Promise<Response> {
   const body: ProfilesResponse = await registry.profileInfos();
+  // deployment capability (COCKPIT_ADMIN_TOKEN set?), not a browser state —
+  // gates the Admin panel's visibility for every base-token session
+  body.adminTier = adminConfigured;
   return Response.json(body);
+}
+
+/**
+ * GET /api/ops/clients — the OAuth client registry, owner view via the
+ * `auth clients` whitelist verb (base token: a READ). `selfClientId` names
+ * cockpit's own row from the profile's credentials file (absent on
+ * legacy-token profiles). Degradation matrix: CLI channel absent → down +
+ * the human-view paste hint; CLI present but the exec fails (nonzero exit,
+ * guard refusal, timeout) → degraded in-band — never an envelope 500.
+ */
+export async function handleOpsClients(ctx: ApiContext): Promise<Response> {
+  if (!ctx.cli) {
+    const report: OpsClientsReport = {
+      status: "down",
+      error:
+        "CLI channel unavailable on this host — the client registry is only readable on a co-located deployment",
+      command: authClientsListCommand(ctx.profile.cliBin ?? "gbrain"),
+    };
+    return Response.json(report);
+  }
+  try {
+    const opts = await managementExecOpts(ctx);
+    const env = await ctx.cli.authClients(opts);
+    const report: OpsClientsReport = {
+      status: "ok",
+      clients: env.clients ?? [],
+      ...(ctx.profile.oauth?.clientId
+        ? { selfClientId: ctx.profile.oauth.clientId }
+        : {}),
+    };
+    return Response.json(report);
+  } catch (err) {
+    const report: OpsClientsReport = {
+      status: "degraded",
+      error: err instanceof Error ? err.message : String(err),
+      command: authClientsListCommand(ctx.profile.cliBin ?? "gbrain"),
+    };
+    return Response.json(report);
+  }
 }
 
 // --- adjudication actions ---------------------------------------------------
