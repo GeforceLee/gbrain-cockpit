@@ -101,7 +101,6 @@ export function Health() {
   return (
     <section className="panel health">
       <div className="panel-head">
-        <h2>{t("panel.health.title")}</h2>
         <div className="panel-actions">
           <button type="button" onClick={() => void probe()} disabled={busy}>
             {busy ? t("health.loading") : t("health.refresh")}
@@ -118,7 +117,6 @@ export function Health() {
           </button>
         </div>
       </div>
-      <p className="panel-desc">{t("panel.health.desc")}</p>
 
       {error && (
         <p className="error" role="alert">

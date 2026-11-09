@@ -355,8 +355,6 @@ export function Pages({
     <section className="panel pages">
       {!inDetail ? (
         <>
-          <h2>{t("panel.pages.title")}</h2>
-          <p className="panel-desc">{t("panel.pages.desc")}</p>
           {facets && (
             <div className="chips" role="group" aria-label={t("pages.filterByType")}>
               <button

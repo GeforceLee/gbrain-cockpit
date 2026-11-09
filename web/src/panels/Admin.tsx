@@ -54,14 +54,12 @@ export function Admin() {
   return (
     <section className="panel admin">
       <div className="panel-head">
-        <h2>{t("panel.admin.title")}</h2>
         <div className="panel-actions">
           <button type="button" onClick={() => void probe()} disabled={busy}>
             {busy ? t("health.loading") : t("health.refresh")}
           </button>
         </div>
       </div>
-      <p className="panel-desc">{t("panel.admin.desc")}</p>
 
       <div className="hgrid">
         <div className="hcard span8">

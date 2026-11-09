@@ -752,7 +752,6 @@ export function Inbox({
       </nav>
 
       <div className="inbox-meta">
-        <p className="panel-desc">{t("panel.inbox.desc")}</p>
         <div className="list-tools">
           <span
             className={`chip ${cliAvailable ? "chip-ok" : "chip-degraded"}`}

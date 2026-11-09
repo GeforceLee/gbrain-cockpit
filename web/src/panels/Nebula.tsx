@@ -1582,10 +1582,6 @@ export function Nebula({
   return (
     <section className="panel nebula">
       <div className="nebula-head">
-        <div>
-          <h2>{t("panel.nebula.title")}</h2>
-          <p className="self">{t("panel.nebula.desc")}</p>
-        </div>
         <div className="nebula-tools">
           <div className="vtabs" role="group" aria-label={t("nebula.view.label")}>
             {(["field", "orbit", "matrix", "plain"] as const).map((v) => (

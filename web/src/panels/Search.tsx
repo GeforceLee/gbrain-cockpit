@@ -155,8 +155,6 @@ export function Search({
         siblings={siblings.map((s) => ({ slug: peek!.slug, sourceId: s.source_id }))}
         onOpenSibling={(ref) => setPeek(ref)}
       />
-      <h2>{t("panel.search.title")}</h2>
-      <p className="panel-desc">{t("panel.search.desc")}</p>
       <form className="search-form" onSubmit={run}>
         <input
           type="search"
