@@ -171,7 +171,7 @@ const server = Bun.serve({
           case "GET /api/pages":
             return await handlePages(channels, url);
           case "GET /api/pages/facets":
-            return await handlePageFacets(channels);
+            return await handlePageFacets(channels, url);
           case "GET /api/page":
             return await handlePage(channels, url);
           case "GET /api/search":

@@ -1200,3 +1200,65 @@ describe("handleOpsGrantRead", () => {
     );
   });
 });
+
+// --- 0.4.0 hotfix: source-scoped facets ---------------------------------------
+
+import { handlePageFacets } from "./api";
+
+describe("handlePageFacets source scoping", () => {
+  function facetsCtx(pgCounts?: Array<{ source_id: string; type: string | null; pages: number }>, pgError?: Error) {
+    return {
+      mcp: {
+        schemaStats: async () => ({
+          pack_identity: "p",
+          aggregate: { total_pages: 2248, by_type: [{ type: "doc", count: 1874 }] },
+        }),
+      },
+      pg: {
+        sourceTypeCounts: async () => {
+          if (pgError) throw pgError;
+          return pgCounts ?? [];
+        },
+      },
+    } as unknown as ApiContext;
+  }
+
+  test("no source param keeps the brain-wide form (scope absent)", async () => {
+    const body = await (await handlePageFacets(facetsCtx())).json();
+    expect(body.total_pages).toBe(2248);
+    expect(body.scope).toBeUndefined();
+  });
+
+  test("?source_id narrows through the bypass and labels scope=source", async () => {
+    const ctx = facetsCtx([
+      { source_id: "iuap-apcom-docs", type: "doc", pages: 1874 },
+      { source_id: "yon-bip", type: "note", pages: 12 },
+    ]);
+    const body = await (await handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=yon-bip"))).json();
+    expect(body.scope).toBe("source");
+    expect(body.source_id).toBe("yon-bip");
+    expect(body.total_pages).toBe(12);
+    expect(body.by_type).toEqual([{ type: "note", count: 12 }]);
+  });
+
+  test("a source with zero pages answers 0 — an honest empty, not all-source", async () => {
+    const ctx = facetsCtx([{ source_id: "a", type: "doc", pages: 1 }]);
+    const body = await (await handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=ghost"))).json();
+    expect(body.scope).toBe("source");
+    expect(body.total_pages).toBe(0);
+  });
+
+  test("bypass down degrades to brain-wide numbers, labeled source-degraded", async () => {
+    const ctx = facetsCtx(undefined, new Error("read-only bypass not configured"));
+    const body = await (await handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=yon-bip"))).json();
+    expect(body.scope).toBe("source-degraded");
+    expect(body.total_pages).toBe(2248); // brain-wide — the UI explains
+  });
+
+  test("invalid source_id is a 400 before any driver call", async () => {
+    const ctx = facetsCtx();
+    await expect(
+      handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=__all__")),
+    ).rejects.toThrow();
+  });
+});

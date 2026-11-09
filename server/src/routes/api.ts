@@ -237,7 +237,54 @@ export async function handlePages(
   return Response.json(pages satisfies PageSummary[]);
 }
 
-export async function handlePageFacets(ctx: ApiContext): Promise<Response> {
+export async function handlePageFacets(
+  ctx: ApiContext,
+  url?: URL,
+): Promise<Response> {
+  // ?source_id= narrows to per-source facets via the read-only bypass —
+  // schema_stats is a whole-brain aggregate with no source axis, and showing
+  // its numbers next to a source-narrowed list is exactly the mismatch the
+  // 0.4.0 hotfix fixes. Degradations stay in-band and labeled:
+  //   scope "source"            — pg answer for THIS source
+  //   scope "source-degraded"   — pg unavailable; numbers span ALL sources
+  //   absent                    — brain-wide form (no source asked)
+  const sourceId = url ? requireSourceId(url) : undefined;
+  if (sourceId) {
+    try {
+      const counts = await ctx.pg.sourceTypeCounts();
+      const rows = counts.filter((r) => r.source_id === sourceId);
+      const byType = new Map<string, number>();
+      let total = 0;
+      for (const r of rows) {
+        const key = r.type ?? "";
+        byType.set(key, (byType.get(key) ?? 0) + r.pages);
+        total += r.pages;
+      }
+      const facets: PagesFacets = {
+        scope: "source",
+        source_id: sourceId,
+        total_pages: total,
+        by_type: [...byType.entries()]
+          .map(([type, count]) => ({ type, count }))
+          .sort((a, b) => b.count - a.count),
+      };
+      return Response.json(facets);
+    } catch (err) {
+      const stats = await ctx.mcp.schemaStats();
+      const agg = (stats.aggregate ?? {}) as {
+        total_pages?: number;
+        by_type?: PagesFacets["by_type"];
+      };
+      const facets: PagesFacets = {
+        scope: "source-degraded",
+        source_id: sourceId,
+        pack_identity: stats.pack_identity,
+        total_pages: agg.total_pages,
+        by_type: agg.by_type ?? [],
+      };
+      return Response.json(facets);
+    }
+  }
   const stats = await ctx.mcp.schemaStats();
   // gbrain nests the counters under `aggregate`; normalize here so the UI
   // never depends on the raw shape (narrow adaptation surface).

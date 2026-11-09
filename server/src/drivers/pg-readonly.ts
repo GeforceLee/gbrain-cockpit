@@ -95,6 +95,18 @@ const SQL_DREAM_RUNS =
   "ORDER BY run_end DESC LIMIT 30";
 
 /**
+ * 0.4.0 hotfix: per-(source, type) page counts. schema_stats (MCP) is a
+ * whole-brain aggregate with no source axis, so the Pages type-chips lied
+ * under a source filter (all-source numbers next to a narrowed list). Same
+ * pages table as the graph read — no new GRANT. Gated on BOTH source_id and
+ * type columns via the information_schema cache; absent either → [] (the
+ * facets route then degrades to the brain-wide form and the UI says so).
+ */
+const SQL_SOURCE_TYPE_COUNTS =
+  "SELECT source_id, type, count(*)::int AS n FROM pages GROUP BY source_id, type " +
+  "ORDER BY n DESC";
+
+/**
  * Pages columns we consume; presence-checked against information_schema.
  * `source_id` (gbrain 0.60.558: TEXT NOT NULL DEFAULT 'default', with
  * UNIQUE(source_id, slug)) upgrades node identity from bare slug to
@@ -283,6 +295,29 @@ export class PgReadonlyDriver {
       end: toIso(row.run_end) ?? "",
       takes: Number(row.takes ?? 0),
       pending: Number(row.pending ?? 0),
+    }));
+  }
+
+  /**
+   * Per-(source, type) page counts for source-scoped facets. Empty when the
+   * schema lacks the source or type column (old brain) — the route degrades
+   * to brain-wide facets and labels them. Fresh, uncached (filters must see
+   * a just-ingested source immediately).
+   */
+  async sourceTypeCounts(): Promise<
+    Array<{ source_id: string; type: string | null; pages: number }>
+  > {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const columns = await this.#ensureColumns();
+    const pagesCols = columns.get("pages");
+    if (!pagesCols?.has("source_id") || !pagesCols?.has("type")) return [];
+    const rows = await this.#query(SQL_SOURCE_TYPE_COUNTS);
+    return rows.map((row) => ({
+      source_id: String(row.source_id ?? ""),
+      type: typeof row.type === "string" ? row.type : null,
+      pages: Number(row.n ?? 0),
     }));
   }
 

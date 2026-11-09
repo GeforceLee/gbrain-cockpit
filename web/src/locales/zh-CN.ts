@@ -371,6 +371,10 @@ export const zhCN = {
   "health.anomalies": "统计异常",
   "health.anomaliesDesc": "按 cohort 的统计异常(find_anomalies)",
   "health.anomaliesEmpty": "暂无异常发现 ✓",
+  "health.anomalies.pages": "页",
+  "health.anomalies.noBaseline": "新现队列(尚无基线,σ 无意义)",
+  "health.anomalies.raw": "原始数据",
+  "pages.facetsScopedHint": "只读旁路不可用——以上计数是全库口径,未随源收窄",
 
   "health.drift": "源可见性",
   "health.driftDesc": "只读旁路看到全库的源,MCP 只看到已授权的——有页面但未授权的源在任何面板都不可见",

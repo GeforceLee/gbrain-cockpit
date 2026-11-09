@@ -348,9 +348,50 @@ export function Health() {
             ) : (anomalies.items ?? []).length === 0 ? (
               <p className="muted small">{t("health.anomaliesEmpty")}</p>
             ) : (
-              <pre className="mono small">
-                {JSON.stringify(anomalies.items, null, 2).slice(0, 800)}
-              </pre>
+              <>
+                {(anomalies.items ?? []).map((item, i) => {
+                  const kind = String(item.cohort_kind ?? "?");
+                  const value = String(item.cohort_value ?? "?");
+                  const count = Number(item.count ?? 0);
+                  const stddev = Number(item.baseline_stddev ?? 0);
+                  const hasBaseline = stddev > 0;
+                  const slugs = Array.isArray(item.page_slugs)
+                    ? item.page_slugs.slice(0, 3)
+                    : [];
+                  const slugsTotal = Array.isArray(item.page_slugs)
+                    ? item.page_slugs.length
+                    : 0;
+                  return (
+                    <div key={i} className="anomaly-row">
+                      <p className="mono small">
+                        {kind} · {value} — {t("health.anomalies.pages")} {count}
+                      </p>
+                      <p className="muted small">
+                        {hasBaseline
+                          ? `σ ${Number(item.sigma_observed ?? 0).toFixed(1)}`
+                          : t("health.anomalies.noBaseline")}
+                      </p>
+                      {slugs.length > 0 && (
+                        <p className="muted small" title={slugs.join("\n")}>
+                          {slugs.join(", ")}
+                          {slugsTotal > slugs.length
+                            ? ` +${slugsTotal - slugs.length}`
+                            : ""}
+                          {item.page_slugs_complete === false
+                            ? " …"
+                            : ""}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+                <details className="detail-block">
+                  <summary className="cap">{t("health.anomalies.raw")}</summary>
+                  <pre className="mono small">
+                    {JSON.stringify(anomalies.items, null, 2).slice(0, 1200)}
+                  </pre>
+                </details>
+              </>
             )}
           </div>
 

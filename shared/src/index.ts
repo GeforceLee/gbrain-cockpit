@@ -468,6 +468,14 @@ export interface PagesFacets {
   pack_identity?: string;
   total_pages?: number;
   by_type: FacetTypeCount[];
+  /**
+   * Which set the numbers describe (0.4.0 hotfix): "source" = narrowed to
+   * source_id via the read-only bypass; "source-degraded" = a source was
+   * asked but the bypass is down, so the numbers span ALL sources and the UI
+   * must say so; absent = the plain brain-wide form.
+   */
+  scope?: "source" | "source-degraded";
+  source_id?: string;
   [k: string]: unknown;
 }
 
@@ -825,10 +833,29 @@ export interface BrainHealthReport {
   error?: string;
 }
 
+/**
+ * One find_anomalies cohort row (fields as probed 0.60.558/0.60.611). When
+ * `baseline_stddev` is 0 the cohort has NO baseline yet (e.g. a type that
+ * appeared with a bulk ingest) — sigma_observed degenerates to the raw
+ * count and must be DISPLAYED as "new cohort, no baseline", never as a
+ * sigma number. All fields optional: upstream shape wins, defensive reads.
+ */
+export interface AnomalyCohort {
+  cohort_kind?: string;
+  cohort_value?: string;
+  count?: number;
+  baseline_mean?: number;
+  baseline_stddev?: number;
+  sigma_observed?: number;
+  page_slugs?: string[];
+  page_slugs_complete?: boolean;
+  [k: string]: unknown;
+}
+
 /** GET /api/anomalies — find_anomalies, in-band. */
 export interface AnomaliesReport {
   status: CheckStatus;
-  items?: unknown[];
+  items?: AnomalyCohort[];
   error?: string;
 }
 

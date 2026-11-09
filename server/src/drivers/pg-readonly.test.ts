@@ -547,3 +547,50 @@ describe("PgReadonlyDriver dreamRuns (ops heartbeat)", () => {
     await expect(driver.dreamRuns()).rejects.toThrow(/permission denied/);
   });
 });
+
+// --- 0.4.0 hotfix: per-(source, type) counts for scoped facets ---------------
+
+const SQL_SOURCE_TYPE_COUNTS =
+  "SELECT source_id, type, count(*)::int AS n FROM pages GROUP BY source_id, type " +
+  "ORDER BY n DESC";
+
+describe("PgReadonlyDriver sourceTypeCounts (scoped facets)", () => {
+  test("groups by source and type through the ONE fixed statement", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery(
+        [
+          COLUMNS_WITH_SOURCE,
+          {
+            text: SQL_SOURCE_TYPE_COUNTS,
+            rows: [
+              { source_id: "iuap-apcom-docs", type: "doc", n: 1874 },
+              { source_id: "yon-bip", type: null, n: "12" },
+            ],
+          },
+        ],
+        log,
+      ),
+    });
+    const counts = await driver.sourceTypeCounts();
+    expect(counts).toEqual([
+      { source_id: "iuap-apcom-docs", type: "doc", pages: 1874 },
+      { source_id: "yon-bip", type: null, pages: 12 },
+    ]);
+    expect(log).toEqual([COLUMNS_WITH_SOURCE.text, SQL_SOURCE_TYPE_COUNTS]);
+  });
+
+  test("schema without source or type columns returns [] (route degrades, labeled)", async () => {
+    const noType = { ...COLUMNS_WITH_SOURCE, rows: COLUMNS_WITH_SOURCE.rows.filter(r => r.column_name !== "type") };
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({ dsn: "postgresql://x", query: makeQuery([noType], log) });
+    expect(await driver.sourceTypeCounts()).toEqual([]);
+    expect(log).toEqual([noType.text]);
+  });
+
+  test("unconfigured throws without querying", async () => {
+    const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([]) });
+    await expect(driver.sourceTypeCounts()).rejects.toThrow();
+  });
+});

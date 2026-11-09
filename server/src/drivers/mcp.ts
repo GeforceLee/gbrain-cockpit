@@ -1,5 +1,6 @@
 import {
   COCKPIT_VERSION,
+  type AnomalyCohort,
   type BrainIdentity,
   type ContradictionProbeState,
   type EvidencePayload,
@@ -428,8 +429,8 @@ export class McpDriver {
   }
 
   /** Per-cohort statistical anomalies (probed: [] on a young brain). */
-  anomalies(): Promise<unknown[]> {
-    const call = this.#cached<{ anomalies?: unknown[] } | unknown[]>(
+  anomalies(): Promise<AnomalyCohort[]> {
+    const call = this.#cached<{ anomalies?: AnomalyCohort[] } | AnomalyCohort[]>(
       60_000,
       "find_anomalies",
       {},

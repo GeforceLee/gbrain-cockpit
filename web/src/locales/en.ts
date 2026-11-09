@@ -374,6 +374,10 @@ export const en = {
   "health.anomalies": "anomalies",
   "health.anomaliesDesc": "per-cohort statistical anomalies (find_anomalies)",
   "health.anomaliesEmpty": "No anomalies found ✓",
+  "health.anomalies.pages": "pages",
+  "health.anomalies.noBaseline": "new cohort (no baseline yet — sigma meaningless)",
+  "health.anomalies.raw": "raw data",
+  "pages.facetsScopedHint": "read-only bypass unavailable — the counts above span ALL sources, not the selected one",
 
   "health.drift": "source visibility",
   "health.driftDesc": "the read-only bypass sees every source in the database, MCP only the granted ones — pages in an ungranted source are invisible in every panel",
