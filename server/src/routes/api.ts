@@ -625,7 +625,12 @@ async function cycleFreshness(ctx: ApiContext): Promise<OpsDreamRunsReport["cycl
         ...(typeof check?.message === "string" ? { message: check.message } : {}),
       };
     } catch (err) {
-      // Structured status only; the error text is diagnostics, not parsed.
+      // Structured status only; the error text is diagnostics, not parsed —
+      // but never silent: an ops check that stops answering must be visible
+      // in the server log (probe drift shows up here first).
+      console.warn(
+        `[ops] doctor cycle_freshness failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
       value = { status: "unknown" };
     }
   }

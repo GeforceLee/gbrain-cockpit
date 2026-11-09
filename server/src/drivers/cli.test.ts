@@ -511,3 +511,41 @@ describe("management verbs: CliDriver", () => {
     await expect(bad.doctorCycleFreshness()).rejects.toBeInstanceOf(CliExecutionError);
   });
 });
+
+describe("doctor exit-1 verdict recovery (0.60.558 probed behavior)", () => {
+  function failingDoctor(stdout: string, code = 1) {
+    return makeDriver(async () => {
+      const err = new Error("exit 1") as Error & {
+        code?: number | string;
+        stderr?: string;
+        stdout?: string;
+      };
+      err.code = code;
+      err.stderr = "[gbrain] reading doctor checks; progress prints…";
+      err.stdout = stdout;
+      throw err;
+    });
+  }
+
+  test("unhealthy verdict (exit 1 + full JSON envelope) is recovered, not an error", async () => {
+    const { driver } = failingDoctor(
+      JSON.stringify({
+        status: "unhealthy",
+        checks: [{ name: "cycle_freshness", status: "fail", message: "Source 'yon-bip' last cycled 69h ago" }],
+      }),
+    );
+    const out = await driver.doctorCycleFreshness();
+    expect(out.checks?.[0]?.status).toBe("fail");
+    expect(out.checks?.[0]?.message).toContain("69h");
+  });
+
+  test("exit 1 with non-verdict stdout still throws (real failure)", async () => {
+    const { driver } = failingDoctor("panic: something else");
+    await expect(driver.doctorCycleFreshness()).rejects.toBeInstanceOf(CliExecutionError);
+  });
+
+  test("other nonzero exits never take the recovery path", async () => {
+    const { driver } = failingDoctor('{"checks":[]}', 2);
+    await expect(driver.doctorCycleFreshness()).rejects.toThrow(/exit 2/);
+  });
+});

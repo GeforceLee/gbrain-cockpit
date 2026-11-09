@@ -34,6 +34,13 @@ export class CliExecutionError extends Error {
     message: string,
     readonly exitCode?: number,
     readonly timedOut = false,
+    /**
+     * stdout of the failed exec, when the platform attached it — certain
+     * whitelisted READ verbs exit nonzero BY DESIGN while still printing
+     * their full JSON verdict (gbrain doctor: unhealthy → exit 1); the
+     * verb method may recover the payload from here. Bounded to maxBuffer.
+     */
+    readonly stdout?: string,
   ) {
     super(message);
     this.name = "CliExecutionError";
@@ -486,6 +493,12 @@ export class CliDriver {
    * pipeline run" verdict (sources.config→last_full_cycle_at, warn 6h/fail
    * 24h). Structured consumption is name/status ONLY; `message` is human
    * prose the UI echoes verbatim, never parsed.
+   *
+   * Upstream behavior (probed 2026-11-09, 0.60.558): doctor exits 1 BY
+   * DESIGN when the verdict is unhealthy, with the full JSON envelope on
+   * stdout — the nonzero exit IS the fail verdict, not a protocol failure.
+   * This verb therefore recovers the envelope from the failed exec's
+   * stdout; any other shape still throws.
    */
   async doctorCycleFreshness(
     opts: ScopedExecOpts = {},
@@ -498,7 +511,36 @@ export class CliDriver {
     }[];
     [k: string]: unknown;
   }> {
-    return this.#runJson("doctor cycle freshness", { check: "cycle_freshness" }, opts);
+    const key = "doctor cycle freshness";
+    try {
+      return await this.#runJson(key, { check: "cycle_freshness" }, opts);
+    } catch (err) {
+      if (
+        err instanceof CliExecutionError &&
+        err.exitCode === 1 &&
+        typeof err.stdout === "string"
+      ) {
+        try {
+          const recovered = JSON.parse(err.stdout) as {
+            checks?: unknown[];
+          };
+          if (Array.isArray(recovered.checks)) {
+            return recovered as {
+              checks?: {
+                name?: string;
+                status?: string;
+                message?: string;
+                [k: string]: unknown;
+              }[];
+              [k: string]: unknown;
+            };
+          }
+        } catch {
+          // fall through — not the verdict shape
+        }
+      }
+      throw err;
+    }
   }
 
   async #runJson<T>(
@@ -559,6 +601,7 @@ export class CliDriver {
           killed?: boolean;
           signal?: string;
           stderr?: string;
+          stdout?: string;
         };
         if (e.code === "ENOENT") {
           throw new CliExecutionError(
@@ -580,6 +623,8 @@ export class CliDriver {
             ? `${key} failed: ${stderrFirstLine}`
             : `${key} failed (exit ${e.code})`,
           typeof e.code === "number" ? e.code : undefined,
+          false,
+          typeof e.stdout === "string" ? e.stdout.slice(0, MAX_BUFFER) : undefined,
         );
       }
     } finally {
