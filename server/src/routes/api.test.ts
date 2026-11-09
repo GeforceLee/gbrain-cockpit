@@ -860,3 +860,519 @@ describe("handleTakePropose source scoping", () => {
     expect(calls.length).toBe(0);
   });
 });
+
+// --- 0.4.0 ops surface: source drift / dream runs / grant-read ----------------
+
+import {
+  handleOpsDreamRuns,
+  handleOpsGrantRead,
+  handleOpsSourceDrift,
+} from "./api";
+import type {
+  OpsDreamRunsReport,
+  OpsGrantReadResult,
+  OpsSourceDriftReport,
+} from "@gbrain-cockpit/shared";
+import type { Principal } from "../auth";
+
+const CLIENT_ID =
+  "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+interface OpsStub {
+  id?: string;
+  oauth?: boolean;
+  cli?: boolean;
+  pgSources?: Array<{ source_id: string; pages: number }>;
+  pgError?: Error;
+  activeSources?: Array<{ id: string; archived?: boolean }>;
+  granted?: string[];
+  clientsError?: Error;
+  dreamRuns?: Array<{ runId: string; start: string; end: string; takes: number; pending: number }>;
+  doctor?: { checks: Array<{ name: string; status: string; message?: string }> };
+}
+
+function opsCtx(stub: OpsStub) {
+  const calls: Record<string, unknown[]> = {};
+  const note = (k: string, v: unknown) => {
+    (calls[k] ??= []).push(v);
+  };
+  const ctx = {
+    id: stub.id ?? "ops-test",
+    profile: {
+      cliBin: "gbrain",
+      ...(stub.oauth ? { oauth: { clientId: CLIENT_ID } } : {}),
+    },
+    cliBinResolved: stub.cli ? "/usr/bin/gbrain" : null,
+    takesGuard: null,
+    cli: stub.cli
+      ? ({
+          sourcesListJson: async () =>
+            stub.clientsError ? Promise.reject(stub.clientsError) : { sources: stub.activeSources ?? [] },
+          authClients: async () => {
+            note("authClients", null);
+            return {
+              clients: stub.oauth
+                ? [{ client_id: CLIENT_ID, federated_read: stub.granted ?? [] }]
+                : [],
+            };
+          },
+          authRescope: async (clientId: string, list: string[]) => {
+            note("authRescope", { clientId, list });
+            stub.granted = list; // the verify re-read sees the new list
+          },
+          doctorCycleFreshness: async () => stub.doctor ?? { checks: [] },
+        } as unknown as CliDriver)
+      : null,
+    pg: {
+      sourcesWithPages: async () => {
+        if (stub.pgError) throw stub.pgError;
+        return stub.pgSources ?? [];
+      },
+      dreamRuns: async () => {
+        if (stub.pgError) throw stub.pgError;
+        return stub.dreamRuns ?? [];
+      },
+    },
+    mcp: {
+      whoami: async () => ({ scopes: ["read"], federated_read: stub.granted }),
+      forceRenew: async () => {
+        note("forceRenew", null);
+      },
+      invalidateAll: () => {
+        note("invalidateAll", null);
+      },
+    },
+  } as unknown as ApiContext;
+  return { ctx, calls };
+}
+
+const BASE: Principal = { name: "owner", tier: "base" };
+const ADMIN: Principal = { name: "owner", tier: "admin" };
+
+describe("handleOpsSourceDrift", () => {
+  test("flags active-with-pages-but-ungranted sources and builds the union copy-command", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-a",
+      oauth: true,
+      cli: true,
+      pgSources: [
+        { source_id: "iuap-apcom-migration", pages: 250 },
+        { source_id: "iuap-apcom-docs", pages: 1874 },
+      ],
+      activeSources: [
+        { id: "iuap-apcom-migration" },
+        { id: "iuap-apcom-docs" },
+      ],
+      granted: ["iuap-apcom-migration"],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.status).toBe("ok");
+    expect(body.missing).toEqual(["iuap-apcom-docs"]);
+    expect(body.action.available).toBe(true);
+    expect(body.action.command).toBe(
+      `gbrain auth rescope --client ${CLIENT_ID} --federated-read iuap-apcom-migration,iuap-apcom-docs`,
+    );
+  });
+
+  test("archived sources are never flagged — re-granting one bricks token issuance", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-b",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "old-friend", pages: 9 }],
+      activeSources: [{ id: "old-friend", archived: true }, { id: "default" }],
+      granted: ["default"],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.missing).toEqual([]);
+    expect(body.action.command).toBeUndefined();
+  });
+
+  test("CLI down: in-band reason, whoami federated_read fallback, no command", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-c",
+      oauth: true,
+      cli: false,
+      pgSources: [{ source_id: "sneaky", pages: 5 }],
+      granted: [],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.action).toEqual({ available: false, reason: "cli-unavailable" });
+    expect(body.grantedSources).toEqual([]); // whoami fallback carried it
+    expect(body.missing).toEqual(["sneaky"]);
+  });
+
+  test("pg down degrades the report and pins the action reason", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-d",
+      oauth: true,
+      cli: true,
+      pgError: new Error("read-only bypass not configured"),
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.status).toBe("degraded");
+    expect(body.action.reason).toBe("pg-unavailable");
+  });
+
+  test("legacy-token profiles are not applicable", async () => {
+    const { ctx } = opsCtx({ id: "drift-e", oauth: false, cli: true });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.action.reason).toBe("not-oauth-profile");
+  });
+
+  test("zero drift stays green with no command", async () => {
+    const { ctx } = opsCtx({
+      id: "drift-f",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "a", pages: 1 }],
+      activeSources: [{ id: "a" }],
+      granted: ["a"],
+    });
+    const body = (await (await handleOpsSourceDrift(ctx)).json()) as OpsSourceDriftReport;
+    expect(body.missing).toEqual([]);
+    expect(body.action.available).toBe(true);
+    expect(body.action.command).toBeUndefined();
+  });
+});
+
+describe("handleOpsDreamRuns", () => {
+  const RUNS = [
+    {
+      runId: "propose-20261106045917-78e25ac9",
+      start: "2026-11-06T05:06:30Z",
+      end: "2026-11-06T05:07:42Z",
+      takes: 6,
+      pending: 3,
+    },
+  ];
+
+  test("carries runs, pending total, last activity and the doctor verdict verbatim", async () => {
+    const { ctx } = opsCtx({
+      id: "dream-a",
+      cli: true,
+      dreamRuns: RUNS,
+      doctor: {
+        checks: [
+          {
+            name: "cycle_freshness",
+            status: "fail",
+            message: "Source 'yon-bip' last cycled 69h ago",
+          },
+        ],
+      },
+    });
+    const body = (await (await handleOpsDreamRuns(ctx)).json()) as OpsDreamRunsReport;
+    expect(body.status).toBe("ok");
+    expect(body.neverRan).toBe(false);
+    expect(body.lastActivityAt).toBe("2026-11-06T05:07:42Z");
+    expect(body.pendingTotal).toBe(3);
+    expect(body.cycleFreshness).toEqual({
+      status: "fail",
+      message: "Source 'yon-bip' last cycled 69h ago",
+    });
+  });
+
+  test("empty table is neverRan, never an error; doctor band maps unknown shapes", async () => {
+    const { ctx } = opsCtx({
+      id: "dream-b",
+      cli: true,
+      doctor: { checks: [{ name: "cycle_freshness", status: "weird-future-band" }] },
+    });
+    const body = (await (await handleOpsDreamRuns(ctx)).json()) as OpsDreamRunsReport;
+    expect(body.neverRan).toBe(true);
+    expect(body.lastActivityAt).toBeUndefined();
+    expect(body.cycleFreshness?.status).toBe("unknown");
+  });
+
+  test("pg down answers in-band down; no CLI leaves cycleFreshness unset", async () => {
+    const down = opsCtx({ id: "dream-c", cli: true, pgError: new Error("db gone") });
+    const bodyDown = (await (await handleOpsDreamRuns(down.ctx)).json()) as OpsDreamRunsReport;
+    expect(bodyDown.status).toBe("down");
+
+    const noCli = opsCtx({ id: "dream-d", cli: false });
+    const bodyNoCli = (await (await handleOpsDreamRuns(noCli.ctx)).json()) as OpsDreamRunsReport;
+    expect(bodyNoCli.status).toBe("ok");
+    expect(bodyNoCli.cycleFreshness).toBeUndefined();
+  });
+});
+
+describe("handleOpsGrantRead", () => {
+  test("base principal gets 403 with the step-up message when admin is configured", async () => {
+    const { ctx } = opsCtx({ id: "grant-a", oauth: true, cli: true });
+    const res = await handleOpsGrantRead(ctx, BASE, true);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { code: string; error: string };
+    expect(body.code).toBe("E_FORBIDDEN");
+    expect(body.error).toContain("COCKPIT_ADMIN_TOKEN");
+    expect(body.error).toContain("step-up");
+  });
+
+  test("base principal gets the not-configured message when no admin token exists", async () => {
+    const { ctx } = opsCtx({ id: "grant-b", oauth: true, cli: true });
+    const res = await handleOpsGrantRead(ctx, BASE, false);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("not configured");
+  });
+
+  test("admin principal: pure union rescope, verify, force-renew, invalidate, audit-able shape", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-c",
+      oauth: true,
+      cli: true,
+      pgSources: [
+        { source_id: "a", pages: 10 },
+        { source_id: "b", pages: 20 },
+      ],
+      activeSources: [{ id: "a" }, { id: "b" }, { id: "archived-x", archived: true }],
+      granted: ["a"],
+    });
+    const res = await handleOpsGrantRead(ctx, ADMIN, true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as OpsGrantReadResult;
+    expect(body.added).toEqual(["b"]);
+    expect(body.federatedRead).toEqual(["a", "b"]);
+    // replace-semantics: the rescope argv carried the WHOLE new list
+    expect(calls["authRescope"]).toEqual([
+      { clientId: CLIENT_ID, list: ["a", "b"] },
+    ]);
+    expect(calls["forceRenew"]).toHaveLength(1);
+    expect(calls["invalidateAll"]).toHaveLength(1);
+  });
+
+  test("idempotent: nothing to add → no rescope, added stays empty", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-d",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "a", pages: 1 }],
+      activeSources: [{ id: "a" }],
+      granted: ["a"],
+    });
+    const body = (await (await handleOpsGrantRead(ctx, ADMIN, true)).json()) as OpsGrantReadResult;
+    expect(body.added).toEqual([]);
+    expect(calls["authRescope"]).toBeUndefined();
+  });
+
+  test("concurrent double-clicks share one run (single-flight)", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-e",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "b", pages: 2 }],
+      activeSources: [{ id: "b" }],
+      granted: [],
+    });
+    const [r1, r2] = await Promise.all([
+      handleOpsGrantRead(ctx, ADMIN, true),
+      handleOpsGrantRead(ctx, ADMIN, true),
+    ]);
+    const b1 = (await r1.json()) as OpsGrantReadResult;
+    const b2 = (await r2.json()) as OpsGrantReadResult;
+    expect(b1.added).toEqual(["b"]);
+    expect(b2.added).toEqual(["b"]);
+    expect(calls["authRescope"]).toHaveLength(1);
+  });
+
+  test("archived candidates are never granted (upstream would not refuse them)", async () => {
+    const { ctx, calls } = opsCtx({
+      id: "grant-f",
+      oauth: true,
+      cli: true,
+      pgSources: [{ source_id: "ghost", pages: 3 }],
+      activeSources: [{ id: "ghost", archived: true }],
+      granted: [],
+    });
+    const body = (await (await handleOpsGrantRead(ctx, ADMIN, true)).json()) as OpsGrantReadResult;
+    expect(body.added).toEqual([]);
+    expect(calls["authRescope"]).toBeUndefined();
+  });
+
+  test("no CLI channel or non-OAuth profile refuse with the upstream envelope class", async () => {
+    const noCli = opsCtx({ id: "grant-g", oauth: true, cli: false });
+    await expect(handleOpsGrantRead(noCli.ctx, ADMIN, true)).rejects.toThrow(
+      /CLI channel unavailable/,
+    );
+    const legacy = opsCtx({ id: "grant-h", oauth: false, cli: true });
+    await expect(handleOpsGrantRead(legacy.ctx, ADMIN, true)).rejects.toThrow(
+      /not an OAuth client/,
+    );
+  });
+});
+
+// --- 0.4.0 hotfix: source-scoped facets ---------------------------------------
+
+import { handlePageFacets } from "./api";
+
+describe("handlePageFacets source scoping", () => {
+  function facetsCtx(pgCounts?: Array<{ source_id: string; type: string | null; pages: number }>, pgError?: Error) {
+    return {
+      mcp: {
+        schemaStats: async () => ({
+          pack_identity: "p",
+          aggregate: { total_pages: 2248, by_type: [{ type: "doc", count: 1874 }] },
+        }),
+      },
+      pg: {
+        sourceTypeCounts: async () => {
+          if (pgError) throw pgError;
+          return pgCounts ?? [];
+        },
+      },
+    } as unknown as ApiContext;
+  }
+
+  test("no source param keeps the brain-wide form (scope absent)", async () => {
+    const body = await (await handlePageFacets(facetsCtx())).json();
+    expect(body.total_pages).toBe(2248);
+    expect(body.scope).toBeUndefined();
+  });
+
+  test("?source_id narrows through the bypass and labels scope=source", async () => {
+    const ctx = facetsCtx([
+      { source_id: "iuap-apcom-docs", type: "doc", pages: 1874 },
+      { source_id: "yon-bip", type: "note", pages: 12 },
+    ]);
+    const body = await (await handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=yon-bip"))).json();
+    expect(body.scope).toBe("source");
+    expect(body.source_id).toBe("yon-bip");
+    expect(body.total_pages).toBe(12);
+    expect(body.by_type).toEqual([{ type: "note", count: 12 }]);
+  });
+
+  test("a source with zero pages answers 0 — an honest empty, not all-source", async () => {
+    const ctx = facetsCtx([{ source_id: "a", type: "doc", pages: 1 }]);
+    const body = await (await handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=ghost"))).json();
+    expect(body.scope).toBe("source");
+    expect(body.total_pages).toBe(0);
+  });
+
+  test("bypass down degrades to brain-wide numbers, labeled source-degraded", async () => {
+    const ctx = facetsCtx(undefined, new Error("read-only bypass not configured"));
+    const body = await (await handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=yon-bip"))).json();
+    expect(body.scope).toBe("source-degraded");
+    expect(body.total_pages).toBe(2248); // brain-wide — the UI explains
+  });
+
+  test("invalid source_id is a 400 before any driver call", async () => {
+    const ctx = facetsCtx();
+    await expect(
+      handlePageFacets(ctx, new URL("http://x/api/pages/facets?source_id=__all__")),
+    ).rejects.toThrow();
+  });
+});
+
+// --- 0.4.x Admin panel: /api/ops/clients + adminTier --------------------------
+
+import { handleOpsClients, handleProfiles } from "./api";
+import type { OpsClientsReport, ProfilesResponse } from "@gbrain-cockpit/shared";
+
+const SELF_CLIENT_ID =
+  "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+const OTHER_CLIENT_ID =
+  "gbrain_cl_aaaaf6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+describe("handleOpsClients", () => {
+  function clientsCtx(opts: {
+    cli?: boolean;
+    oauth?: boolean;
+    guard?: { brainExec: () => Promise<{ bin: string; env: Record<string, string> }> };
+    fail?: Error;
+  }) {
+    const guardCalls: unknown[] = [];
+    const guard = opts.guard;
+    const ctx = {
+      id: "clients-test",
+      profile: {
+        cliBin: "gbrain",
+        ...(opts.oauth ? { oauth: { clientId: SELF_CLIENT_ID } } : {}),
+      },
+      takesGuard: guard
+        ? {
+            brainExec: async () => {
+              guardCalls.push(null);
+              return guard.brainExec();
+            },
+          }
+        : null,
+      cli: opts.cli
+        ? ({
+            authClients: async () => {
+              if (opts.fail) throw opts.fail;
+              return {
+                clients: [
+                  { client_id: SELF_CLIENT_ID, client_name: "cockpit-ui", scopes: "read", federated_read: ["a", "b"], surface: "full" },
+                  { client_id: OTHER_CLIENT_ID, client_name: "other", scopes: "read", federated_read: [] },
+                ],
+              };
+            },
+          } as unknown as CliDriver)
+        : null,
+    } as unknown as ApiContext;
+    return { ctx, guardCalls };
+  }
+
+  test("ok: rows + selfClientId on an OAuth profile, no guard → plain exec", async () => {
+    const { ctx, guardCalls } = clientsCtx({ cli: true, oauth: true });
+    const body = (await (await handleOpsClients(ctx)).json()) as OpsClientsReport;
+    expect(body.status).toBe("ok");
+    expect(body.selfClientId).toBe(SELF_CLIENT_ID);
+    expect(body.clients).toHaveLength(2);
+    expect(guardCalls).toHaveLength(0);
+  });
+
+  test("ok: guard profile routes the exec through brainExec (isolated brain)", async () => {
+    const { ctx, guardCalls } = clientsCtx({
+      cli: true,
+      oauth: true,
+      guard: { brainExec: async () => ({ bin: "/real/gbrain", env: { GBRAIN_HOME: "/h" } }) },
+    });
+    const body = (await (await handleOpsClients(ctx)).json()) as OpsClientsReport;
+    expect(body.status).toBe("ok");
+    expect(guardCalls).toHaveLength(1);
+  });
+
+  test("legacy-token profile: registry reads fine, selfClientId absent", async () => {
+    const { ctx } = clientsCtx({ cli: true, oauth: false });
+    const body = (await (await handleOpsClients(ctx)).json()) as OpsClientsReport;
+    expect(body.status).toBe("ok");
+    expect(body.selfClientId).toBeUndefined();
+    expect(body.clients).toHaveLength(2);
+  });
+
+  test("CLI channel absent → down in-band with the human-view paste hint", async () => {
+    const { ctx } = clientsCtx({ cli: false });
+    const res = await handleOpsClients(ctx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as OpsClientsReport;
+    expect(body.status).toBe("down");
+    expect(body.command).toBe("gbrain auth clients");
+    expect(body.command).not.toContain("--json");
+  });
+
+  test("CLI present but the exec fails → degraded in-band, never an envelope error", async () => {
+    const { ctx } = clientsCtx({ cli: true, oauth: true, fail: new Error("exit 2: boom") });
+    const res = await handleOpsClients(ctx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as OpsClientsReport;
+    expect(body.status).toBe("degraded");
+    expect(body.error).toContain("boom");
+    expect(body.command).toBe("gbrain auth clients");
+  });
+});
+
+describe("handleProfiles adminTier", () => {
+  function registryStub() {
+    return {
+      profileInfos: async () => ({ defaultId: "default", profiles: [{ id: "default", name: "gbrain" }] }),
+    } as unknown as Parameters<typeof handleProfiles>[0];
+  }
+
+  test("carries the deployment capability both ways", async () => {
+    const on = (await (await handleProfiles(registryStub(), true)).json()) as ProfilesResponse;
+    expect(on.adminTier).toBe(true);
+    const off = (await (await handleProfiles(registryStub(), false)).json()) as ProfilesResponse;
+    expect(off.adminTier).toBe(false);
+  });
+});

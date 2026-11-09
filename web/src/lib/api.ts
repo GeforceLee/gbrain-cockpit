@@ -52,8 +52,13 @@ export async function apiSend<T>(
   path: string,
   method: "POST" | "PUT",
   payload: unknown,
+  opts: { token?: string } = {},
 ): Promise<T> {
-  const token = getToken();
+  // opts.token overrides the stored bearer for THIS request only — the
+  // management step-up (0.4.0): the admin token is pasted at the action,
+  // travels in the Authorization header of that one call, and is never
+  // written to persistent storage.
+  const token = opts.token ?? getToken();
   if (!token) throw new ApiError("no token stored", "E_NO_TOKEN", 0);
 
   const res = await fetch(path, {

@@ -51,6 +51,9 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 
 - Overall status plus per-channel cards: MCP latency gauge, brain summary (name, gbrain version, engine, page count), CLI channel (binary found / missing), read-only bypass, and **per-source diagnostics** (`sources_status`: clone state, last sync, pending writes)
 - The safety checklist: token-in-header-only, CLI whitelist discipline, fixed-SELECT bypass, receipt-protocol writes
+- **Source-visibility drift** (0.4.0): the bypass sees every source with pages, MCP only the granted ones — ungranted sources are flagged the moment they appear, with a one-key union re-grant (paste the optional `COCKPIT_ADMIN_TOKEN` at the action; it is never stored) or a paste-safe copy-command fallback
+- **Proposal activity / cycle** (0.4.0): dream proposal runs over time plus upstream's own `doctor cycle_freshness` verdict — activity, honestly labeled, with 30h/54h staleness hints
+- **Admin panel** (0.4.x, conditional): appears only when the deployment configures the admin tier — the OAuth client registry read-only (cockpit's own row highlighted), per-row revoke as copy-command only, and the grant-widening entry
 - Coarse unauthenticated `/healthz` for uptime pollers (statuses only, no data)
 
 ## Everywhere

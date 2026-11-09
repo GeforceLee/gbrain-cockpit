@@ -2,9 +2,14 @@ import { describe, expect, test } from "bun:test";
 import {
   ADJUDICATION_CHANNELS,
   ERROR_CODES,
+  FEDERATED_LIST_RE,
+  MANAGEMENT_CHANNELS,
   OWNER_BIN_RE,
   PROFILE_ID_RE,
   SOURCE_ID_RE,
+  authClientsListCommand,
+  authRescopeCommand,
+  authRevokeClientCommand,
   buildGraphKey,
   contradictionAcceptCommand,
   contradictionRejectCommand,
@@ -14,9 +19,11 @@ import {
   trustDropCommand,
   trustExplainCommand,
   trustReleaseCommand,
+  validateFederatedReadList,
   worstStatus,
   type AdjudicationAction,
   type Channel,
+  type ManagementAction,
 } from "./index";
 
 const VALID_CHANNELS: readonly Channel[] = [
@@ -46,6 +53,85 @@ describe("ADJUDICATION_CHANNELS", () => {
   test("no duplicate actions (guaranteed by the type, checked at runtime too)", () => {
     const actions = Object.keys(ADJUDICATION_CHANNELS);
     expect(new Set(actions).size).toBe(actions.length);
+  });
+});
+
+describe("MANAGEMENT_CHANNELS", () => {
+  test("every management action maps to exactly one valid channel", () => {
+    const actions = Object.keys(MANAGEMENT_CHANNELS) as ManagementAction[];
+    expect(actions.length).toBeGreaterThan(0);
+    for (const action of actions) {
+      expect(VALID_CHANNELS).toContain(MANAGEMENT_CHANNELS[action]);
+    }
+  });
+
+  test("stays disjoint from the adjudication matrix (one action, one matrix)", () => {
+    const adjudication = new Set(Object.keys(ADJUDICATION_CHANNELS));
+    for (const action of Object.keys(MANAGEMENT_CHANNELS)) {
+      expect(adjudication.has(action)).toBe(false);
+    }
+  });
+
+  test("trust-elevating verbs can never appear (owner-presence red line)", () => {
+    const actions = Object.keys(MANAGEMENT_CHANNELS).join(" ");
+    expect(actions).not.toContain("trust");
+    expect(actions).not.toContain("held-write");
+  });
+});
+
+describe("validateFederatedReadList", () => {
+  test("dedupes and accepts upstream-shaped ids", () => {
+    expect(
+      validateFederatedReadList([
+        "iuap-apcom-docs",
+        "yon-bip",
+        "iuap-apcom-docs",
+      ]),
+    ).toEqual(["iuap-apcom-docs", "yon-bip"]);
+  });
+
+  test("rejects shapes upstream assertValidSourceId would refuse", () => {
+    expect(() => validateFederatedReadList(["-lead"])).toThrow();
+    expect(() => validateFederatedReadList(["trail-"])).toThrow();
+    expect(() => validateFederatedReadList(["a--b"])).toThrow();
+    expect(() => validateFederatedReadList(["UPPER"])).toThrow();
+    expect(() => validateFederatedReadList(["has space"])).toThrow();
+    expect(() => validateFederatedReadList(["x".repeat(33)])).toThrow();
+    expect(() => validateFederatedReadList([])).toThrow();
+  });
+
+  test("bounds the list size and total length", () => {
+    expect(() =>
+      validateFederatedReadList(Array.from({ length: 51 }, (_, i) => `s${i}`)),
+    ).toThrow();
+    expect(() =>
+      validateFederatedReadList(
+        Array.from({ length: 20 }, (_, i) => `${i}`.padEnd(20, "a")),
+      ),
+    ).toThrow(); // 20 unique ×20 chars + commas > 300
+  });
+
+  test("FEDERATED_LIST_RE mirrors the validator on joined form", () => {
+    expect(FEDERATED_LIST_RE.test("a-b,c,def")).toBe(true);
+    expect(FEDERATED_LIST_RE.test("a-b,,c")).toBe(false);
+    expect(FEDERATED_LIST_RE.test("-a,b")).toBe(false);
+  });
+});
+
+describe("authRescopeCommand", () => {
+  const clientId =
+    "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+  test("builds the replace-semantics command from a validated list", () => {
+    expect(authRescopeCommand("gbrain", clientId, ["a", "b-c"])).toBe(
+      `gbrain auth rescope --client ${clientId} --federated-read a,b-c`,
+    );
+  });
+
+  test("refuses bad bins, bad client ids and bad source shapes", () => {
+    expect(() => authRescopeCommand("gbrain;rm", clientId, ["a"])).toThrow();
+    expect(() => authRescopeCommand("gbrain", "cl_abc", ["a"])).toThrow();
+    expect(() => authRescopeCommand("gbrain", clientId, ["--flag"])).toThrow();
   });
 });
 
@@ -153,5 +239,30 @@ describe("buildGraphKey", () => {
     );
     expect(buildGraphKey(undefined, "some/slug")).toBe("some/slug");
     expect(buildGraphKey("main", "plain-slug")).toBe("main/plain-slug");
+  });
+});
+
+describe("authRevokeClientCommand", () => {
+  const clientId =
+    "gbrain_cl_489f6ae02796baf04d3bbb080308b39ec98d8991e1cc9597ed00b8ece4c2c7c9";
+
+  test("builds the pinned positional form (probed 0.60.558)", () => {
+    expect(authRevokeClientCommand("gbrain", clientId)).toBe(
+      `gbrain auth revoke-client ${clientId}`,
+    );
+  });
+
+  test("refuses bad bins and client ids — never pastes a guess", () => {
+    expect(() => authRevokeClientCommand("gbrain;rm", clientId)).toThrow();
+    expect(() => authRevokeClientCommand("gbrain", "cl_abc")).toThrow();
+    expect(() => authRevokeClientCommand("gbrain", "../../etc")).toThrow();
+  });
+});
+
+describe("authClientsListCommand", () => {
+  test("human view, no --json (readable table for the paste)", () => {
+    expect(authClientsListCommand("gbrain")).toBe("gbrain auth clients");
+    expect(authClientsListCommand("/opt/gbrain")).toBe("/opt/gbrain auth clients");
+    expect(() => authClientsListCommand("gbrain x")).toThrow();
   });
 });

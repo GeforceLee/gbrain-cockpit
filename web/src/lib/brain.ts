@@ -17,6 +17,13 @@ const PROFILE_KEY = "cockpit.profile";
 interface BrainState {
   /** false until the first GET /api/profiles resolves (or fails → fallback) */
   loaded: boolean;
+  /**
+   * Deployment capability (server's COCKPIT_ADMIN_TOKEN configured?), from
+   * the same profiles fetch — gates the Admin panel's visibility. Fails
+   * CLOSED: the fallback path and a lost fetch both hide the panel; the
+   * server enforces the tier regardless of what the UI shows.
+   */
+  adminTier: boolean;
   profiles: ProfileInfo[];
   defaultId: string;
   currentId: string;
@@ -26,6 +33,7 @@ interface BrainState {
 
 let state: BrainState = {
   loaded: false,
+  adminTier: false,
   profiles: [{ id: "default", name: "gbrain" }],
   defaultId: "default",
   currentId: "default",
@@ -97,6 +105,9 @@ export async function bootstrapProfiles(): Promise<void> {
   if (!body || !Array.isArray(body.profiles) || body.profiles.length === 0) {
     setState({
       loaded: true,
+      // explicit false: setState merges, a stale true from an earlier good
+      // boot must not survive a degraded refetch (heal path)
+      adminTier: false,
       profiles: [{ id: "default", name: "gbrain" }],
       defaultId: "default",
       currentId: "default",
@@ -115,7 +126,14 @@ export async function bootstrapProfiles(): Promise<void> {
   const currentId = profiles.some((p) => p.id === stored)
     ? (stored as string)
     : defaultId;
-  setState({ loaded: true, profiles, defaultId, currentId, notice: null });
+  setState({
+    loaded: true,
+    adminTier: body.adminTier === true,
+    profiles,
+    defaultId,
+    currentId,
+    notice: null,
+  });
 }
 
 /** Switch the active brain; the App remounts the stage on this change. */

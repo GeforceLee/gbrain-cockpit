@@ -3,6 +3,8 @@ import {
   type DecidedTakeRow,
   type GraphEdge,
   type GraphNode,
+  type OpsDreamRun,
+  type OpsSourcePages,
   type TakeProposal,
 } from "@gbrain-cockpit/shared";
 
@@ -67,6 +69,44 @@ const SQL_TAKES_DECIDED =
   "ORDER BY acted_at DESC NULLS LAST, id DESC LIMIT 100";
 
 /**
+ * 0.4.0 ops: the bypass's own view of which sources HAVE pages (the whole
+ * database — contrast MCP sources_list, which only returns granted ones).
+ * Gated on the pages.source_id column via the information_schema cache; a
+ * pre-source-column brain simply has no source axis, so "no rows" there is
+ * honest, not an error. Same table as the graph read — no new GRANT needed.
+ */
+const SQL_SOURCES_WITH_PAGES =
+  "SELECT source_id, count(*)::int AS pages FROM pages GROUP BY source_id " +
+  "ORDER BY pages DESC, source_id ASC";
+
+/**
+ * 0.4.0 ops: dream proposal runs — take_proposals grouped by proposal_run_id
+ * (column probed live 2026-11-09 on 0.60.558, present NOT NULL; hardcoded
+ * like the acted_at set above). This is proposal ACTIVITY, not dream
+ * liveness: a healthy mature brain proposes zero takes on many nights, so
+ * the consumer must label it as activity, never as "dream didn't run".
+ * Fresh every call like the takes reads — the heartbeat card must not ride
+ * the graph TTL. No new GRANT (same table as the queue read).
+ */
+const SQL_DREAM_RUNS =
+  "SELECT proposal_run_id, min(proposed_at) AS run_start, max(proposed_at) AS run_end, " +
+  "count(*)::int AS takes, count(*) FILTER (WHERE status = 'pending')::int AS pending " +
+  "FROM take_proposals GROUP BY proposal_run_id " +
+  "ORDER BY run_end DESC LIMIT 30";
+
+/**
+ * 0.4.0 hotfix: per-(source, type) page counts. schema_stats (MCP) is a
+ * whole-brain aggregate with no source axis, so the Pages type-chips lied
+ * under a source filter (all-source numbers next to a narrowed list). Same
+ * pages table as the graph read — no new GRANT. Gated on BOTH source_id and
+ * type columns via the information_schema cache; absent either → [] (the
+ * facets route then degrades to the brain-wide form and the UI says so).
+ */
+const SQL_SOURCE_TYPE_COUNTS =
+  "SELECT source_id, type, count(*)::int AS n FROM pages GROUP BY source_id, type " +
+  "ORDER BY n DESC";
+
+/**
  * Pages columns we consume; presence-checked against information_schema.
  * `source_id` (gbrain 0.60.558: TEXT NOT NULL DEFAULT 'default', with
  * UNIQUE(source_id, slug)) upgrades node identity from bare slug to
@@ -98,6 +138,16 @@ function toEpochSeconds(value: unknown): number | null {
     return Number.isNaN(parsed) ? null : Math.floor(parsed / 1000);
   }
   if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value / 1000);
+  return null;
+}
+
+/** normalize a pg timestamp to ISO string, or null (dream-run windows) */
+function toIso(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string" && value) {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+  }
   return null;
 }
 
@@ -209,6 +259,65 @@ export class PgReadonlyDriver {
           ? { acted_at: row.acted_at }
           : {}),
       ...(typeof row.kind === "string" ? { kind: row.kind } : {}),
+    }));
+  }
+
+  /**
+   * 0.4.0 ops: which sources have pages, whole-database view. Empty on
+   * pre-source-column brains (no source axis → nothing to drift). Fresh,
+   * uncached — the drift card must see a just-ingested source immediately.
+   */
+  async sourcesWithPages(): Promise<OpsSourcePages[]> {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const columns = await this.#ensureColumns();
+    if (!columns.get("pages")?.has("source_id")) return [];
+    const rows = await this.#query(SQL_SOURCES_WITH_PAGES);
+    return rows.map((row) => ({
+      source_id: String(row.source_id ?? ""),
+      pages: Number(row.pages ?? 0),
+    }));
+  }
+
+  /**
+   * 0.4.0 ops: recent dream proposal runs, newest first (capped 30). Empty
+   * table is a valid "never proposed" state, not an error. Fresh, uncached.
+   */
+  async dreamRuns(): Promise<OpsDreamRun[]> {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const rows = await this.#query(SQL_DREAM_RUNS);
+    return rows.map((row) => ({
+      runId: String(row.proposal_run_id ?? ""),
+      start: toIso(row.run_start) ?? "",
+      end: toIso(row.run_end) ?? "",
+      takes: Number(row.takes ?? 0),
+      pending: Number(row.pending ?? 0),
+    }));
+  }
+
+  /**
+   * Per-(source, type) page counts for source-scoped facets. Empty when the
+   * schema lacks the source or type column (old brain) — the route degrades
+   * to brain-wide facets and labels them. Fresh, uncached (filters must see
+   * a just-ingested source immediately).
+   */
+  async sourceTypeCounts(): Promise<
+    Array<{ source_id: string; type: string | null; pages: number }>
+  > {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const columns = await this.#ensureColumns();
+    const pagesCols = columns.get("pages");
+    if (!pagesCols?.has("source_id") || !pagesCols?.has("type")) return [];
+    const rows = await this.#query(SQL_SOURCE_TYPE_COUNTS);
+    return rows.map((row) => ({
+      source_id: String(row.source_id ?? ""),
+      type: typeof row.type === "string" ? row.type : null,
+      pages: Number(row.n ?? 0),
     }));
   }
 

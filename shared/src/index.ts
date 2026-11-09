@@ -41,7 +41,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.3.0";
+export const COCKPIT_VERSION = "0.4.0";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>
@@ -77,6 +77,31 @@ export const ADJUDICATION_CHANNELS: Readonly<
   "write.cancel": "mcp",
 };
 
+// --- Management (ops) channel matrix (0.4.0) ----------------------------------
+// Route C (owner 2026-11-09): cockpit also manages brain-side operational
+// state (source read grants, ops diagnostics). These are NOT adjudication
+// actions — a second fixed matrix, same non-negotiables: each action has
+// exactly one channel; copy-command is the operational DEGRADATION when the
+// CLI channel is absent on this host (co-located deployments), never a
+// runtime-configurable reroute. Trust-elevating verbs (trust accept, held
+// writes) never appear here — they stay owner-terminal-only forever.
+
+/** Management actions cockpit knows about (distinct from AdjudicationAction). */
+export type ManagementAction =
+  | "clients.list" // `gbrain auth clients --json` (owner-view grant registry)
+  | "sources.list" // `gbrain sources list --json` (owner-view, carries archived)
+  | "sources.grant-read" // `gbrain auth rescope --client <id> --federated-read <list>`
+  | "doctor.cycle-freshness"; // `gbrain doctor --only cycle_freshness --json`
+
+export const MANAGEMENT_CHANNELS: Readonly<
+  Record<ManagementAction, Channel>
+> = {
+  "clients.list": "cli-whitelist",
+  "sources.list": "cli-whitelist",
+  "sources.grant-read": "cli-whitelist",
+  "doctor.cycle-freshness": "cli-whitelist",
+};
+
 // --- Identities & profiles ---------------------------------------------------
 // Multi-brain switching (P0) and the source axis (P1) both hinge on naming:
 // which gbrain deployment a request targets, and which source within a brain
@@ -98,6 +123,52 @@ export const PROFILE_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
  * the UI — see isValidSourceId.
  */
 export const SOURCE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * OAuth client ids gbrain mints (0.60.558 live-probed 2026-11-09):
+ * `gbrain_cl_` + lowercase hex. Bounded loosely on the hex length so a
+ * future format tweak still validates — the whitelist layer stays the gate.
+ */
+export const OWNER_CLIENT_ID_RE = /^gbrain_cl_[a-f0-9]{16,128}$/;
+
+/**
+ * The charset UPSTREAM's rescope accepts for a federated-read list entry
+ * (core/source-id.ts SOURCE_ID_RE, probed 2026-11-09): 1-32 lowercase
+ * alnum with interior hyphens only. Stricter than cockpit's own
+ * SOURCE_ID_RE on purpose — values we SEND upstream must be shapes it
+ * accepts, never shapes its assertValidSourceId would reject.
+ */
+export const GBRAIN_SOURCE_ID_RE = /^[a-z0-9]{1,32}(-[a-z0-9]{1,32})*$/;
+
+/**
+ * A comma-joined federated-read list as cockpit builds it for rescope
+ * argv/copy-commands: upstream-shaped segments, ≤50 of them, ≤300 chars
+ * total (the total bound is enforced by validateFederatedReadList, not
+ * expressible in one regex).
+ */
+export const FEDERATED_LIST_RE =
+  /^[a-z0-9]{1,32}(-[a-z0-9]{1,32})*(,[a-z0-9]{1,32}(-[a-z0-9]{1,32})*)*$/;
+
+/** Validate + normalize a federated-read source list before it reaches argv. */
+export function validateFederatedReadList(sources: string[]): string[] {
+  const unique = [...new Set(sources)];
+  if (unique.length === 0 || unique.length > 50) {
+    throw new Error("federated-read list must carry 1..50 sources");
+  }
+  for (const s of unique) {
+    if (!GBRAIN_SOURCE_ID_RE.test(s)) {
+      throw new Error(`federated-read source rejected by upstream charset: ${s}`);
+    }
+  }
+  const joined = unique.join(",");
+  if (joined.length > 300) {
+    throw new Error("federated-read list too long (>300 chars)");
+  }
+  if (!FEDERATED_LIST_RE.test(joined)) {
+    throw new Error("federated-read list rejected by FEDERATED_LIST_RE");
+  }
+  return unique;
+}
 
 /** True when `v` is a selectable source id (charset + not a reserved sentinel). */
 export function isValidSourceId(v: string): boolean {
@@ -163,6 +234,15 @@ export interface ProfileInfo {
 export interface ProfilesResponse {
   defaultId: string;
   profiles: ProfileInfo[];
+  /**
+   * Whether this cockpit deployment has the management tier configured
+   * (COCKPIT_ADMIN_TOKEN set) — a DEPLOYMENT capability, not a browser
+   * state: the Admin panel is visible to any base-token session on a
+   * two-tier install (management reads ride the base token; only the
+   * grant write asks for the admin token at step-up). Absent/false ⇒ the
+   * sixth panel never renders; single-token installs see zero change.
+   */
+  adminTier?: boolean;
 }
 
 // --- Owner copy-commands -----------------------------------------------------
@@ -234,6 +314,49 @@ export function contradictionRejectCommand(bin: string, id: string): string {
 }
 
 /**
+ * The rescope copy-command for the sources-grant fallback rail. REPLACE
+ * semantics upstream: the list is the client's whole federated_read, so
+ * callers must pass current ∪ additions — never just the additions.
+ */
+export function authRescopeCommand(
+  bin: string,
+  clientId: string,
+  sources: string[],
+): string {
+  assertOwnerBin(bin);
+  if (!OWNER_CLIENT_ID_RE.test(clientId)) {
+    throw new Error(`owner command client id rejected by OWNER_CLIENT_ID_RE: ${clientId}`);
+  }
+  const list = validateFederatedReadList(sources).join(",");
+  return `${bin} auth rescope --client ${clientId} --federated-read ${list}`;
+}
+
+/**
+ * The revoke copy-command — owner-terminal ONLY by design (upstream
+ * hard-deletes the client and cascades to its tokens+codes; the same
+ * owner-presence class as trust verbs). Never a whitelist verb, never a
+ * one-key route, never in MANAGEMENT_CHANNELS. Shape pinned by probe:
+ * `auth revoke-client <client_id>` (positional; 0.60.558, 2026-11-09).
+ */
+export function authRevokeClientCommand(bin: string, clientId: string): string {
+  assertOwnerBin(bin);
+  if (!OWNER_CLIENT_ID_RE.test(clientId)) {
+    throw new Error(`owner command client id rejected by OWNER_CLIENT_ID_RE: ${clientId}`);
+  }
+  return `${bin} auth revoke-client ${clientId}`;
+}
+
+/**
+ * The human-view registry read for the CLI-down degradation hint — plain
+ * `auth clients`, NOT the --json form (the owner pasting this wants the
+ * readable table, not raw JSON; --json stays on the whitelist verb).
+ */
+export function authClientsListCommand(bin: string): string {
+  assertOwnerBin(bin);
+  return `${bin} auth clients`;
+}
+
+/**
  * The unique graph node id for a page: `sourceId/slug` when the source is
  * known (source ids never contain `/` — SOURCE_ID_RE), bare `slug` in the
  * degraded no-source-column mode. Consumers that need (slug, source_id)
@@ -255,6 +378,7 @@ export function buildGraphKey(
 export const ERROR_CODES = [
   "E_BAD_REQUEST",
   "E_UNAUTHENTICATED",
+  "E_FORBIDDEN",
   "E_NOT_FOUND",
   "E_METHOD_NOT_ALLOWED",
   "E_UPSTREAM",
@@ -378,6 +502,14 @@ export interface PagesFacets {
   pack_identity?: string;
   total_pages?: number;
   by_type: FacetTypeCount[];
+  /**
+   * Which set the numbers describe (0.4.0 hotfix): "source" = narrowed to
+   * source_id via the read-only bypass; "source-degraded" = a source was
+   * asked but the bypass is down, so the numbers span ALL sources and the UI
+   * must say so; absent = the plain brain-wide form.
+   */
+  scope?: "source" | "source-degraded";
+  source_id?: string;
   [k: string]: unknown;
 }
 
@@ -735,10 +867,29 @@ export interface BrainHealthReport {
   error?: string;
 }
 
+/**
+ * One find_anomalies cohort row (fields as probed 0.60.558/0.60.611). When
+ * `baseline_stddev` is 0 the cohort has NO baseline yet (e.g. a type that
+ * appeared with a bulk ingest) — sigma_observed degenerates to the raw
+ * count and must be DISPLAYED as "new cohort, no baseline", never as a
+ * sigma number. All fields optional: upstream shape wins, defensive reads.
+ */
+export interface AnomalyCohort {
+  cohort_kind?: string;
+  cohort_value?: string;
+  count?: number;
+  baseline_mean?: number;
+  baseline_stddev?: number;
+  sigma_observed?: number;
+  page_slugs?: string[];
+  page_slugs_complete?: boolean;
+  [k: string]: unknown;
+}
+
 /** GET /api/anomalies — find_anomalies, in-band. */
 export interface AnomaliesReport {
   status: CheckStatus;
-  items?: unknown[];
+  items?: AnomalyCohort[];
   error?: string;
 }
 
@@ -790,6 +941,109 @@ export interface CliChannelStatus {
    * ("gbrain" when unset). Present even when the driver itself is down —
    * copy-commands are the fallback, they must never go blank.
    */
+  command?: string;
+  error?: string;
+}
+
+// --- 0.4.0 management (ops) reports -------------------------------------------
+// The ops routes ride the same in-band degradation vocabulary as every other
+// channel report. Management WRITES additionally require the admin tier
+// (COCKPIT_ADMIN_TOKEN, D6 amendment 2026-11-09); management reads ride the
+// base token — they are diagnostics, not actions.
+
+/** The slice of an `auth clients --json` row cockpit consumes. */
+export interface OpsClientGrant {
+  client_id: string;
+  client_name?: string;
+  scopes?: string;
+  federated_read?: string[];
+  [k: string]: unknown;
+}
+
+/** pg-side source presence (pages grouped by source; the bypass's own view). */
+export interface OpsSourcePages {
+  source_id: string;
+  pages: number;
+}
+
+/**
+ * GET /api/ops/sources-drift — the pg bypass sees the whole database, MCP
+ * sources_list only sees granted sources; the delta is pages that exist but
+ * the browser can never read. `missing` = has pages AND active AND not
+ * granted (archived/removed sources are never flagged — re-granting one
+ * would brick the client's token issuance, upstream rescope does not check).
+ */
+export interface OpsSourceDriftReport {
+  status: CheckStatus;
+  pgSources?: OpsSourcePages[];
+  /** active (non-archived) source ids, CLI owner view; absent when CLI down */
+  activeSources?: string[];
+  /** cockpit's own client's current federated_read; absent when unknowable */
+  grantedSources?: string[];
+  missing?: string[];
+  action: {
+    available: boolean;
+    reason?:
+      | "cli-unavailable"
+      | "not-oauth-profile"
+      | "pg-unavailable"
+      | "admin-token-unconfigured";
+    /** server-built copy-command fallback; present whenever one-key is not */
+    command?: string;
+  };
+  error?: string;
+}
+
+/** One dream proposal run (take_proposals grouped by proposal_run_id). */
+export interface OpsDreamRun {
+  runId: string;
+  start: string;
+  end: string;
+  takes: number;
+  pending: number;
+}
+
+/**
+ * GET /api/ops/dream-runs — proposal ACTIVITY, not dream liveness: a healthy
+ * mature brain can run dream nightly and propose zero takes, so the card's
+ * claim is "last proposal activity" and the upstream cycle_freshness verdict
+ * (doctor's own band, message shown verbatim — never parsed) carries the
+ * "is the pipeline running" half.
+ */
+export interface OpsDreamRunsReport {
+  status: CheckStatus;
+  runs?: OpsDreamRun[];
+  /** ISO of the newest run_end; absent when take_proposals is empty */
+  lastActivityAt?: string;
+  neverRan: boolean;
+  pendingTotal?: number;
+  cycleFreshness?: {
+    status: "ok" | "warn" | "fail" | "unknown";
+    message?: string;
+  };
+  error?: string;
+}
+
+/** POST /api/ops/grant-read — always a pure union, never revokes. */
+export interface OpsGrantReadResult {
+  status: "ok";
+  /** sources added by THIS call; empty = idempotent no-op (already granted) */
+  added: string[];
+  federatedRead: string[];
+}
+
+/**
+ * GET /api/ops/clients — the OAuth client registry (`auth clients --json`,
+ * owner view via the CLI whitelist). Base token: a read. `selfClientId`
+ * names cockpit's own row (from the profile's credentials file); absent on
+ * legacy-token profiles. Revoked rows are surfaced as `revoked: true` —
+ * the UI badges them instead of offering actions.
+ */
+export interface OpsClientsReport {
+  status: CheckStatus;
+  clients?: OpsClientGrant[];
+  selfClientId?: string;
+  /** human-view read command for the CLI-down degradation hint */
   command?: string;
   error?: string;
 }

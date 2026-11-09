@@ -79,7 +79,11 @@ export function Pages({
   const pollFailsRef = useRef(0);
 
   useEffect(() => {
-    apiGet<PagesFacets>("/api/pages/facets")
+    apiGet<PagesFacets>(
+      sourceFilter
+        ? `/api/pages/facets?source_id=${encodeURIComponent(sourceFilter)}`
+        : "/api/pages/facets",
+    )
       .then(setFacets)
       .catch(() => setFacets(null));
     apiGet<SourcesReport>("/api/sources")
@@ -87,7 +91,7 @@ export function Pages({
         setSources(r.status === "ok" && r.items ? r.items.map((x) => x.id) : null),
       )
       .catch(() => setSources(null));
-  }, []);
+  }, [sourceFilter]);
 
   const fetchRows = useCallback(
     async (offset: number, replace: boolean) => {
@@ -320,10 +324,15 @@ export function Pages({
     bundle?.page.source_id ?? selected?.sourceId,
   );
 
-  // pager math: facet counts are the only true totals and they span ALL
-  // sources — under source/slug/tag narrowing they overestimate, so the
-  // pager there grows dynamically (one page ahead) as batches accumulate
-  const narrowed = sourceFilter !== "" || slugFilter !== "" || tagFilter !== "";
+  // pager math: facet counts are the only true totals. Since the 0.4.0
+  // hotfix a source filter refetches SCOPED facets (pg bypass), so totals
+  // are true under source and type narrowing; only slug/tag narrowing
+  // (server-side but uncountable by facets) grows the pager dynamically.
+  const facetsMatchScope =
+    sourceFilter === ""
+      ? facets?.scope === undefined
+      : facets?.scope === "source" && facets.source_id === sourceFilter;
+  const narrowed = !facetsMatchScope || slugFilter !== "" || tagFilter !== "";
   const filterTotal = narrowed
     ? undefined
     : typeFilter
@@ -346,8 +355,6 @@ export function Pages({
     <section className="panel pages">
       {!inDetail ? (
         <>
-          <h2>{t("panel.pages.title")}</h2>
-          <p className="panel-desc">{t("panel.pages.desc")}</p>
           {facets && (
             <div className="chips" role="group" aria-label={t("pages.filterByType")}>
               <button
@@ -368,6 +375,9 @@ export function Pages({
                 </button>
               ))}
             </div>
+          )}
+          {facets?.scope === "source-degraded" && (
+            <p className="muted small">{t("pages.facetsScopedHint")}</p>
           )}
           {/* 写收据 — gbrain-side truth, lazy: fetches on first expand only.
               Read-only profiles never fetch: receipts are this token's own

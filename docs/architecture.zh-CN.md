@@ -97,6 +97,7 @@ V1.1 的读取集(对照 0.60.558 实测钉形)走同一 MCP driver,按工具分
 | `COCKPIT_BIND` | 否(默认 `127.0.0.1`) | 监听地址;远程访问请套反代/加密隧道——「内网」不是信任边界 |
 | `COCKPIT_PORT` | 否(默认 `8787`) | 端口 |
 | `COCKPIT_TOKEN` | **是** | 浏览器访问令牌(fail-closed) |
+| `COCKPIT_ADMIN_TOKEN` | 否 | 管理档(0.4.0):解锁管理写动作(源授权补齐);未设则该类动作 403、界面降级为复制命令。必须与 `COCKPIT_TOKEN` 不同;浏览器按动作 step-up 粘贴,绝不持久化 |
 | `COCKPIT_ALLOWED_HOSTS` | 否 | 反代/隧道场景下额外允许的 Host 值 |
 | `COCKPIT_DIST_DIR` | 否 | 静态资源根目录覆盖(编译二进制部署用) |
 | `COCKPIT_PROFILES_FILE` | 否 | 多 brain profiles JSON(见[多 brain(多实例)](#多-brain多实例)一章);未设 = 用下方 `GBRAIN_*` 变量单实例运行 |
@@ -113,7 +114,7 @@ gbrain-cockpit/
 ├── server/   Bun + TypeScript,零运行时 npm 依赖
 │   └── src/  drivers/{mcp,cli,pg-readonly}.ts、routes/、auth、config、static
 ├── web/      React 18 + Vite + sigma.js(图谱走 canvas)
-│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health}、locales/{zh-CN,en}
+│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health,Admin}、locales/{zh-CN,en}
 ├── shared/   通道矩阵类型、错误码、版本号——前后端共同编译的单一来源
 └── docs/     本文及其同级文档
 ```
@@ -177,7 +178,9 @@ DSN),每次 `/api/*` 调用经 `x-brain-profile` 头路由(缺省 = 默认 profi
 - 顶栏仅在多于一个 profile 时显示切换器。切换即重挂全部面板:一个脑的
   数据、缓存与审计绝不渲染成另一个脑的。`/healthz`(免认证的存活视图)
   恒反映默认 profile。
-- **信任边界**:一枚 `COCKPIT_TOKEN` 掌控全部已配置脑(V1 单 token 决策;
+- **信任边界(0.4.0 起两档)**:base `COCKPIT_TOKEN` 读 + 裁决全部已配置脑;可选 `COCKPIT_ADMIN_TOKEN` 额外解锁管理写(补授权)。cockpit 永不持有 gbrain 的 owner bootstrap 凭证——管理动作与裁决共用同机 CLI 白名单,信任提升类动词永远走复制命令
+- **运维感知面**:健康面板新增源可见性漂移卡(pg 旁路 vs 已授权源;admin 档一键并集补授权,降级复制命令)与提案活动/周期卡(`doctor --only cycle_freshness`,只消费结构化字段,上游原话逐字展示)
+- **单 token 边界**:一枚 `COCKPIT_TOKEN` 掌控全部已配置脑(V1 单 token 决策;
   按 profile 的浏览器令牌属后续),`GET /api/profiles` 在该边界内枚举
   id/名称——不含任何秘密。
 - 只读 grant 的 profile(无 `write` / `memory_confirm`)会可见地禁用编辑器

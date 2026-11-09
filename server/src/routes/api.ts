@@ -15,6 +15,13 @@ import type {
   InboxReport,
   InboxQueue,
   LinkRow,
+  OpsClientGrant,
+  OpsClientsReport,
+  OpsDreamRun,
+  OpsDreamRunsReport,
+  OpsGrantReadResult,
+  OpsSourceDriftReport,
+  OpsSourcePages,
   PageDetail,
   PageSummary,
   PageVersion,
@@ -34,11 +41,18 @@ import type {
   WriteReceipt,
   WriteRequestsReport,
 } from "@gbrain-cockpit/shared";
-import { isValidSourceId, TRUST_REF_RE } from "@gbrain-cockpit/shared";
+import {
+  authClientsListCommand,
+  authRescopeCommand,
+  isValidSourceId,
+  TRUST_REF_RE,
+} from "@gbrain-cockpit/shared";
 import { auditTail, auditWrite } from "../audit";
 import type { BrainRegistry, BrainChannels } from "../brains";
+import type { Principal } from "../auth";
 import { BadRequestError, envelope, readJsonBody } from "../http";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
+import type { ScopedExecOpts } from "../drivers/cli";
 import { McpError } from "../drivers/mcp";
 import { TakesSourceGuardError, buildTakeQueueCommands } from "../drivers/takes-source";
 import { cliReason } from "./health";
@@ -225,7 +239,54 @@ export async function handlePages(
   return Response.json(pages satisfies PageSummary[]);
 }
 
-export async function handlePageFacets(ctx: ApiContext): Promise<Response> {
+export async function handlePageFacets(
+  ctx: ApiContext,
+  url?: URL,
+): Promise<Response> {
+  // ?source_id= narrows to per-source facets via the read-only bypass —
+  // schema_stats is a whole-brain aggregate with no source axis, and showing
+  // its numbers next to a source-narrowed list is exactly the mismatch the
+  // 0.4.0 hotfix fixes. Degradations stay in-band and labeled:
+  //   scope "source"            — pg answer for THIS source
+  //   scope "source-degraded"   — pg unavailable; numbers span ALL sources
+  //   absent                    — brain-wide form (no source asked)
+  const sourceId = url ? requireSourceId(url) : undefined;
+  if (sourceId) {
+    try {
+      const counts = await ctx.pg.sourceTypeCounts();
+      const rows = counts.filter((r) => r.source_id === sourceId);
+      const byType = new Map<string, number>();
+      let total = 0;
+      for (const r of rows) {
+        const key = r.type ?? "";
+        byType.set(key, (byType.get(key) ?? 0) + r.pages);
+        total += r.pages;
+      }
+      const facets: PagesFacets = {
+        scope: "source",
+        source_id: sourceId,
+        total_pages: total,
+        by_type: [...byType.entries()]
+          .map(([type, count]) => ({ type, count }))
+          .sort((a, b) => b.count - a.count),
+      };
+      return Response.json(facets);
+    } catch (err) {
+      const stats = await ctx.mcp.schemaStats();
+      const agg = (stats.aggregate ?? {}) as {
+        total_pages?: number;
+        by_type?: PagesFacets["by_type"];
+      };
+      const facets: PagesFacets = {
+        scope: "source-degraded",
+        source_id: sourceId,
+        pack_identity: stats.pack_identity,
+        total_pages: agg.total_pages,
+        by_type: agg.by_type ?? [],
+      };
+      return Response.json(facets);
+    }
+  }
   const stats = await ctx.mcp.schemaStats();
   // gbrain nests the counters under `aggregate`; normalize here so the UI
   // never depends on the raw shape (narrow adaptation surface).
@@ -458,6 +519,290 @@ export async function handleSourcesStatus(ctx: ApiContext): Promise<Response> {
     items,
   };
   return Response.json(report);
+}
+
+// --- ops (0.4.0 management surface) -------------------------------------------
+// MANAGEMENT_CHANNELS: same co-located CLI whitelist as adjudication, plus
+// the pg bypass for whole-database views. Reads ride the base token; the
+// WRITE (grant-read) additionally requires the admin tier (D6 amendment).
+// Every cell of the degradation matrix answers in-band, never a 500.
+
+/** Scoped exec opts for management verbs: the guard's brain-scoped direct
+ *  call when the profile has the gbrainBin/gbrainHome pair, else the plain
+ *  profile CLI with the inherited env (operator-bound single-brain path). */
+async function managementExecOpts(ctx: ApiContext): Promise<ScopedExecOpts> {
+  if (ctx.takesGuard) {
+    const scoped = await ctx.takesGuard.brainExec();
+    return { bin: scoped.bin, env: scoped.env };
+  }
+  return {};
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter((v): v is string => typeof v === "string");
+  return out.length === value.length ? out : undefined;
+}
+
+/**
+ * GET /api/ops/sources-drift — pg sees the whole database, MCP sees granted
+ * sources; `missing` = pages exist AND the source is active AND the client
+ * cannot read it. The active-source gate is load-bearing: upstream rescope
+ * does NOT validate federated ids for activeness, and granting an archived
+ * one would brick the client's token issuance (probe 2026-11-09).
+ */
+export async function handleOpsSourceDrift(ctx: ApiContext): Promise<Response> {
+  const report: OpsSourceDriftReport = {
+    status: "ok",
+    missing: [],
+    action: { available: false },
+  };
+
+  let pgSources: OpsSourcePages[] | undefined;
+  try {
+    pgSources = await ctx.pg.sourcesWithPages();
+    report.pgSources = pgSources;
+  } catch (err) {
+    report.status = "degraded";
+    report.error = err instanceof Error ? err.message : String(err);
+  }
+
+  let activeSources: string[] | undefined;
+  let clientRow: OpsClientGrant | undefined;
+  if (ctx.cli) {
+    try {
+      const opts = await managementExecOpts(ctx);
+      const clientId = ctx.profile.oauth?.clientId;
+      const [sourcesEnv, clientsEnv] = await Promise.all([
+        ctx.cli.sourcesListJson(opts),
+        ctx.cli.authClients(opts),
+      ]);
+      activeSources = (sourcesEnv.sources ?? [])
+        .filter((s) => s.archived !== true)
+        .map((s) => s.id);
+      if (clientId) {
+        clientRow = clientsEnv.clients?.find((c) => c.client_id === clientId);
+      }
+      report.activeSources = activeSources;
+    } catch {
+      // CLI present but the management verbs failed — degrade the grant set
+      // to the whoami fallback below; never fail the whole card.
+    }
+  }
+
+  // Granted set: the client row is ground truth; whoami's capabilities
+  // spread is the CLI-unavailable fallback (OAuth transports carry
+  // federated_read there — gbrain 0.60.558, shared McpWhoami doc).
+  let grantedSources = stringArray(clientRow?.federated_read);
+  if (grantedSources === undefined) {
+    try {
+      const whoami = await ctx.mcp.whoami({ timeoutMs: 4_000 });
+      grantedSources = stringArray(whoami.federated_read);
+    } catch {
+      // unknown is not "all granted" — missing stays conservative below
+    }
+  }
+  if (grantedSources !== undefined) report.grantedSources = grantedSources;
+
+  if (pgSources && grantedSources !== undefined) {
+    const granted = new Set(grantedSources);
+    report.missing = pgSources
+      .map((p) => p.source_id)
+      .filter(
+        (id) =>
+          !granted.has(id) &&
+          (activeSources === undefined || activeSources.includes(id)),
+      );
+  }
+
+  // Action availability + the copy-command fallback. The command is built
+  // ONLY when every to-be-added id is verifiably active (CLI healthy) —
+  // pasting a list containing an archived id would brick token issuance.
+  const clientId = ctx.profile.oauth?.clientId;
+  if (!ctx.cli) {
+    report.action = { available: false, reason: "cli-unavailable" };
+  } else if (!clientId) {
+    report.action = { available: false, reason: "not-oauth-profile" };
+  } else if (!pgSources) {
+    report.action = { available: false, reason: "pg-unavailable" };
+  } else {
+    report.action = { available: true };
+    const additions = (report.missing ?? []).filter(
+      (id) => activeSources?.includes(id) === true,
+    );
+    if (additions.length > 0 && grantedSources !== undefined && clientRow) {
+      try {
+        report.action = {
+          available: true,
+          command: authRescopeCommand(
+            ctx.profile.cliBin ?? "gbrain",
+            clientId,
+            [...new Set([...grantedSources, ...additions])],
+          ),
+        };
+      } catch {
+        // builder refused (charset/bin) — the action still runs one-key
+      }
+    }
+  }
+  return Response.json(report);
+}
+
+/** GET /api/ops/dream-runs — proposal ACTIVITY (never "dream liveness") plus
+ *  upstream's cycle_freshness verdict. The doctor call is cached briefly:
+ *  the check reads config jsonbs (fast) but the card refreshes often. */
+const DOCTOR_CACHE_TTL_MS = 60_000;
+const doctorCache = new Map<string, { at: number; value: OpsDreamRunsReport["cycleFreshness"] }>();
+
+async function cycleFreshness(ctx: ApiContext): Promise<OpsDreamRunsReport["cycleFreshness"]> {
+  const cached = doctorCache.get(ctx.id);
+  if (cached && Date.now() - cached.at < DOCTOR_CACHE_TTL_MS) return cached.value;
+  let value: OpsDreamRunsReport["cycleFreshness"];
+  if (!ctx.cli) {
+    value = undefined;
+  } else {
+    try {
+      const opts = await managementExecOpts(ctx);
+      const env = await ctx.cli.doctorCycleFreshness(opts);
+      const check = env.checks?.find((c) => c.name === "cycle_freshness");
+      const status =
+        check?.status === "ok" || check?.status === "warn" || check?.status === "fail"
+          ? check.status
+          : "unknown";
+      value = {
+        status,
+        ...(typeof check?.message === "string" ? { message: check.message } : {}),
+      };
+    } catch (err) {
+      // Structured status only; the error text is diagnostics, not parsed —
+      // but never silent: an ops check that stops answering must be visible
+      // in the server log (probe drift shows up here first).
+      console.warn(
+        `[ops] doctor cycle_freshness failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      value = { status: "unknown" };
+    }
+  }
+  doctorCache.set(ctx.id, { at: Date.now(), value });
+  return value;
+}
+
+export async function handleOpsDreamRuns(ctx: ApiContext): Promise<Response> {
+  const report: OpsDreamRunsReport = {
+    status: "ok",
+    neverRan: false,
+  };
+  let runs: OpsDreamRun[];
+  try {
+    runs = await ctx.pg.dreamRuns();
+  } catch (err) {
+    const down: OpsDreamRunsReport = {
+      status: reportStatus(err),
+      neverRan: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(down);
+  }
+  report.runs = runs;
+  report.neverRan = runs.length === 0;
+  report.lastActivityAt = runs[0]?.end;
+  report.pendingTotal = runs.reduce((sum, r) => sum + r.pending, 0);
+  report.cycleFreshness = await cycleFreshness(ctx);
+  return Response.json(report);
+}
+
+/** POST /api/ops/grant-read — widen cockpit's own client to every active
+ *  source that has pages. ZERO request parameters: the client id comes from
+ *  the profile's credentials file, the new list is computed server-side as
+ *  current ∪ (pg ∩ active) — a pure union that never revokes and never
+ *  names an id upstream would reject. Admin tier + single-flight per profile. */
+const grantLocks = new Map<string, Promise<OpsGrantReadResult>>();
+
+export async function handleOpsGrantRead(
+  ctx: ApiContext,
+  principal: Principal,
+  adminConfigured: boolean,
+): Promise<Response> {
+  if (principal.tier !== "admin") {
+    return envelope(
+      403,
+      "E_FORBIDDEN",
+      adminConfigured
+        ? "management writes require the COCKPIT_ADMIN_TOKEN tier — paste it at the action's step-up prompt"
+        : "COCKPIT_ADMIN_TOKEN is not configured on this cockpit — set it in the server env, or use the copy-command on the brain host",
+    );
+  }
+  const inflight = grantLocks.get(ctx.id);
+  if (inflight) return Response.json(await inflight);
+  const run = runGrantRead(ctx).finally(() => grantLocks.delete(ctx.id));
+  grantLocks.set(ctx.id, run);
+  return Response.json(await run);
+}
+
+async function runGrantRead(ctx: ApiContext): Promise<OpsGrantReadResult> {
+  if (!ctx.cli) {
+    throw new CliExecutionError(
+      "CLI channel unavailable on this host — use the copy-command instead",
+    );
+  }
+  const clientId = ctx.profile.oauth?.clientId;
+  if (!clientId) {
+    throw new CliExecutionError(
+      "this profile is not an OAuth client (legacy bearer token) — grant widening applies to client-credentials profiles only",
+    );
+  }
+  const opts = await managementExecOpts(ctx);
+  const clientsEnv = await ctx.cli.authClients(opts);
+  const row = clientsEnv.clients?.find((c) => c.client_id === clientId);
+  if (!row) {
+    throw new CliExecutionError(
+      "auth clients: cockpit's own client row is missing (revoked?) — re-run `gbrain mcp grant` on the brain host",
+    );
+  }
+  const current = stringArray(row.federated_read) ?? [];
+
+  const [pgSources, sourcesEnv] = await Promise.all([
+    ctx.pg.sourcesWithPages(),
+    ctx.cli.sourcesListJson(opts),
+  ]);
+  const active = new Set(
+    (sourcesEnv.sources ?? [])
+      .filter((s) => s.archived !== true)
+      .map((s) => s.id),
+  );
+  const candidates = pgSources
+    .map((p) => p.source_id)
+    .filter((id) => active.has(id));
+  const added = candidates.filter((id) => !current.includes(id));
+  if (added.length === 0) {
+    return { status: "ok", added: [], federatedRead: current };
+  }
+
+  const merged = [...new Set([...current, ...candidates])];
+  await ctx.cli.authRescope(clientId, merged, opts);
+
+  // Verify the grant took (protocol-drift tripwire), then make the new
+  // scope live NOW: force-mint a fresh access token + drop read caches.
+  const after = await ctx.cli.authClients(opts);
+  const afterRow = after.clients?.find((c) => c.client_id === clientId);
+  const afterList = stringArray(afterRow?.federated_read) ?? [];
+  if (added.some((id) => !afterList.includes(id))) {
+    throw new CliExecutionError(
+      "auth rescope reported success but the client row does not carry the new sources (protocol drift? re-run probes)",
+    );
+  }
+  await ctx.mcp.forceRenew();
+  ctx.mcp.invalidateAll();
+  await auditWrite("owner (admin)", {
+    action: "ops.grant-read",
+    profile: ctx.id,
+    detail: {
+      added,
+      federated_read: afterList,
+      client_id: clientId,
+    },
+  });
+  return { status: "ok", added, federatedRead: afterList };
 }
 
 /**
@@ -763,9 +1108,52 @@ export async function handleInbox(ctx: ApiContext): Promise<Response> {
 /** GET /api/profiles — the switcher's data: ids, labels, zero secrets. */
 export async function handleProfiles(
   registry: BrainRegistry,
+  adminConfigured: boolean,
 ): Promise<Response> {
   const body: ProfilesResponse = await registry.profileInfos();
+  // deployment capability (COCKPIT_ADMIN_TOKEN set?), not a browser state —
+  // gates the Admin panel's visibility for every base-token session
+  body.adminTier = adminConfigured;
   return Response.json(body);
+}
+
+/**
+ * GET /api/ops/clients — the OAuth client registry, owner view via the
+ * `auth clients` whitelist verb (base token: a READ). `selfClientId` names
+ * cockpit's own row from the profile's credentials file (absent on
+ * legacy-token profiles). Degradation matrix: CLI channel absent → down +
+ * the human-view paste hint; CLI present but the exec fails (nonzero exit,
+ * guard refusal, timeout) → degraded in-band — never an envelope 500.
+ */
+export async function handleOpsClients(ctx: ApiContext): Promise<Response> {
+  if (!ctx.cli) {
+    const report: OpsClientsReport = {
+      status: "down",
+      error:
+        "CLI channel unavailable on this host — the client registry is only readable on a co-located deployment",
+      command: authClientsListCommand(ctx.profile.cliBin ?? "gbrain"),
+    };
+    return Response.json(report);
+  }
+  try {
+    const opts = await managementExecOpts(ctx);
+    const env = await ctx.cli.authClients(opts);
+    const report: OpsClientsReport = {
+      status: "ok",
+      clients: env.clients ?? [],
+      ...(ctx.profile.oauth?.clientId
+        ? { selfClientId: ctx.profile.oauth.clientId }
+        : {}),
+    };
+    return Response.json(report);
+  } catch (err) {
+    const report: OpsClientsReport = {
+      status: "degraded",
+      error: err instanceof Error ? err.message : String(err),
+      command: authClientsListCommand(ctx.profile.cliBin ?? "gbrain"),
+    };
+    return Response.json(report);
+  }
 }
 
 // --- adjudication actions ---------------------------------------------------

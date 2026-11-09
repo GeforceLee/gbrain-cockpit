@@ -98,6 +98,7 @@ Environment variables (see [`.env.example`](../.env.example) for the annotated v
 | `COCKPIT_BIND` | no (default `127.0.0.1`) | listen address; front it with a reverse proxy / encrypted tunnel for remote access — "LAN" is not a trust boundary |
 | `COCKPIT_PORT` | no (default `8787`) | port |
 | `COCKPIT_TOKEN` | **yes** | browser access token (fail-closed) |
+| `COCKPIT_ADMIN_TOKEN` | no | management tier (0.4.0): unlocks management writes (source grant widening); unset ⇒ they answer 403 and the UI degrades to copy-commands. Must differ from `COCKPIT_TOKEN`; the browser asks for it per action (step-up) and never persists it |
 | `COCKPIT_ALLOWED_HOSTS` | no | extra allowed Host values behind a proxy/tunnel |
 | `COCKPIT_DIST_DIR` | no | static web root override (compiled-binary deployments) |
 | `COCKPIT_PROFILES_FILE` | no | multi-brain profiles JSON (see [Multi-brain profiles](#multi-brain-profiles)); unset = single-instance via the `GBRAIN_*` vars below |
@@ -114,7 +115,7 @@ gbrain-cockpit/
 ├── server/   Bun + TypeScript, zero runtime npm deps
 │   └── src/  drivers/{mcp,cli,pg-readonly}.ts, routes/, auth, config, static
 ├── web/      React 18 + Vite + sigma.js (graph on canvas)
-│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health}, locales/{zh-CN,en}
+│   └── src/  panels/{Inbox,Nebula,Pages,Search,Health,Admin}, locales/{zh-CN,en}
 ├── shared/   channel matrix types, error codes, version — single source both sides compile against
 └── docs/     this file and its siblings
 ```
@@ -186,7 +187,9 @@ Configuration is a JSON file pointed at by `COCKPIT_PROFILES_FILE`:
   Switching remounts the panels: one brain's data, caches and audit trail
   never render as another's. `/healthz` (the unauthenticated uptime view)
   always reflects the default profile.
-- **Trust boundary**: one `COCKPIT_TOKEN` commands every configured brain
+- **Trust boundary (two tiers since 0.4.0)**: the base `COCKPIT_TOKEN` reads and adjudicates every configured brain; the optional `COCKPIT_ADMIN_TOKEN` additionally unlocks management writes (grant widening). cockpit never holds gbrain's owner bootstrap credential — management actions run through the same co-located CLI whitelist as adjudication, and trust-elevating verbs stay copy-command forever
+- **Ops surface**: Health grows a source-visibility drift card (pg bypass vs granted sources; one-key union rescope with the admin tier, copy-command fallback) and a proposal-activity/cycle card (`doctor --only cycle_freshness`, structured fields only, upstream message verbatim)
+- **Single-token boundary**: one `COCKPIT_TOKEN` commands every configured brain
   (V1 single-token decision; per-profile browser tokens are future work),
   and `GET /api/profiles` enumerates ids/names inside that boundary —
   it carries no secrets.

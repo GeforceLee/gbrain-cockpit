@@ -12,13 +12,20 @@ import {
   useBrain,
 } from "./lib/brain";
 import { clearAudit } from "./lib/auditLog";
+import { Admin } from "./panels/Admin";
 import { Health } from "./panels/Health";
 import { Inbox } from "./panels/Inbox";
 import { Nebula } from "./panels/Nebula";
 import { Pages } from "./panels/Pages";
 import { Search } from "./panels/Search";
 
-export type PanelId = "inbox" | "nebula" | "pages" | "search" | "health";
+export type PanelId =
+  | "inbox"
+  | "nebula"
+  | "pages"
+  | "search"
+  | "health"
+  | "admin";
 
 const PANELS: readonly PanelId[] = [
   "inbox",
@@ -26,6 +33,7 @@ const PANELS: readonly PanelId[] = [
   "pages",
   "search",
   "health",
+  "admin",
 ];
 
 // Product default panel is Inbox (the adjudication story starts here).
@@ -35,6 +43,18 @@ function App() {
   const { locale, setLocale, t } = useI18n();
   const brain = useBrain();
   const [panelId, setPanelId] = useState<PanelId>(DEFAULT_PANEL);
+  // Admin visibility is a DEPLOYMENT capability (COCKPIT_ADMIN_TOKEN set —
+  // the server reports it via /api/profiles), not a browser state; single-
+  // token installs render the exact five-panel shell as before.
+  const visiblePanels = brain.adminTier
+    ? PANELS
+    : PANELS.filter((id) => id !== "admin");
+  useEffect(() => {
+    // orphan guard: if the admin tier disappears mid-session (server env
+    // changed + a heal refetch), an active Admin tab must not strand the
+    // stage on a removed slot — fall back to the product default.
+    if (!visiblePanels.includes(panelId)) setPanelId(DEFAULT_PANEL);
+  }, [visiblePanels, panelId]);
   // keep-alive: a panel mounts on first visit and stays mounted afterwards
   // (hidden via CSS), so tab / pagination / selection / scroll / graph
   // camera survive every switch — leaving a panel never resets it
@@ -153,7 +173,7 @@ function App() {
             </div>
           </div>
           <p className="nav-label">{t("shell.navLabel")}</p>
-          {PANELS.map((id) => (
+          {visiblePanels.map((id) => (
             <button
               key={id}
               type="button"
@@ -292,7 +312,7 @@ function App() {
 
           {/* the sidebar reappears as a strip on narrow viewports (CSS-gated) */}
           <nav className="side-mobile" aria-label={t("app.title")}>
-            {PANELS.map((id) => (
+            {visiblePanels.map((id) => (
               <button
                 key={id}
                 type="button"
@@ -330,7 +350,7 @@ function App() {
               // whole stage — one brain's panels, caches and errors never
               // carry into another's.
               <div key={profileId} className="stage-panels">
-                {PANELS.map((id) => (
+                {visiblePanels.map((id) => (
                 <div
                   key={id}
                   className={`panel-slot ${id === panelId ? "on" : ""}`}
@@ -368,6 +388,9 @@ function App() {
                       />
                     ) : null}
                     {id === "health" && visited.includes(id) ? <Health /> : null}
+                    {id === "admin" && visited.includes(id) ? (
+                      <Admin />
+                    ) : null}
                   </ErrorBoundary>
                 </div>
                 ))}

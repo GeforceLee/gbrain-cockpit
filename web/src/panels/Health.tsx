@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AnomaliesReport,
   BrainHealthReport,
   CheckStatus,
   HealthReport,
+  OpsDreamRunsReport,
+  OpsGrantReadResult,
+  OpsSourceDriftReport,
   SourcesStatusReport,
 } from "@gbrain-cockpit/shared";
 import { PALETTE } from "../design/tokens";
 import { RadialGauge } from "../components/RadialGauge";
+import { DriftCard } from "../components/DriftCard";
 import { ApiError, apiGet, setToken } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
@@ -40,6 +44,9 @@ export function Health() {
   // refresh, same fails-soft contract as the sources card
   const [brainHealth, setBrainHealth] = useState<BrainHealthReport | null>(null);
   const [anomalies, setAnomalies] = useState<AnomaliesReport | null>(null);
+  // 0.4.0 ops cards: source-visibility drift + dream proposal activity
+  const [drift, setDrift] = useState<OpsSourceDriftReport | null>(null);
+  const [dreamRuns, setDreamRuns] = useState<OpsDreamRunsReport | null>(null);
 
   // probe is dependency-free so switching language (which swaps `t`) does not
   // re-fire the fetch effect; the error is stored raw and translated at render.
@@ -67,6 +74,12 @@ export function Health() {
     apiGet<AnomaliesReport>("/api/anomalies")
       .then(setAnomalies)
       .catch(() => setAnomalies(null));
+    apiGet<OpsSourceDriftReport>("/api/ops/sources-drift")
+      .then(setDrift)
+      .catch(() => setDrift(null));
+    apiGet<OpsDreamRunsReport>("/api/ops/dream-runs")
+      .then(setDreamRuns)
+      .catch(() => setDreamRuns(null));
   }, []);
 
   useEffect(() => {
@@ -88,7 +101,6 @@ export function Health() {
   return (
     <section className="panel health">
       <div className="panel-head">
-        <h2>{t("panel.health.title")}</h2>
         <div className="panel-actions">
           <button type="button" onClick={() => void probe()} disabled={busy}>
             {busy ? t("health.loading") : t("health.refresh")}
@@ -105,7 +117,6 @@ export function Health() {
           </button>
         </div>
       </div>
-      <p className="panel-desc">{t("panel.health.desc")}</p>
 
       {error && (
         <p className="error" role="alert">
@@ -335,11 +346,56 @@ export function Health() {
             ) : (anomalies.items ?? []).length === 0 ? (
               <p className="muted small">{t("health.anomaliesEmpty")}</p>
             ) : (
-              <pre className="mono small">
-                {JSON.stringify(anomalies.items, null, 2).slice(0, 800)}
-              </pre>
+              <>
+                {(anomalies.items ?? []).map((item, i) => {
+                  const kind = String(item.cohort_kind ?? "?");
+                  const value = String(item.cohort_value ?? "?");
+                  const count = Number(item.count ?? 0);
+                  const stddev = Number(item.baseline_stddev ?? 0);
+                  const hasBaseline = stddev > 0;
+                  const slugs = Array.isArray(item.page_slugs)
+                    ? item.page_slugs.slice(0, 3)
+                    : [];
+                  const slugsTotal = Array.isArray(item.page_slugs)
+                    ? item.page_slugs.length
+                    : 0;
+                  return (
+                    <div key={i} className="anomaly-row">
+                      <p className="mono small">
+                        {kind} · {value} — {t("health.anomalies.pages")} {count}
+                      </p>
+                      <p className="muted small">
+                        {hasBaseline
+                          ? `σ ${Number(item.sigma_observed ?? 0).toFixed(1)}`
+                          : t("health.anomalies.noBaseline")}
+                      </p>
+                      {slugs.length > 0 && (
+                        <p className="muted small" title={slugs.join("\n")}>
+                          {slugs.join(", ")}
+                          {slugsTotal > slugs.length
+                            ? ` +${slugsTotal - slugs.length}`
+                            : ""}
+                          {item.page_slugs_complete === false
+                            ? " …"
+                            : ""}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+                <details className="detail-block">
+                  <summary className="cap">{t("health.anomalies.raw")}</summary>
+                  <pre className="mono small">
+                    {JSON.stringify(anomalies.items, null, 2).slice(0, 1200)}
+                  </pre>
+                </details>
+              </>
             )}
           </div>
+
+          <DriftCard drift={drift} refresh={() => void probe()} />
+
+          <HeartbeatCard runs={dreamRuns} />
 
           <div className="hcard span8 checklist">
             <p className="cap">{t("health.checklist")}</p>
@@ -387,6 +443,88 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="kv-row">
       <dt>{label}</dt>
       <dd className="mono">{value}</dd>
+    </div>
+  );
+}
+
+// --- 0.4.0 ops cards ----------------------------------------------------------
+
+/** Proposal ACTIVITY + upstream's cycle verdict — never claims "dream didn't run". */
+function HeartbeatCard({ runs }: { runs: OpsDreamRunsReport | null }) {
+  const { t } = useI18n();
+  const AMBER_MS = 30 * 3600_000;
+  const RED_MS = 54 * 3600_000;
+  const last = runs?.lastActivityAt ? Date.parse(runs.lastActivityAt) : null;
+  const ageMs = last !== null ? Date.now() - last : null;
+  const freshness = runs?.cycleFreshness;
+  const freshnessColor =
+    freshness?.status === "ok"
+      ? PALETTE.ok
+      : freshness?.status === "warn"
+        ? PALETTE.warn
+        : freshness?.status === "fail"
+          ? PALETTE.stop
+          : undefined;
+  return (
+    <div className="hcard span4">
+      <p className="cap" title={t("health.heartbeatDesc")}>
+        {t("health.heartbeat")}
+      </p>
+      {!runs || runs.status === "down" ? (
+        <p className="muted small">{t("health.heartbeat.unavailable")}</p>
+      ) : (
+        <>
+          <dl className="kv">
+            <Row
+              label={t("health.heartbeat.lastActivity")}
+              value={
+                runs.neverRan || !runs.lastActivityAt
+                  ? t("health.heartbeat.never")
+                  : runs.lastActivityAt.replace("T", " ").slice(0, 16)
+              }
+            />
+            <Row
+              label={t("health.heartbeat.pending")}
+              value={String(runs.pendingTotal ?? 0)}
+            />
+            {freshness && (
+              <Row
+                label={t("health.heartbeat.cycle")}
+                value={
+                  freshness.status === "unknown"
+                    ? t("health.heartbeat.cycleUnknown")
+                    : freshness.status
+                }
+              />
+            )}
+          </dl>
+          {ageMs !== null && ageMs > AMBER_MS && (
+            <p
+              className="muted small"
+              style={{ color: ageMs > RED_MS ? PALETTE.stop : PALETTE.warn }}
+            >
+              {ageMs > RED_MS
+                ? t("health.heartbeat.staleRed")
+                : t("health.heartbeat.staleAmber")}
+            </p>
+          )}
+          {(runs.runs ?? []).slice(0, 3).map((r) => (
+            <p
+              key={r.runId}
+              className="mono small"
+              style={freshnessColor ? { color: freshnessColor } : undefined}
+            >
+              {r.end.replace("T", " ").slice(0, 16)} · {t("health.heartbeat.takes")}{" "}
+              {r.takes} · {t("health.heartbeat.pending")} {r.pending}
+            </p>
+          ))}
+          {freshness?.message && (
+            <p className="muted small" title={freshness.message}>
+              {freshness.message.slice(0, 140)}
+            </p>
+          )}
+        </>
+      )}
     </div>
   );
 }

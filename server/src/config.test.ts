@@ -48,4 +48,23 @@ describe("loadConfig (cockpit process config)", () => {
       loadConfig({ ...BASE, COCKPIT_PORT: "http" }),
     ).toThrow(ConfigError);
   });
+
+  test("COCKPIT_ADMIN_TOKEN unset stays null (single-token installs unchanged)", () => {
+    expect(loadConfig(BASE).adminToken).toBeNull();
+  });
+
+  test("COCKPIT_ADMIN_TOKEN set is carried as the management tier", () => {
+    const cfg = loadConfig({ ...BASE, COCKPIT_ADMIN_TOKEN: "adm" });
+    expect(cfg.adminToken).toBe("adm");
+  });
+
+  test("an admin token equal to the base token is a config error", () => {
+    expect(() =>
+      loadConfig({ ...BASE, COCKPIT_ADMIN_TOKEN: "tok" }),
+    ).toThrow(ConfigError);
+    // whitespace-trimmed equality counts too
+    expect(() =>
+      loadConfig({ ...BASE, COCKPIT_ADMIN_TOKEN: " tok " }),
+    ).toThrow(ConfigError);
+  });
 });
