@@ -549,3 +549,96 @@ describe("doctor exit-1 verdict recovery (0.60.558 probed behavior)", () => {
     await expect(driver.doctorCycleFreshness()).rejects.toThrow(/exit 2/);
   });
 });
+
+// --- 0.5.0: doctor CHECK SETS + sources writer status ---------------------------
+
+describe("doctor check sets (0.5.0)", () => {
+  test("each set is one exact comma-joined --only value; order frozen", async () => {
+    // The whitelist entry IS the set table in regex form — assert the argv
+    // carries the exact joined string for every set (server assembly only,
+    // no request data can reshape it).
+    const cases: Array<[Parameters<CliDriver["doctorChecks"]>[0], string[]]> = [
+      ["nightly", ["doctor", "--only", "cycle_freshness,sync_freshness,extract_health,dream_paid_loop,global_maintenance_stalled,default_source_local_path,chat_fallback_chain,cron_gbrain_home", "--json"]],
+      ["calibration", ["doctor", "--only", "takes_count,takes_weight_grid", "--json"]],
+      ["assets", ["doctor", "--only", "backup_coverage,git_convergence,unindexed_files,ghost_pages", "--json"]],
+      ["topology", ["doctor", "--only", "cycle_phase_scope", "--json"]],
+    ];
+    for (const [set, expectedArgv] of cases) {
+      const { driver, calls } = makeDriver(async () => ({
+        stdout: JSON.stringify({ checks: [] }),
+        stderr: "",
+      }));
+      await driver.doctorChecks(set);
+      expect(calls[0]!.argv).toEqual(expectedArgv);
+    }
+  });
+
+  test("no other --only value is accepted (set membership is the whitelist)", () => {
+    for (const probe of [
+      "cycle_freshness,sync_freshness,evil_check",
+      "takes_count;rm -rf",
+      "",
+      "cycle_freshness sync_freshness",
+      "doctor",
+    ]) {
+      expect(() =>
+        buildArgv("doctor nightly", { check: probe }),
+      ).toThrow(CliValidationError);
+    }
+  });
+
+  test("not_applicable rows pass through raw (three-state normalization is shared's)", async () => {
+    const { driver } = makeDriver(async () => ({
+      stdout: JSON.stringify({
+        status: "healthy",
+        checks: [
+          {
+            name: "cron_gbrain_home",
+            status: "ok",
+            message: "No finding: this check does not apply to this brain right now.",
+            severity: "info",
+            readiness_state: "not_applicable",
+            category: "ops",
+          },
+        ],
+      }),
+      stderr: "",
+    }));
+    const out = await driver.doctorChecks("nightly");
+    expect(out.checks?.[0]?.readiness_state).toBe("not_applicable");
+  });
+
+  test("unhealthy set verdict (exit 1 + full envelope) is recovered like cycle_freshness", async () => {
+    const { driver } = makeDriver(async () => {
+      const err = new Error("exit 1") as Error & {
+        code?: number | string;
+        stderr?: string;
+        stdout?: string;
+      };
+      err.code = 1;
+      err.stderr = "banner";
+      err.stdout = JSON.stringify({
+        status: "unhealthy",
+        checks: [{ name: "sync_freshness", status: "fail", message: "never synced" }],
+      });
+      throw err;
+    });
+    const out = await driver.doctorChecks("nightly");
+    expect(out.checks?.[0]?.status).toBe("fail");
+  });
+
+  test("sources writer status builds its whitelisted argv and parses JSON", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: JSON.stringify({ bindings: [], worktrees: [] }),
+      stderr: "",
+    }));
+    const out = await driver.sourcesWriterStatus();
+    expect(calls[0]!.argv).toEqual([
+      "sources",
+      "writer",
+      "status",
+      "--json",
+    ]);
+    expect(out.bindings).toEqual([]);
+  });
+});

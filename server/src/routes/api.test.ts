@@ -68,7 +68,11 @@ import {
   handleTakeResolve,
 } from "./api";
 import type { ApiContext } from "./api";
-import type { SearchHit } from "@gbrain-cockpit/shared";
+import type {
+  OpsCalibrationReport,
+  OpsNightlyReport,
+  SearchHit,
+} from "@gbrain-cockpit/shared";
 import type { McpDriver } from "../drivers/mcp";
 import type { SourceSummary, SourcesReport } from "@gbrain-cockpit/shared";
 
@@ -865,6 +869,8 @@ describe("handleTakePropose source scoping", () => {
 
 import {
   handleOpsDreamRuns,
+  handleOpsNightly,
+  handleOpsCalibration,
   handleOpsGrantRead,
   handleOpsSourceDrift,
 } from "./api";
@@ -889,6 +895,12 @@ interface OpsStub {
   clientsError?: Error;
   dreamRuns?: Array<{ runId: string; start: string; end: string; takes: number; pending: number }>;
   doctor?: { checks: Array<{ name: string; status: string; message?: string }> };
+  // 0.5.0
+  doctorChecks?: Record<string, { checks: Array<Record<string, unknown>> } | Error>;
+  stamps?: Array<{ source_id: string; last_full_cycle_at?: string; last_source_cycle_at?: string }>;
+  scorecard?: unknown;
+  scorecardError?: Error;
+  profile?: unknown;
 }
 
 function opsCtx(stub: OpsStub) {
@@ -921,6 +933,11 @@ function opsCtx(stub: OpsStub) {
             stub.granted = list; // the verify re-read sees the new list
           },
           doctorCycleFreshness: async () => stub.doctor ?? { checks: [] },
+          doctorChecks: async (set: string) => {
+            const answer = stub.doctorChecks?.[set];
+            if (answer instanceof Error) throw answer;
+            return answer ?? { checks: [] };
+          },
         } as unknown as CliDriver)
       : null,
     pg: {
@@ -932,6 +949,10 @@ function opsCtx(stub: OpsStub) {
         if (stub.pgError) throw stub.pgError;
         return stub.dreamRuns ?? [];
       },
+      sourceCycleStamps: async () => {
+        if (stub.pgError) throw stub.pgError;
+        return stub.stamps ?? [];
+      },
     },
     mcp: {
       whoami: async () => ({ scopes: ["read"], federated_read: stub.granted }),
@@ -941,6 +962,11 @@ function opsCtx(stub: OpsStub) {
       invalidateAll: () => {
         note("invalidateAll", null);
       },
+      takesScorecard: async () => {
+        if (stub.scorecardError) throw stub.scorecardError;
+        return stub.scorecard ?? {};
+      },
+      calibrationProfile: async () => stub.profile ?? null,
     },
   } as unknown as ApiContext;
   return { ctx, calls };
@@ -1374,5 +1400,108 @@ describe("handleProfiles adminTier", () => {
     expect(on.adminTier).toBe(true);
     const off = (await (await handleProfiles(registryStub(), false)).json()) as ProfilesResponse;
     expect(off.adminTier).toBe(false);
+  });
+});
+
+// --- 0.5.0: nightly-cycle ops ----------------------------------------------------
+
+describe("handleOpsNightly", () => {
+  const SET = {
+    checks: [
+      { name: "cycle_freshness", status: "warn", message: "Source 'iuap-apcom-docs' has never completed a full cycle." },
+      { name: "sync_freshness", status: "fail", message: "never synced" },
+      { name: "cron_gbrain_home", status: "ok", readiness_state: "not_applicable", severity: "info" },
+      { name: "dream_paid_loop", status: "ok", message: "No dream key died 3+ times in 24h" },
+    ],
+  };
+
+  test("three-state rows + stamps + per-source run-now commands, all in one report", async () => {
+    const { ctx } = opsCtx({
+      id: "nightly-a",
+      cli: true,
+      doctorChecks: { nightly: SET },
+      stamps: [
+        { source_id: "default", last_full_cycle_at: "2026-11-10T01:08:38.906Z" },
+        { source_id: "iuap-apcom-docs" },
+      ],
+    });
+    const body = (await (await handleOpsNightly(ctx)).json()) as OpsNightlyReport;
+    expect(body.status).toBe("ok");
+    expect(body.doctor?.status).toBe("ok");
+    const byName = Object.fromEntries((body.doctor?.checks ?? []).map((c) => [c.name, c]));
+    expect(byName.cycle_freshness?.status).toBe("warn");
+    expect(byName.sync_freshness?.status).toBe("fail");
+    expect(byName.cron_gbrain_home?.status).toBe("na"); // not_applicable → na
+    expect(body.doctor?.missing).toEqual([
+      "extract_health", "global_maintenance_stalled",
+      "default_source_local_path", "chat_fallback_chain",
+    ]); // set members that answered neither row nor na line are surfaced
+    expect(body.stamps?.status).toBe("ok");
+    expect(body.stamps?.sources).toHaveLength(2);
+    expect(body.stamps?.sources[1]).toEqual({ source_id: "iuap-apcom-docs" }); // never cycled stays empty
+    expect(body.runNow?.default).toBe(
+      "gbrain dream --source default --phase propose_takes --phase grade_takes",
+    );
+    expect(body.runNow?.["iuap-apcom-docs"]).toContain("dream --source iuap-apcom-docs");
+  });
+
+  test("guard profile builds the direct-call form (GBRAIN_HOME + real bin)", async () => {
+    const { ctx } = opsCtx({ id: "nightly-b", cli: true, doctorChecks: { nightly: { checks: [] } }, stamps: [{ source_id: "yon-bip" }] });
+    // opsCtx keeps takesGuard null; emulate the direct-call pair directly
+    const withGuard = { ...ctx, takesGuard: { bin: "/home/dev/.bun/bin/gbrain", home: "/home/dev/gbrain-bip" } } as unknown as ApiContext;
+    const body = (await (await handleOpsNightly(withGuard)).json()) as OpsNightlyReport;
+    expect(body.runNow?.["yon-bip"]).toBe(
+      "GBRAIN_HOME=/home/dev/gbrain-bip /home/dev/.bun/bin/gbrain dream --source yon-bip --phase propose_takes --phase grade_takes",
+    );
+  });
+
+  test("CLI down + pg down: in-band down parts, never a 500; charset-refused source gets no command", async () => {
+    const noCli = opsCtx({ id: "nightly-c", cli: false, stamps: [{ source_id: "Bad_Source_id" }] });
+    // pg returns a row whose id fails the upstream charset — no runNow entry
+    const body = (await (await handleOpsNightly(noCli.ctx)).json()) as OpsNightlyReport;
+    expect(body.doctor?.status).toBe("down");
+    expect(body.runNow).toBeUndefined(); // charset-refused source: no command beats a bad paste
+    expect(body.status).toBe("degraded"); // doctor down, stamps part still ok
+
+    const pgDown = opsCtx({ id: "nightly-d", cli: true, doctorChecks: { nightly: { checks: [] } }, pgError: new Error("permission denied for table sources") });
+    const body2 = (await (await handleOpsNightly(pgDown.ctx)).json()) as OpsNightlyReport;
+    expect(body2.stamps?.status).toBe("down");
+    expect(body2.stamps?.error).toContain("permission denied");
+    expect(body2.status).toBe("degraded"); // doctor still ok
+  });
+});
+
+describe("handleOpsCalibration", () => {
+  test("scorecard + profile + doctor calibration set; profile null is honest empty", async () => {
+    const { ctx } = opsCtx({
+      id: "calib-a",
+      cli: true,
+      scorecard: { total_bets: 0, resolved: 0, accuracy: null, brier: null, mcp_resolved: 0 },
+      profile: null,
+      doctorChecks: { calibration: { checks: [{ name: "takes_count", status: "ok", message: "8 takes (calibration usable; >100 ideal)" }] } },
+    });
+    const body = (await (await handleOpsCalibration(ctx)).json()) as OpsCalibrationReport;
+    expect(body.status).toBe("ok");
+    expect(body.scorecard?.total_bets).toBe(0);
+    expect(body.profile).toBeNull();
+    expect(body.doctor?.checks[0]?.message).toContain("calibration usable");
+  });
+
+  test("MCP failure degrades in-band; doctor failure alone degrades too", async () => {
+    const mcpDown = opsCtx({
+      id: "calib-b",
+      cli: true,
+      scorecardError: new Error("E_UPSTREAM_AUTH"),
+      doctorChecks: { calibration: { checks: [] } },
+    });
+    const body = (await (await handleOpsCalibration(mcpDown.ctx)).json()) as OpsCalibrationReport;
+    expect(body.status).toBe("degraded");
+    expect(body.error).toContain("E_UPSTREAM_AUTH");
+    expect(body.doctor?.status).toBe("ok"); // the doctor half still carries the card
+
+    const doctorDown = opsCtx({ id: "calib-c", cli: false });
+    const body2 = (await (await handleOpsCalibration(doctorDown.ctx)).json()) as OpsCalibrationReport;
+    expect(body2.status).toBe("degraded");
+    expect(body2.doctor?.status).toBe("down");
   });
 });

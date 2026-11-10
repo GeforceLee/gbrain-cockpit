@@ -7,6 +7,8 @@ import type {
   ContradictionsReport,
   ContradictionProposal,
   DecidedTakeRow,
+  DoctorCheckRow,
+  DoctorCheckSetName,
   EdgeProposal,
   EvidenceReport,
   ExtractionQueue,
@@ -15,11 +17,14 @@ import type {
   InboxReport,
   InboxQueue,
   LinkRow,
+  OpsCalibrationReport,
   OpsClientGrant,
   OpsClientsReport,
+  OpsDoctorSet,
   OpsDreamRun,
   OpsDreamRunsReport,
   OpsGrantReadResult,
+  OpsNightlyReport,
   OpsSourceDriftReport,
   OpsSourcePages,
   PageDetail,
@@ -44,7 +49,10 @@ import type {
 import {
   authClientsListCommand,
   authRescopeCommand,
+  DOCTOR_CHECK_SETS,
+  dreamCalibrationCommand,
   isValidSourceId,
+  normalizeDoctorCheck,
   TRUST_REF_RE,
 } from "@gbrain-cockpit/shared";
 import { auditTail, auditWrite } from "../audit";
@@ -708,6 +716,142 @@ export async function handleOpsDreamRuns(ctx: ApiContext): Promise<Response> {
   report.lastActivityAt = runs[0]?.end;
   report.pendingTotal = runs.reduce((sum, r) => sum + r.pending, 0);
   report.cycleFreshness = await cycleFreshness(ctx);
+  return Response.json(report);
+}
+
+// --- 0.5.0 nightly-cycle ops ---------------------------------------------------
+//
+// Two new in-band reports (never a 500): /api/ops/nightly (the nightly-cycle
+// card — doctor nightly CHECK SET + pg per-source stamps + server-built
+// run-now copy-commands) and /api/ops/calibration (MCP takes_scorecard +
+// get_calibration_profile + the doctor calibration set). Doctor set results
+// are cached per profile×set: the cards refresh often and one set costs a
+// warm-socket exec (probed 626ms for three checks).
+
+const DOCTOR_SET_CACHE_TTL_MS = 60_000;
+const doctorSetCache = new Map<string, { at: number; value: OpsDoctorSet }>();
+
+/** One doctor check set as an in-band part; cached per profile×set. */
+async function doctorSetPart(
+  ctx: ApiContext,
+  set: DoctorCheckSetName,
+): Promise<OpsDoctorSet> {
+  const cacheKey = `${ctx.id}:${set}`;
+  const cached = doctorSetCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < DOCTOR_SET_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  let value: OpsDoctorSet;
+  if (!ctx.cli) {
+    value = {
+      status: "down",
+      checks: [],
+      error: "CLI channel not available on this host",
+    };
+  } else {
+    try {
+      const opts = await managementExecOpts(ctx);
+      const envelope = await ctx.cli.doctorChecks(set, opts);
+      const raw = Array.isArray(envelope.checks) ? envelope.checks : [];
+      const checks = raw
+        .map((c) => normalizeDoctorCheck(c))
+        .filter((c): c is DoctorCheckRow => c !== null);
+      // A set member that answered neither a row nor a not_applicable line
+      // (e.g. a check retired upstream between probes) — surfaced, not hidden.
+      const answered = new Set(checks.map((c) => c.name));
+      const missing = DOCTOR_CHECK_SETS[set].filter((n) => !answered.has(n));
+      value = {
+        status: "ok",
+        checks,
+        ...(missing.length > 0 ? { missing } : {}),
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[ops] doctor ${set} failed: ${message}`);
+      value = { status: "down", checks: [], error: firstLineOf(message) };
+    }
+  }
+  doctorSetCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+function firstLineOf(text: string): string {
+  return (text.split("\n").find((l) => l.trim()) ?? "").slice(0, 160);
+}
+
+/**
+ * GET /api/ops/nightly — the nightly-cycle card's whole diet. Doctor rows
+ * (three-state: ok/warn/fail per check, "na" for not-applicable) plus the
+ * pg per-source cycle stamps (owner D1: the only whole-source view — doctor
+ * names only stale sources, sources_list/sources_status carry no cycle
+ * fields). runNow copy-commands are server-built per source (dream --source
+ * --phase propose_takes --phase grade_takes, direct-call form on wrapper
+ * brains) and survive every channel being down — copy-command IS the
+ * degradation path. A source whose id fails the upstream charset gets NO
+ * command rather than a known-bad paste.
+ */
+export async function handleOpsNightly(ctx: ApiContext): Promise<Response> {
+  const report: OpsNightlyReport = { status: "ok" };
+  report.doctor = await doctorSetPart(ctx, "nightly");
+  try {
+    const sources = await ctx.pg.sourceCycleStamps();
+    report.stamps = { status: "ok", sources };
+    const runNow: Record<string, string> = {};
+    for (const s of sources) {
+      try {
+        runNow[s.source_id] = dreamCalibrationCommand(
+          ctx.profile.cliBin ?? "gbrain",
+          s.source_id,
+          ctx.takesGuard
+            ? { gbrainBin: ctx.takesGuard.bin, gbrainHome: ctx.takesGuard.home }
+            : {},
+        );
+      } catch {
+        // charset-refused source id — no command beats a known-bad paste
+      }
+    }
+    if (Object.keys(runNow).length > 0) report.runNow = runNow;
+  } catch (err) {
+    report.stamps = {
+      status: "down",
+      sources: [],
+      error: firstLineOf(err instanceof Error ? err.message : String(err)),
+    };
+  }
+  const parts = [report.doctor.status, report.stamps.status];
+  report.status = parts.every((s) => s === "down")
+    ? "down"
+    : parts.some((s) => s !== "ok")
+      ? "degraded"
+      : "ok";
+  return Response.json(report);
+}
+
+/**
+ * GET /api/ops/calibration — the calibration card: MCP takes_scorecard (no
+ * group_by/min_n — remote callers are rejected upstream), the calibration
+ * profile (null until takes get graded — an honest empty), and the doctor
+ * calibration set. MCP failures degrade in-band; the doctor half carries
+ * takes_count/takes_weight_grid prose verbatim.
+ */
+export async function handleOpsCalibration(ctx: ApiContext): Promise<Response> {
+  const report: OpsCalibrationReport = { status: "ok" };
+  try {
+    report.scorecard = await ctx.mcp.takesScorecard();
+  } catch (err) {
+    report.status = "degraded";
+    report.error = firstLineOf(err instanceof Error ? err.message : String(err));
+  }
+  try {
+    report.profile = await ctx.mcp.calibrationProfile();
+  } catch {
+    // the profile is the scorecard's richer sibling — its failure alone
+    // never degrades the card (the scorecard + doctor rows still render)
+  }
+  report.doctor = await doctorSetPart(ctx, "calibration");
+  if (report.doctor.status !== "ok" && report.status === "ok") {
+    report.status = "degraded";
+  }
   return Response.json(report);
 }
 

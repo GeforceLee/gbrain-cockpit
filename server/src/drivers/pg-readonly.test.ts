@@ -38,6 +38,11 @@ const COLUMNS: Script = {
 const SQL_PROBE_PAGES =
   "SELECT count(*)::int AS n, coalesce(extract(epoch from max(updated_at))::bigint, -1) AS m FROM pages";
 const SQL_PROBE_LINKS = "SELECT count(*)::int AS n FROM links";
+// 0.5.0: the fourth fixed statement (owner D1) — frozen text, same discipline
+const SQL_SOURCE_CYCLE_STAMPS =
+  "SELECT id, config->>'last_full_cycle_at' AS last_full_cycle_at, " +
+  "config->>'last_source_cycle_at' AS last_source_cycle_at FROM sources " +
+  "ORDER BY id";
 const SQL_LINKS = 'SELECT "from", "to", "link_type", "link_source" FROM links';
 
 describe("PgReadonlyDriver", () => {
@@ -592,5 +597,59 @@ describe("PgReadonlyDriver sourceTypeCounts (scoped facets)", () => {
   test("unconfigured throws without querying", async () => {
     const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([]) });
     await expect(driver.sourceTypeCounts()).rejects.toThrow();
+  });
+});
+
+// --- 0.5.0: per-source cycle stamps (nightly-cycle card, owner D1) ---------------
+
+describe("PgReadonlyDriver sourceCycleStamps", () => {
+  test("reads the ONE fixed statement; absent stamps stay absent (never cycled is data)", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery(
+        [
+          {
+            text: SQL_SOURCE_CYCLE_STAMPS,
+            rows: [
+              {
+                id: "default",
+                last_full_cycle_at: "2026-11-10T01:08:38.906Z",
+                last_source_cycle_at: "2026-11-10T01:08:38.906Z",
+              },
+              { id: "iuap-apcom-docs", last_full_cycle_at: null, last_source_cycle_at: null },
+            ],
+          },
+        ],
+        log,
+      ),
+    });
+    const stamps = await driver.sourceCycleStamps();
+    expect(stamps).toEqual([
+      {
+        source_id: "default",
+        last_full_cycle_at: "2026-11-10T01:08:38.906Z",
+        last_source_cycle_at: "2026-11-10T01:08:38.906Z",
+      },
+      { source_id: "iuap-apcom-docs" }, // nulls are dropped, not defaulted
+    ]);
+    expect(log).toEqual([SQL_SOURCE_CYCLE_STAMPS]);
+  });
+
+  test("permission-denied surfaces as the deploy-step hint (GRANT missing)", async () => {
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: async () => {
+        throw new Error('permission denied for table "sources"');
+      },
+    });
+    await expect(driver.sourceCycleStamps()).rejects.toThrow(/permission denied/);
+  });
+
+  test("unconfigured throws without querying", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([], log) });
+    await expect(driver.sourceCycleStamps()).rejects.toThrow();
+    expect(log.length).toBe(0);
   });
 });
