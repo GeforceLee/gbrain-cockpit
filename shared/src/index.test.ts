@@ -9,6 +9,8 @@ import {
   SOURCE_ID_RE,
   authClientsListCommand,
   authRescopeCommand,
+  dreamCalibrationCommand,
+  normalizeDoctorCheck,
   authRevokeClientCommand,
   buildGraphKey,
   contradictionAcceptCommand,
@@ -264,5 +266,77 @@ describe("authClientsListCommand", () => {
     expect(authClientsListCommand("gbrain")).toBe("gbrain auth clients");
     expect(authClientsListCommand("/opt/gbrain")).toBe("/opt/gbrain auth clients");
     expect(() => authClientsListCommand("gbrain x")).toThrow();
+  });
+});
+
+// --- 0.5.0: doctor check rows + dream calibration command -----------------------
+
+describe("normalizeDoctorCheck (three-state vocabulary)", () => {
+  test("ok/warn/fail pass through; unknown status reads na", () => {
+    expect(normalizeDoctorCheck({ name: "a", status: "ok" })?.status).toBe("ok");
+    expect(normalizeDoctorCheck({ name: "a", status: "warn" })?.status).toBe("warn");
+    expect(normalizeDoctorCheck({ name: "a", status: "fail" })?.status).toBe("fail");
+    expect(normalizeDoctorCheck({ name: "a", status: "weird" })?.status).toBe("na");
+    expect(normalizeDoctorCheck({ name: "a" })?.status).toBe("na");
+  });
+
+  test("readiness_state not_applicable wins over status ok (probed shape)", () => {
+    const row = normalizeDoctorCheck({
+      name: "cron_gbrain_home",
+      status: "ok",
+      readiness_state: "not_applicable",
+      severity: "info",
+      message: "No finding: this check does not apply to this brain right now.",
+    });
+    expect(row?.status).toBe("na");
+    expect(row?.message).toContain("does not apply");
+    expect((row as Record<string, unknown>).severity).toBe("info");
+  });
+
+  test("fix payload passes through; nameless rows are dropped", () => {
+    const row = normalizeDoctorCheck({
+      name: "cycle_freshness",
+      status: "warn",
+      fix: { command: "gbrain dream --source default --brain host", consent: ["paid"] },
+    });
+    expect(row?.fix?.command).toContain("dream");
+    expect(row?.fix?.consent).toEqual(["paid"]);
+    expect(normalizeDoctorCheck({ status: "ok" })).toBeNull();
+    expect(normalizeDoctorCheck({ name: "", status: "ok" })).toBeNull();
+  });
+});
+
+describe("dreamCalibrationCommand (0.5.0 1.3)", () => {
+  test("plain form: bin + source + both phases, canonical order", () => {
+    expect(dreamCalibrationCommand("gbrain", "default")).toBe(
+      "gbrain dream --source default --phase propose_takes --phase grade_takes",
+    );
+  });
+
+  test("direct-call form on wrapper brains: GBRAIN_HOME prefix + the REAL bin", () => {
+    expect(
+      dreamCalibrationCommand("gbrain-bip", "yon-bip", {
+        gbrainBin: "/home/dev/.bun/bin/gbrain",
+        gbrainHome: "/home/dev/gbrain-bip",
+      }),
+    ).toBe(
+      "GBRAIN_HOME=/home/dev/gbrain-bip /home/dev/.bun/bin/gbrain dream --source yon-bip --phase propose_takes --phase grade_takes",
+    );
+  });
+
+  test("refuses upstream-illegal source ids and metachar paths — never pastes a guess", () => {
+    expect(() => dreamCalibrationCommand("gbrain", "Bad_Source")).toThrow();
+    expect(() => dreamCalibrationCommand("gbrain", "a;rm")).toThrow();
+    expect(() =>
+      dreamCalibrationCommand("gbrain", "default", {
+        gbrainBin: "/bin/gbrain",
+        gbrainHome: "/home/oops; rm",
+      }),
+    ).toThrow();
+    // a lone gbrainBin without a valid home falls back to the plain bin —
+    // never a half-built direct call
+    expect(
+      dreamCalibrationCommand("gbrain", "default", { gbrainBin: "/bin/gbrain" }),
+    ).toBe("gbrain dream --source default --phase propose_takes --phase grade_takes");
   });
 });

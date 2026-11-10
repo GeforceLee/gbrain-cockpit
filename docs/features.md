@@ -12,6 +12,8 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 
 ## Inbox — the adjudication desk
 
+- **Three piles** (0.5.0): viewpoints (dream's draft opinions + the judgments loop), trust (the five-kind elevation queue) and verdicts (contradictions + relation proposals), plus the read-only stubs stack — presentation grouping only; every queue keeps its own channel and decision rail. Each layer explains itself: a one-line resident description per pile, teaching empty states (never "no data"), the elevation copy-command explains WHY it is a paste (upstream ENG-15 — the limit told as design), and a collapsed "what is this?" guide at the top
+
 - **Six queue tabs**: trust proposals · held writes · facts to confirm · edge proposals · takes to resolve · other pending — each with its own one-line description, and "queue unavailable" is shown instead of "empty" when a channel is down
 - **Document card + decision rail**: every pending item opens as a document with its target page, provenance and the trust pipeline stage it stopped at
 - **Three action shapes, structurally fixed**:
@@ -53,6 +55,11 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - The safety checklist: token-in-header-only, CLI whitelist discipline, fixed-SELECT bypass, receipt-protocol writes
 - **Source-visibility drift** (0.4.0): the bypass sees every source with pages, MCP only the granted ones — ungranted sources are flagged the moment they appear, with a one-key union re-grant (paste the optional `COCKPIT_ADMIN_TOKEN` at the action; it is never stored) or a paste-safe copy-command fallback
 - **Proposal activity / cycle** (0.4.0): dream proposal runs over time plus upstream's own `doctor cycle_freshness` verdict — activity, honestly labeled, with 30h/54h staleness hints
+- **Nightly-cycle card** (0.5.0): per-source cycle stamps from the read-only bypass (the only whole-source view — "did it run, how long ago"), the doctor nightly check set as three-state rows (a check that does not apply to this deployment reads "n/a", never healthy; `sync_freshness`/`extract_health` carry the failure trails), and per-source "run one calibration pass now" copy-commands — paid actions, the consent note travels with them. The cycle verdict ages naturally over the day (warn after 6h by upstream design); timestamps are UTC
+- **Take-calibration card** (0.5.0): the scorecard (accuracy, Brier) plus upstream's calibration profile — all zeros until takes actually get judged, rendered as the honest empty state it is
+- **Asset-health card** (0.5.0): backup coverage, git convergence, unindexed files, ghost pages — "not a git repo" and "not computed yet" are real states, not errors
+- **Write audit** (0.5.0): this token's own write receipts and the repeatedly-conflicting pages in one place
+- **Deploy checkup** (0.5.0): the brain's checkout topology plus the generated per-source two-segment unit text — pure reference material with the 2026-11-10 post-mortem's pitfall notes (repo_path one-key-two-locks, systemd quoting, the 100-page propose window, whole-brain grading, cron-blindness); cockpit never installs, edits or runs units
 - **Admin panel** (0.4.x, conditional): appears only when the deployment configures the admin tier — the OAuth client registry read-only (cockpit's own row highlighted), per-row revoke as copy-command only, and the grant-widening entry
 - Coarse unauthenticated `/healthz` for uptime pollers (statuses only, no data)
 

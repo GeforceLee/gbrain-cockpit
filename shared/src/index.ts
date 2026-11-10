@@ -41,7 +41,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.4.0";
+export const COCKPIT_VERSION = "0.5.0";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>
@@ -91,7 +91,15 @@ export type ManagementAction =
   | "clients.list" // `gbrain auth clients --json` (owner-view grant registry)
   | "sources.list" // `gbrain sources list --json` (owner-view, carries archived)
   | "sources.grant-read" // `gbrain auth rescope --client <id> --federated-read <list>`
-  | "doctor.cycle-freshness"; // `gbrain doctor --only cycle_freshness --json`
+  | "doctor.cycle-freshness" // `gbrain doctor --only cycle_freshness --json`
+  // 0.5.0: doctor check SETS — one exact comma string per set (the table
+  // below is the whole vocabulary; ids outside it can never be requested).
+  // Perception reads only: no check here mutates brain state or spends money.
+  | "doctor.nightly" // `gbrain doctor --only <DOCTOR_CHECK_SETS.nightly> --json`
+  | "doctor.calibration" // …calibration set (takes_count, takes_weight_grid)
+  | "doctor.assets" // …assets set (backup/git/unindexed/ghost)
+  | "doctor.topology" // …topology set (cycle_phase_scope)
+  | "sources.writer-status"; // `gbrain sources writer status --json` (0.5.0 batch 3)
 
 export const MANAGEMENT_CHANNELS: Readonly<
   Record<ManagementAction, Channel>
@@ -100,7 +108,105 @@ export const MANAGEMENT_CHANNELS: Readonly<
   "sources.list": "cli-whitelist",
   "sources.grant-read": "cli-whitelist",
   "doctor.cycle-freshness": "cli-whitelist",
+  "doctor.nightly": "cli-whitelist",
+  "doctor.calibration": "cli-whitelist",
+  "doctor.assets": "cli-whitelist",
+  "doctor.topology": "cli-whitelist",
+  "sources.writer-status": "cli-whitelist",
 };
+
+// --- 0.5.0 doctor check sets (nightly-cycle observability) --------------------
+// The ONE compile-time table of doctor checks cockpit may request (owner
+// D1, 2026-11-10). Server-side assembly only: the CLI whitelist carries one
+// exact full-string regex per SET built from this table — an id outside it
+// can never reach argv (GBRAIN-CAPABILITIES §2 doctor row). `--only` accepts
+// the comma-joined form and answers explicit `not_applicable` info rows for
+// checks that do not emit on this deployment (probed: cron_gbrain_home on a
+// systemd host — readiness_state:"not_applicable", status "ok"; snapshot
+// doctor-not-applicable-bip-0.60.611-20261110.json).
+
+export const DOCTOR_CHECK_SETS = {
+  /** the nightly-cycle card: freshness, provider loop, extract health */
+  nightly: [
+    "cycle_freshness",
+    "sync_freshness",
+    "extract_health",
+    "dream_paid_loop",
+    "global_maintenance_stalled",
+    "default_source_local_path",
+    "chat_fallback_chain",
+    "cron_gbrain_home",
+  ],
+  /** the calibration card's doctor half */
+  calibration: ["takes_count", "takes_weight_grid"],
+  /** the asset-health card */
+  assets: [
+    "backup_coverage",
+    "git_convergence",
+    "unindexed_files",
+    "ghost_pages",
+  ],
+  /** the deploy-checkup card's phase taxonomy source */
+  topology: ["cycle_phase_scope"],
+} as const satisfies Record<string, readonly string[]>;
+
+export type DoctorCheckSetName = keyof typeof DOCTOR_CHECK_SETS;
+
+/**
+ * One doctor check row, normalized to cockpit's three-state vocabulary.
+ * "na" merges upstream's two equivalent shapes: the explicit
+ * `not_applicable` info row AND a set member that emitted no row at all
+ * (both mean "does not apply here" — never ok, never fail; probed 611).
+ * `message` is upstream prose echoed verbatim, never parsed.
+ */
+export interface DoctorCheckRow {
+  name: string;
+  status: "ok" | "warn" | "fail" | "na";
+  message?: string;
+  /** upstream's structured fix payload (RenderedAction — argv may carry
+   *  context suffixes like `--brain host`; never assumed literal) */
+  fix?: {
+    command?: string;
+    consent?: string[];
+    why?: string;
+    [k: string]: unknown;
+  } | null;
+  [k: string]: unknown;
+}
+
+/** Parse one raw check row into the three-state vocabulary. */
+export function normalizeDoctorCheck(raw: {
+  name?: unknown;
+  status?: unknown;
+  readiness_state?: unknown;
+  message?: unknown;
+  fix?: unknown;
+  [k: string]: unknown;
+}): DoctorCheckRow | null {
+  if (typeof raw.name !== "string" || !raw.name) return null;
+  const status =
+    raw.status === "ok" || raw.status === "warn" || raw.status === "fail"
+      ? raw.status
+      : "na";
+  const na = raw.readiness_state === "not_applicable";
+  const fix =
+    raw.fix !== null && typeof raw.fix === "object"
+      ? (raw.fix as DoctorCheckRow["fix"])
+      : undefined;
+  const out: DoctorCheckRow = {
+    name: raw.name,
+    status: na ? "na" : status,
+  };
+  // passthrough (details/severity/category/…) without re-widening the
+  // fields we type explicitly
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === "name" || k === "status" || k === "message" || k === "fix") continue;
+    (out as Record<string, unknown>)[k] = v;
+  }
+  if (typeof raw.message === "string" && raw.message) out.message = raw.message;
+  if (fix !== undefined) out.fix = fix;
+  return out;
+}
 
 // --- Identities & profiles ---------------------------------------------------
 // Multi-brain switching (P0) and the source axis (P1) both hinge on naming:
@@ -354,6 +460,42 @@ export function authRevokeClientCommand(bin: string, clientId: string): string {
 export function authClientsListCommand(bin: string): string {
   assertOwnerBin(bin);
   return `${bin} auth clients`;
+}
+
+/**
+ * The per-source "run one calibration pass now" copy-command (0.5.0 1.3):
+ * `dream --source <s> --phase propose_takes --phase grade_takes` — repeatable
+ * --phase verified upstream (dream.ts:143-149, canonical order), and the
+ * whole v3 nightly unit runs exactly this shape per source since 2026-11-10.
+ * Semantics the hint must carry (probed): propose_takes scopes candidates to
+ * the source (latest-100-pages window), grade_takes grades over the WHOLE
+ * brain's resolved/active takes — the pass is per-source only on the propose
+ * half. Direct-call form (GBRAIN_HOME + the REAL bin) for wrapper-brain
+ * profiles, else the plain bin — same discipline as buildTakeQueueCommands.
+ * Paid action: the UI must show upstream's `consent: ["paid"]` caveat.
+ */
+export function dreamCalibrationCommand(
+  bin: string,
+  sourceId: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  if (!GBRAIN_SOURCE_ID_RE.test(sourceId)) {
+    throw new Error(`dream command source rejected by upstream charset: ${sourceId}`);
+  }
+  // mirrors takes-source.ts OWNER_HOME_RE (env-prefix text the owner pastes)
+  const homeOk =
+    opts.gbrainHome !== undefined && /^\/[A-Za-z0-9._/-]{1,200}$/.test(opts.gbrainHome);
+  if (opts.gbrainHome !== undefined && !homeOk) {
+    throw new Error("dream command gbrainHome rejected (metachar-free absolute path only)");
+  }
+  const prefix =
+    opts.gbrainBin !== undefined && homeOk && OWNER_BIN_RE.test(opts.gbrainBin)
+      ? `GBRAIN_HOME=${opts.gbrainHome} ${opts.gbrainBin}`
+      : (() => {
+          assertOwnerBin(bin);
+          return bin;
+        })();
+  return `${prefix} dream --source ${sourceId} --phase propose_takes --phase grade_takes`;
 }
 
 /**
@@ -1030,6 +1172,114 @@ export interface OpsGrantReadResult {
   /** sources added by THIS call; empty = idempotent no-op (already granted) */
   added: string[];
   federatedRead: string[];
+}
+
+// --- 0.5.0 nightly-cycle reports (nightly cycles, visible) --------------------
+
+/**
+ * MCP `takes_scorecard` (probed 0.60.611: all-zero until takes get resolved;
+ * brier/accuracy null when no resolved bets). NOTE: `group_by`/`min_n` are
+ * trusted-local-CLI-only upstream and REJECTED on remote callers — cockpit
+ * never sends them.
+ */
+export interface TakesScorecard {
+  total_bets?: number;
+  resolved?: number;
+  correct?: number;
+  incorrect?: number;
+  partial?: number;
+  accuracy?: number | null;
+  brier?: number | null;
+  partial_rate?: number | null;
+  unresolvable_count?: number;
+  unresolvable_rate?: number | null;
+  mcp_resolved?: number;
+  [k: string]: unknown;
+}
+
+/**
+ * Per-source cycle stamps from pg `sources.config` (owner D1) — the ONLY
+ * whole-source view of "did the nightly cycle run" (doctor's
+ * cycle_freshness message names only stale sources; `sources list --json`
+ * and MCP sources_status carry no cycle fields; probed 2026-11-10).
+ * Stamps are written only on ok/clean/partial cycles — absence is an honest
+ * "never completed a cycle", never a parse of failure reasons.
+ */
+export interface SourceCycleStamp {
+  source_id: string;
+  last_full_cycle_at?: string;
+  last_source_cycle_at?: string;
+}
+
+/** One in-band part of the nightly/calibration report (never a 500). */
+export interface OpsDoctorSet {
+  status: CheckStatus;
+  checks: DoctorCheckRow[];
+  /** names from the set that answered no row AND no not_applicable line */
+  missing?: string[];
+  error?: string;
+}
+
+/** GET /api/ops/nightly — the nightly-cycle card's whole diet. */
+export interface OpsNightlyReport {
+  status: CheckStatus;
+  doctor?: OpsDoctorSet;
+  /** per-source cycle stamps; absent when the bypass is down/unset */
+  stamps?: { status: CheckStatus; sources: SourceCycleStamp[]; error?: string };
+  /** per-source run-calibration copy-commands (server-built; present
+   *  whenever stamps are — copy-command survives a CLI-down host) */
+  runNow?: Record<string, string>;
+  error?: string;
+}
+
+/** GET /api/ops/calibration — scorecard + profile + doctor calibration set. */
+export interface OpsCalibrationReport {
+  status: CheckStatus;
+  scorecard?: TakesScorecard;
+  /** MCP get_calibration_profile — null/absent = no profile yet (honest
+   *  empty state, probed: null on both leewin brains 2026-11-10) */
+  profile?: unknown;
+  doctor?: OpsDoctorSet;
+  error?: string;
+}
+
+/** GET /api/ops/assets — the asset-health card (doctor assets set). */
+export interface OpsAssetsReport {
+  status: CheckStatus;
+  doctor?: OpsDoctorSet;
+  error?: string;
+}
+
+/**
+ * One writer binding row (sources writer status, probed 0.60.611
+ * 2026-11-10): the deploy-checkup card reads source_id / local_path / state
+ * / git_durability_state only — the payload is far richer (42KB on bip) and
+ * cockpit deliberately models the minimum it renders.
+ */
+export interface WriterBinding {
+  source_id?: string;
+  local_path?: string;
+  state?: string;
+  git_durability_state?: string;
+  [k: string]: unknown;
+}
+
+/** GET /api/ops/deploy — the deploy-checkup card's whole diet. */
+export interface OpsDeployReport {
+  status: CheckStatus;
+  writer?: {
+    status: CheckStatus;
+    mode?: string;
+    bindings?: WriterBinding[];
+    error?: string;
+  };
+  /** doctor topology set (cycle_phase_scope — upstream's own taxonomy) */
+  topology?: OpsDoctorSet;
+  /** the generated per-source two-segment unit text (reference copy, never executed) */
+  unitText?: string;
+  /** the pinned pitfall notes the text carries (repo_path 一钥两锁 etc.) */
+  notes?: string[];
+  error?: string;
 }
 
 /**

@@ -107,6 +107,24 @@ const SQL_SOURCE_TYPE_COUNTS =
   "ORDER BY n DESC";
 
 /**
+ * 0.5.0 ops (owner D1): per-source cycle stamps from `sources.config` — the
+ * ONLY whole-source view of "did the nightly cycle run" (doctor's
+ * cycle_freshness names only stale sources in its message; `sources list
+ * --json` and MCP sources_status carry no cycle fields; probed 2026-11-10
+ * on 0.60.611). Fourth fixed table (after pages/links/take_proposals):
+ * zero user input, two jsonb text extractions, no other config keys read.
+ * The read-only account needs GRANT SELECT ON public.sources (deploy step,
+ * same precedent as take_proposals). Stamps exist only after an ok/clean/
+ * partial cycle — a missing stamp is the honest "never cycled", so absent
+ * fields are PRESERVED, never defaulted. Fresh, uncached: the card must
+ * see last night's stamp the morning after without a TTL nudge.
+ */
+const SQL_SOURCE_CYCLE_STAMPS =
+  "SELECT id, config->>'last_full_cycle_at' AS last_full_cycle_at, " +
+  "config->>'last_source_cycle_at' AS last_source_cycle_at FROM sources " +
+  "ORDER BY id";
+
+/**
  * Pages columns we consume; presence-checked against information_schema.
  * `source_id` (gbrain 0.60.558: TEXT NOT NULL DEFAULT 'default', with
  * UNIQUE(source_id, slug)) upgrades node identity from bare slug to
@@ -318,6 +336,33 @@ export class PgReadonlyDriver {
       source_id: String(row.source_id ?? ""),
       type: typeof row.type === "string" ? row.type : null,
       pages: Number(row.n ?? 0),
+    }));
+  }
+
+  /**
+   * 0.5.0: per-source cycle stamps (nightly-cycle card). Fresh, uncached.
+   * Absent stamp fields stay absent — "never cycled" is the data, not an
+   * error to smooth over.
+   */
+  async sourceCycleStamps(): Promise<
+    Array<{
+      source_id: string;
+      last_full_cycle_at?: string;
+      last_source_cycle_at?: string;
+    }>
+  > {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const rows = await this.#query(SQL_SOURCE_CYCLE_STAMPS);
+    return rows.map((row) => ({
+      source_id: String(row.id ?? ""),
+      ...(typeof row.last_full_cycle_at === "string" && row.last_full_cycle_at
+        ? { last_full_cycle_at: row.last_full_cycle_at }
+        : {}),
+      ...(typeof row.last_source_cycle_at === "string" && row.last_source_cycle_at
+        ? { last_source_cycle_at: row.last_source_cycle_at }
+        : {}),
     }));
   }
 

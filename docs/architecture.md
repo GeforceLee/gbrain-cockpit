@@ -31,7 +31,9 @@ cockpit server (Bun + TypeScript, zero runtime npm deps)
    │
    └─③ read-only bypass ──► fixed SELECT on pages/links (graph)
          + take_proposals (Inbox takes queue — cross-source by nature;
-         the CLI's takes list is scoped to ONE source per run)
+           the CLI's takes list is scoped to ONE source per run)
+         + sources.config cycle stamps (0.5.0 nightly-cycle card — the only
+           whole-source "did the nightly cycle run" view; owner-approved)
          zero user input in SQL; optional, off on PGLite engines
 ```
 
@@ -45,6 +47,7 @@ cockpit server (Bun + TypeScript, zero runtime npm deps)
 | Release held write (h) | owner typed-token terminal confirm | **copy-command** | copy block |
 | Edge proposal accept / reject / undo / date | none | CLI whitelist | one-key |
 | Takes pending queue (`take_proposals`) | dedicated read-only role | read-only bypass | queue view |
+| Per-source cycle stamps (`sources.config` two keys) | dedicated read-only role | read-only bypass | nightly-cycle card (0.5.0) |
 | Takes propose accept / reject | none | CLI whitelist (per-row `GBRAIN_SOURCE` env on multi-source brains) | one-key |
 | Fact / memory confirmation (`confirm_memory`) | `memory_confirm` scope | MCP | one-key |
 | Page write (`put_page`) | none | MCP receipt protocol | edit + poll |
@@ -75,6 +78,7 @@ The V1.1 read set (live-probed against 0.60.558) rides the same MCP driver with 
 
 - `list_pages` narrows by `slug_prefix` and `tag` (list rows never carry tags upstream — the tag filter is a free-input box, not a chip list)
 - `GET /api/page?full=1` attaches `get_links` / `get_backlinks` / `get_timeline` to the page bundle; a failed or unsupported section lands in a `degraded` list and the UI self-describes it — the default (peek) bundle stays at two upstream calls to honor the 30 req/min self-budget
+- 0.5.0 nightly observability: four doctor CHECK SETS (`--only` comma lists — 15 check ids in one compile-time table, each set one exact-string whitelist entry) feed the nightly-cycle/calibration/asset cards; a check that does not apply to a deployment answers an explicit `not_applicable` line rendered as "n/a", never as healthy; `sources writer status` feeds the deploy-checkup card's checkout topology (modeled slice only)
 - `sources_status` (arg `id`, one source per call) fans out over the grant-scoped source list for the Health card; the graph legend's link-provenance counts aggregate client-side over the bypass payload's `link_source` — no extra upstream call
 - `assemble_evidence` answers per-hit evidence windows (≤3 triples per call) for the Search panel's evidence expansion
 - every new report degrades in-band (`status: degraded|down`) on older gbrains; the web treats a missing section or a 404 endpoint as unavailable, never as an error
@@ -85,7 +89,7 @@ The V1.1 read set (live-probed against 0.60.558) rides the same MCP driver with 
 - **Token hygiene**: tokens travel only in the `Authorization` header — a token-looking query parameter is rejected with 400; browser-side the token lives in localStorage and is attached as a header, never in URLs; comparison is constant-time
 - **Host/Origin defenses**: Host-header whitelist (DNS-rebinding) + Origin/`Sec-Fetch-Site` checks on non-GET + JSON-only write bodies
 - **Untrusted content rendering**: all brain content (imported pages, mail, chat logs) is persistent untrusted input. Page bodies are markdown (gbrain's repo-of-Markdown design, verified against upstream docs and the real brain) and render through exactly one pipeline — `marked → DOMPurify` (`lib/markdown.ts` + `components/PageBody.tsx`; scripts/images/forms stripped, links hardened to `_blank`+`noopener`); conversation-ingest wrappers (quoted-excerpt line + whole-body text fence) are unwrapped before rendering with strict shape matching and as-stored fallback; that `dangerouslySetInnerHTML` is the app's only one, everything else stays plain text and graph labels are drawn on canvas
-- **SQL surface**: the read-only bypass runs module-level constant SELECTs against `pages`/`links` (graph) and `take_proposals` (Inbox takes queue) on a dedicated read-only role; user input cannot reach SQL
+- **SQL surface**: the read-only bypass runs module-level constant SELECTs against `pages`/`links` (graph), `take_proposals` (Inbox takes queue) and the `sources` table's two cycle-stamp keys (0.5.0 nightly-cycle card) on a dedicated read-only role; user input cannot reach SQL
 - **Error envelope**: the browser only ever sees `{error: summary, code}`; subprocess stderr stays in server logs
 - **Audit trail**: write actions append to `~/.cockpit-audit/YYYY-MM-DD.jsonl` outside the program directory
 
@@ -124,7 +128,7 @@ gbrain-cockpit/
 
 cockpit is verified against gbrain 0.60.x. The coupling strategy:
 
-1. depend only on (a) documented MCP tool names/parameters, (b) the whitelisted CLI subcommands with `--json` output, (c) the two read-only tables — never parse human-readable CLI output, never touch internals
+1. depend only on (a) documented MCP tool names/parameters, (b) the whitelisted CLI subcommands with `--json` output, (c) the read-only tables enumerated above — never parse human-readable CLI output, never touch internals
 2. MCP tool calls that fail or change shape degrade visibly (queues report "unavailable", the graph reports "down") instead of crashing
 3. the read-only bypass presence-checks its column expectations against `information_schema` at startup and disables itself on drift
 

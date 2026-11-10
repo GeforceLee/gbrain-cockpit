@@ -2,12 +2,14 @@ import { execFile } from "node:child_process";
 import { access, constants } from "node:fs/promises";
 import { promisify } from "node:util";
 import {
+  DOCTOR_CHECK_SETS,
   FEDERATED_LIST_RE,
   OWNER_CLIENT_ID_RE,
   TRUST_REF_RE,
   validateFederatedReadList,
   type CliChannelStatus,
   type ContradictionProposal,
+  type DoctorCheckSetName,
   type EdgeProposal,
   type OpsClientGrant,
   type TrustReviewEnvelope,
@@ -84,6 +86,28 @@ interface SubcommandSpec {
 const REF_RE = TRUST_REF_RE;
 const ID_RE = /^\d{1,18}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Build the whitelist spec for one doctor check set: the `--only` value is
+ * the set's exact comma-joined string (frozen order, anchored both ends) —
+ * a set membership in regex form, so no other check id can ever be asked.
+ */
+function doctorSetSpec(set: DoctorCheckSetName): SubcommandSpec {
+  const joined = DOCTOR_CHECK_SETS[set].join(",");
+  return {
+    words: ["doctor"],
+    args: [
+      {
+        kind: "value",
+        literal: "--only",
+        name: "check",
+        regex: new RegExp(`^${joined.replace(/,/g, ",")}$`),
+      },
+      { kind: "flag", literal: "--json" },
+    ],
+    json: true,
+  };
+}
 
 // The live list — GBRAIN-CAPABILITIES.md §2 is the source of truth; keep both
 // in sync when probes correct it.
@@ -230,6 +254,24 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
     args: [
       { kind: "value", literal: "--only", name: "check", regex: /^cycle_freshness$/ },
       { kind: "flag", literal: "--json" }],
+    json: true,
+  },
+  // 0.5.0: the four doctor CHECK SETS — one exact full-string regex per set,
+  // built at module load from shared's DOCTOR_CHECK_SETS table (the whole
+  // vocabulary; an id outside the table can never be requested, and the
+  // comma order is frozen so the regex and the table cannot drift).
+  // `--only a,b` answers explicit not_applicable info rows for checks that
+  // do not emit on this deployment (probed 2026-11-10, 0.60.611).
+  "doctor nightly": doctorSetSpec("nightly"),
+  "doctor calibration": doctorSetSpec("calibration"),
+  "doctor assets": doctorSetSpec("assets"),
+  "doctor topology": doctorSetSpec("topology"),
+  // 0.5.0 batch 3: writer-owned publication state per source (bindings,
+  // worktrees, parked effects) — feeds the deploy-checkup card's generated
+  // unit text. Read-only; shape to be pinned by probe in the same PR.
+  "sources writer status": {
+    words: ["sources", "writer", "status"],
+    args: [{ kind: "flag", literal: "--json" }],
     json: true,
   },
 };
@@ -541,6 +583,64 @@ export class CliDriver {
       }
       throw err;
     }
+  }
+
+  /**
+   * 0.5.0: run one doctor CHECK SET (shared's DOCTOR_CHECK_SETS — the whole
+   * vocabulary; the whitelist regex is the same table's frozen comma string).
+   * Same exit-1 envelope recovery as doctorCycleFreshness: a nonzero exit
+   * with a parseable checks[] IS the unhealthy verdict. The row set is
+   * returned raw; three-state normalization lives in shared
+   * (normalizeDoctorCheck) so the web tests can exercise it too.
+   */
+  async doctorChecks(
+    set: DoctorCheckSetName,
+    opts: ScopedExecOpts = {},
+  ): Promise<{
+    checks?: Array<{
+      name?: string;
+      status?: string;
+      readiness_state?: unknown;
+      message?: string;
+      fix?: unknown;
+      [k: string]: unknown;
+    }>;
+    [k: string]: unknown;
+  }> {
+    const key = `doctor ${set}`;
+    const value = DOCTOR_CHECK_SETS[set].join(",");
+    type DoctorSetEnvelope = {
+      checks?: Array<Record<string, unknown>>;
+      [k: string]: unknown;
+    };
+    try {
+      return await this.#runJson<DoctorSetEnvelope>(key, { check: value }, opts);
+    } catch (err) {
+      if (
+        err instanceof CliExecutionError &&
+        err.exitCode === 1 &&
+        typeof err.stdout === "string"
+      ) {
+        try {
+          const recovered = JSON.parse(err.stdout) as DoctorSetEnvelope;
+          if (Array.isArray(recovered.checks)) return recovered;
+        } catch {
+          // fall through — not the verdict shape
+        }
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 0.5.0 batch 3: per-source writer/publication state for the deploy
+   * checkup card. Read-only; shape defensive (row fields pinned by probe in
+   * the same PR that lights the card up).
+   */
+  async sourcesWriterStatus(
+    opts: ScopedExecOpts = {},
+  ): Promise<{ [k: string]: unknown }> {
+    return this.#runJson("sources writer status", {}, opts);
   }
 
   async #runJson<T>(

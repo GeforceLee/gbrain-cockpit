@@ -12,6 +12,8 @@ import type {
 import { PALETTE } from "../design/tokens";
 import { RadialGauge } from "../components/RadialGauge";
 import { DriftCard } from "../components/DriftCard";
+import { CalibrationCard, NightlyCard } from "./nightly-cards";
+import { AssetCard, DeployCard, WritesCard } from "./ops-cards";
 import { ApiError, apiGet, setToken } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
@@ -396,6 +398,21 @@ export function Health() {
           <DriftCard drift={drift} refresh={() => void probe()} />
 
           <HeartbeatCard runs={dreamRuns} />
+
+          {/* 0.5.0 nightly-cycle cards — collapsed by default, fetch on
+              first open (Health density discipline: five more ops cards must
+              not turn the panel into a wall) */}
+          <NightlyCard />
+
+          <CalibrationCard />
+
+          {/* 0.5.0 batch 3: asset health, the write-audit home, the deploy
+              checkup — same collapsed-until-opened discipline */}
+          <AssetCard />
+
+          <WritesCard />
+
+          <DeployCard />
 
           <div className="hcard span8 checklist">
             <p className="cap">{t("health.checklist")}</p>

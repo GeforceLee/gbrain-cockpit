@@ -14,6 +14,7 @@ import {
   type SourceDiagnostic,
   type SourceSummary,
   type TakeItem,
+  type TakesScorecard,
   type TakeQuality,
   type TimelineEntry,
   type WriteConflictRow,
@@ -436,6 +437,26 @@ export class McpDriver {
       {},
     );
     return call.then((r) => (Array.isArray(r) ? r : r?.anomalies ?? []));
+  }
+
+  /**
+   * 0.5.0: takes scorecard (accuracy/brier). NEVER sends `group_by`/`min_n`
+   * — upstream rejects them on remote callers (scorecard_group_by_local_
+   * only, probed 2026-11-10); cockpit asks for the plain brain-wide form.
+   * Probed all-zero until takes get resolved — the empty state is real.
+   */
+  takesScorecard(): Promise<TakesScorecard> {
+    return this.#cached<TakesScorecard>(60_000, "takes_scorecard", {});
+  }
+
+  /**
+   * 0.5.0: the brain's calibration profile (get_calibration_profile). Null
+   * until takes get graded — an honest empty, rendered as such upstream of
+   * here. Loose typing on purpose: the profile's rich fields (domain
+   * scorecards, bias tags) pass through defensively.
+   */
+  calibrationProfile(): Promise<unknown> {
+    return this.#cached<unknown>(60_000, "get_calibration_profile", {});
   }
 
   /** Cancel THIS token's accepted-but-unpublished write (gbrain's own guard). */

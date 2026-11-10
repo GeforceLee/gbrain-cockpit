@@ -30,6 +30,10 @@ import {
   handleOpsClients,
   handleOpsDreamRuns,
   handleOpsGrantRead,
+  handleOpsNightly,
+  handleOpsCalibration,
+  handleOpsAssets,
+  handleOpsDeploy,
   handleTakePropose,
   handleTakeResolve,
   handleTrustDrop,
@@ -189,6 +193,16 @@ const server = Bun.serve({
             return await handleOpsClients(channels);
           case "GET /api/ops/dream-runs":
             return await handleOpsDreamRuns(channels);
+          // 0.5.0 nightly-cycle observability: reads on the base token
+          // (perception is free; run-now actions stay copy-command)
+          case "GET /api/ops/nightly":
+            return await handleOpsNightly(channels);
+          case "GET /api/ops/calibration":
+            return await handleOpsCalibration(channels);
+          case "GET /api/ops/assets":
+            return await handleOpsAssets(channels);
+          case "GET /api/ops/deploy":
+            return await handleOpsDeploy(channels);
           case "POST /api/ops/grant-read": {
             const res = await handleOpsGrantRead(
               channels,

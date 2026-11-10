@@ -798,3 +798,6 @@ table.items td {
     grid-column: span 12;
   }
 }
+
+/* 0.5.0 nightly-cycle card: paste-ready command rows wrap long text */
+.cmd-row code { word-break: break-all; }
