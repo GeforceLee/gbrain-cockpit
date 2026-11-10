@@ -1706,3 +1706,7 @@ button.batch-arm {
   color: var(--ink);
   font-size: 12px;
 }
+
+/* 0.5.0 Inbox guide fold (layer-4 hint): sits between the pile tabs and the
+   desk meta; closed by default, plain text body */
+.inbox-guide { margin: 0 0 6px; }

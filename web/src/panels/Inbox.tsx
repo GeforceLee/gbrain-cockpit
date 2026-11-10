@@ -49,17 +49,20 @@ import { firstLine } from "../lib/text";
 // never a button), and when the CLI channel is unavailable on this host,
 // CLI one-key actions degrade to copy-command blocks too.
 
-type QueueId =
-  | "proposals"
-  | "held"
-  | "facts"
-  | "edges"
-  | "takes"
-  | "contradictions"
-  | "extraction"
-  | "judgments"
-  | "others";
-type TabId = "all" | Exclude<QueueId, "others">;
+// 0.5.0 three-pile mental model (owner-approved): QueueIds all survive —
+// tabs collapse to five. A pile is presentation grouping ONLY; every queue
+// keeps its own channel, decision rail and copy-command blocks. The pure
+// logic (membership/dedup/batch gate/counting) lives in lib/piles.ts with
+// pinned tests.
+import {
+  PILE_MEMBERS,
+  batchablePage,
+  dedupeDpTwins,
+  pileTabCount,
+  sidebarTotal,
+  type QueueId,
+  type TabId,
+} from "../lib/piles";
 
 /** keep-alive refresh threshold: re-fetch the queues once when returning to
  *  the desk after this long away (queue verdicts elsewhere change counts) */
@@ -271,7 +274,8 @@ export function Inbox({
   // dp<id> entries are decide-proposal contradictions: they surface in the
   // trust queue's data but their disposition verbs are the decide family —
   // so they ride the contradictions queue, never trust drop/confirm.
-  const dpTrustItems = trustItems.filter((i) => (i.ref ?? "").startsWith("dp"));
+  // 0.5.0: dedup against the decide queue lives in lib/piles (pinned test —
+  // one pending decide_proposal must never count twice in the verdict pile).
   const others = trustItems.filter((i) => {
     const r = i.ref ?? "";
     return (
@@ -285,6 +289,7 @@ export function Inbox({
   const edges = report?.edgeProposals.items ?? [];
   const takes = report?.takes.items ?? [];
   const decideProposals = report?.contradictions.items ?? [];
+  const dpTrustItems = dedupeDpTwins(trustItems, decideProposals);
   const extractionStubs = report?.extraction.items ?? [];
   const activeTakes = report?.activeTakes.items ?? [];
 
@@ -326,24 +331,26 @@ export function Inbox({
       ? { judgments: firstLine(report.activeTakes.error) }
       : {}),
   };
-  const downNotices = (tabId: TabId): string[] =>
-    tabId === "all"
-      ? ([...new Set(Object.values(queueDown).filter(Boolean))] as string[])
-      : queueDown[tabId] !== undefined
-        ? [queueDown[tabId]!]
-        : [];
+  const downNotices = (tabId: TabId): string[] => {
+    if (tabId === "all") {
+      return [...new Set(Object.values(queueDown).filter(Boolean))] as string[];
+    }
+    // pile level: the union of member-queue channel states (any member down
+    // marks the pile's data incomplete — the "?" on the tab says so too)
+    const members = PILE_MEMBERS[tabId];
+    const notices = members
+      .map((q) => queueDown[q])
+      .filter((x): x is string => Boolean(x));
+    return [...new Set(notices)];
+  };
+
+
 
   useEffect(() => {
     if (!report) return;
-    onTotal?.(
-      queueCounts.proposals +
-        queueCounts.held +
-        queueCounts.facts +
-        queueCounts.edges +
-        queueCounts.takes +
-        queueCounts.contradictions +
-        queueCounts.others,
-    );
+    // 0.5.0: the counting rule is lib/piles' sidebarTotal (pinned) — the
+    // pile collapse must not silently change what the sidebar chip means
+    onTotal?.(sidebarTotal(queueCounts));
   }, [report]); // onTotal is a stable state setter from the shell
 
   // --- entry assembly --------------------------------------------------------
@@ -539,39 +546,55 @@ export function Inbox({
   const visibleEntries =
     tab === "all"
       ? entriesWithSource
-      : entriesWithSource.filter((e) => e.queueId === tab);
+      : entriesWithSource.filter((e) =>
+          PILE_MEMBERS[tab].includes(e.queueId),
+        );
 
   /**
-   * Takes group by source (upstream: proposals are per-source rows; dream
-   * runs per source). A head line renders before each source's first take
-   * on the current page — when several sources share the page.
+   * 0.5.0 pile rendering: within a pile tab, a section head per constituent
+   * queue (the queue's own one-line identity survives the collapse — layer 1
+   * of the hint standard applies to every queue, not just piles); inside the
+   * takes section, per-source group heads as before (upstream: proposals are
+   * per-source rows; dream runs per source), shown when the page mixes
+   * sources. The all-tab keeps the takes source grouping only (queue
+   * identity rides each card's tag row there).
    */
-  function groupHeads(pageEntries: Entry[]): ReactNode[] {
+  function sectionHeads(pageEntries: Entry[]): ReactNode[] {
     const out: ReactNode[] = [];
-    let lastSource: string | null | undefined;
-    let multiOnPage = false;
-    const seen = new Set<string>();
+    const takeEntries = pageEntries.filter((e) => e.queueId === "takes");
+    const takeSources = new Set(
+      takeEntries.flatMap((e) => (e.sourceId ? [e.sourceId] : [])),
+    );
+    const multiSource = takeSources.size > 1;
+    let lastQueue: QueueId | null = null;
+    let lastTakeSource: string | null | null = null;
     for (const e of pageEntries) {
-      if (e.queueId !== "takes") continue;
-      if (e.sourceId) {
-        seen.add(e.sourceId);
-        if (seen.size > 1) multiOnPage = true;
+      if (tab !== "all" && e.queueId !== lastQueue) {
+        lastQueue = e.queueId;
+        const n = pageEntries.filter((x) => x.queueId === e.queueId).length;
+        out.push(
+          <p key={`q-head-${e.queueId}`} className="src-group-head">
+            <span className="src-chip mono">
+              {t(`inbox.queue.${e.queueId}` as MessageKey)}
+            </span>
+            <span>{n}</span>
+          </p>,
+        );
       }
-    }
-    if (!multiOnPage) return out;
-    for (const e of pageEntries) {
-      if (e.queueId !== "takes" || !e.sourceId) continue;
-      if (e.sourceId === lastSource) continue;
-      lastSource = e.sourceId;
-      const n = pageEntries.filter(
-        (x) => x.queueId === "takes" && x.sourceId === e.sourceId,
-      ).length;
-      out.push(
-        <p key={`src-head-${e.sourceId}`} className="src-group-head">
-          <span className="src-chip mono">{e.sourceId}</span>
-          <span>{t("inbox.group.source").replace("{name}", e.sourceId).replace("{n}", String(n))}</span>
-        </p>,
-      );
+      if (e.queueId === "takes" && multiSource && e.sourceId && e.sourceId !== lastTakeSource) {
+        lastTakeSource = e.sourceId;
+        const n = takeEntries.filter((x) => x.sourceId === e.sourceId).length;
+        out.push(
+          <p key={`src-head-${e.sourceId}`} className="src-group-head">
+            <span className="src-chip mono">{e.sourceId}</span>
+            <span>
+              {t("inbox.group.source")
+                .replace("{name}", e.sourceId)
+                .replace("{n}", String(n))}
+            </span>
+          </p>,
+        );
+      }
     }
     return out;
   }
@@ -697,24 +720,13 @@ export function Inbox({
     }
   }
 
-  const tabs: { id: TabId; label: string; n: number }[] = [
+  const tabs: { id: TabId; label: string; n: number | "?" }[] = [
     { id: "all", label: t("inbox.tab.all"), n: allEntries.length },
-    { id: "proposals", label: t("inbox.queue.proposals"), n: queueCounts.proposals },
-    { id: "held", label: t("inbox.queue.held"), n: queueCounts.held },
-    { id: "facts", label: t("inbox.queue.facts"), n: queueCounts.facts },
-    { id: "edges", label: t("inbox.queue.edges"), n: queueCounts.edges },
-    { id: "takes", label: t("inbox.queue.takes"), n: queueCounts.takes },
-    {
-      id: "contradictions",
-      label: t("inbox.queue.contradictions"),
-      n: queueCounts.contradictions,
-    },
-    {
-      id: "extraction",
-      label: t("inbox.queue.extraction"),
-      n: queueCounts.extraction,
-    },
-    { id: "judgments", label: t("inbox.queue.judgments"), n: queueCounts.judgments },
+    // three piles + the read-only stub stack (owner-approved 0.5.0 model)
+    { id: "viewpoint", label: t("inbox.stack.viewpoint"), n: pileTabCount("viewpoint", queueCounts, queueDown) },
+    { id: "trust", label: t("inbox.stack.trust"), n: pileTabCount("trust", queueCounts, queueDown) },
+    { id: "verdict", label: t("inbox.stack.verdict"), n: pileTabCount("verdict", queueCounts, queueDown) },
+    { id: "stubs", label: t("inbox.stack.stubs"), n: pileTabCount("stubs", queueCounts, queueDown) },
   ];
 
   return (
@@ -743,13 +755,17 @@ export function Inbox({
               setBatchArmed(false);
             }}
           >
-            {tb.label}{" "}
-            <span className="n">
-              {tb.id !== "all" && queueDown[tb.id] !== undefined ? "?" : tb.n}
-            </span>
+            {tb.label} <span className="n">{tb.n}</span>
           </button>
         ))}
       </nav>
+
+      {/* 0.5.0 layer-4 hint: the collapsed guide — three stacks of slips in
+          plain words, closed by default (nothing here is needed to work) */}
+      <details className="detail-block inbox-guide">
+        <summary className="cap">{t("inbox.guide.summary")}</summary>
+        <p className="muted small">{t("inbox.guide.body")}</p>
+      </details>
 
       <div className="inbox-meta">
         <div className="list-tools">
@@ -814,9 +830,12 @@ export function Inbox({
                   ))}
                 </select>
               ) : null}
-              {(tab === "takes" || tab === "edges") &&
-                cliAvailable &&
-                pagedEntries.length > 0 && (
+              {cliAvailable &&
+                // batch applies only when EVERY entry on the page is a
+                // batchable queue (takes/edges, CLI one-key); judgments are
+                // MCP-resolved and contradictions carry no batch form, so a
+                // mixed pile page simply hides the button (0.5.0 rule)
+                batchablePage(pagedEntries) && (
                 <button
                   type="button"
                   className={batchArmed ? "batch-arm" : ""}
@@ -857,14 +876,37 @@ export function Inbox({
               </p>
             ))}
             {tab !== "all" && (
-              // the selected queue's one-line self-description (AGENTS.md:
-              // every surface carries its own explanation)
+              // layer-1 hint: the pile's one-line self-description (owner
+              // drafts 2026-11-10); constituent queues carry their own head
+              // lines inside the pile via sectionHeads
               <p className="muted empty-note">
-                {t(`inbox.queue.${tab}Desc` as MessageKey)}
+                {t(`inbox.stack.${tab}Desc` as MessageKey)}
               </p>
             )}
-            {tab === "contradictions" && <ContradictionProbeNote report={report} />}
-            {tab === "takes" &&
+            {tab === "trust" && report?.trust.counts && (
+              // the five-kind upstream overview — the trust queue's whole
+              // vocabulary, rendered honestly (zeros are zeros; probed
+              // all-zero on both leewin brains 2026-11-10)
+              <p className="muted empty-note">
+                {t("inbox.stack.trustCounts")}:{" "}
+                {(
+                  [
+                    ["proposal", "inbox.trust.kind.proposal"],
+                    ["lowered_page", "inbox.trust.kind.loweredPage"],
+                    ["preference", "inbox.trust.kind.preference"],
+                    ["hold", "inbox.trust.kind.hold"],
+                    ["contradiction", "inbox.trust.kind.contradiction"],
+                  ] as const
+                )
+                  .map(
+                    ([kind, key]) =>
+                      `${t(key as MessageKey)} ${report.trust.counts?.[kind] ?? 0}`,
+                  )
+                  .join(" · ")}
+              </p>
+            )}
+            {tab === "verdict" && <ContradictionProbeNote report={report} />}
+            {(tab === "viewpoint" || tab === "all") &&
               report?.takes.failed?.status === "ok" &&
               (report.takes.failed.items?.length ?? 0) > 0 && (
                 <p className="muted empty-note">
@@ -874,7 +916,7 @@ export function Inbox({
                   )}
                 </p>
               )}
-            {tab === "extraction" && report && (
+            {tab === "stubs" && report && (
               <p className="muted empty-note">
                 {t("inbox.extraction.unattributed")}:{" "}
                 {report.extraction.unattributedCount ?? 0} ·{" "}
@@ -883,12 +925,15 @@ export function Inbox({
               </p>
             )}
             {visibleEntries.length === 0 && downNotices(tab).length === 0 && (
-              <p className="muted empty-note">{t("inbox.empty")}</p>
+              // layer-2 hint: an empty pile teaches what WILL appear here —
+              // "暂无数据" is banned copy (owner standard 2026-11-10)
+              <p className="muted empty-note">
+                {tab === "all"
+                  ? t("inbox.emptyAll")
+                  : t(`inbox.stack.${tab}Empty` as MessageKey)}
+              </p>
             )}
-            {(tab === "takes" || tab === "all") &&
-              observedSources.size > 1 &&
-              sourceFilter === null &&
-              groupHeads(pagedEntries).map((head) => head)}
+            {sectionHeads(pagedEntries).map((head) => head)}
             {pagedEntries.map((entry) => (
               <button
                 key={entry.key}
@@ -1538,6 +1583,10 @@ function DecisionRail({
             // degrade: one-key drop becomes a copy-command block too
             <CopyCommand command={trustDropCommand(cliCommand, ref)} />
           ) : null}
+          {/* layer-3 hint (owner standard 2026-11-10): the elevation button
+              explains WHY it is a paste, not a click — the limit told as
+              design, so future-us never wonders where the button went */}
+          <p className="confirm-readonly">{t("inbox.stack.trustWhy")}</p>
           {copyStamp(acceptCmd)}
           <CopyCommand command={acceptCmd} />
         </>
