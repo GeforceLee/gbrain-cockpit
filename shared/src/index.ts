@@ -41,7 +41,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.4.0";
+export const COCKPIT_VERSION = "0.5.0";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>

@@ -31,6 +31,8 @@ cockpit server(Bun + TypeScript,零运行时 npm 依赖)
    └─③ 只读旁路 ──────► pages/links 固定 SELECT(图谱)
          + take_proposals(Inbox takes 队列,天然跨源;
          CLI 的 takes 列表每次运行只看一个源)
+         + sources.config 周期戳两键(0.5.0 夜间周期卡——「每晚跑没跑」的
+           唯一全源正源,owner 批准)
          SQL 零用户输入;可选,PGLite 引擎下关闭
 ```
 
@@ -44,6 +46,7 @@ cockpit server(Bun + TypeScript,零运行时 npm 依赖)
 | 放行搁置写入(h) | owner 终端逐字确认 | **复制命令** | 命令块 |
 | 关系提案 accept / reject / undo / date | 无 | CLI 白名单 | 一键 |
 | takes 待判定队列(`take_proposals`) | 专用只读账号 | 只读旁路 | 队列展示 |
+| 每源周期戳(`sources.config` 两键) | 专用只读账号 | 只读旁路 | 夜间周期卡(0.5.0) |
 | takes propose accept / reject | 无 | CLI 白名单(多源 brain 上按行带 `GBRAIN_SOURCE` env) | 一键 |
 | 事实/记忆确认(`confirm_memory`) | `memory_confirm` scope | MCP | 一键 |
 | 页面写入(`put_page`) | 无 | MCP 回执协议 | 编辑 + 轮询 |
@@ -74,6 +77,7 @@ V1.1 的读取集(对照 0.60.558 实测钉形)走同一 MCP driver,按工具分
 
 - `list_pages` 接受 `slug_prefix` 与 `tag` 收窄(上游 list 行不带标签——标签筛选是自由输入框,不是 chips)
 - `GET /api/page?full=1` 在页面束上附加 `get_links` / `get_backlinks` / `get_timeline`;失败或上游不支持的区块落进 `degraded` 列表、界面自描述——默认(速览)束保持两次上游调用,守住 30 次/分的自律预算
+- 0.5.0 夜间可观测:四张 doctor 检查集(`--only` 逗号清单——15 个检查 id 一张编译期表,每集一条整串白名单条目)喂周期/校准/资产卡;不适用的检查显式答 `not_applicable` 行,渲染「不适用」,绝不冒充健康;`sources writer status` 喂部署体检卡的检出拓扑(只建模最小切片)
 - `sources_status`(参数是 `id`,一次一源)对 grant 范围内的源列表扇出,供 Health 卡片;图谱图例的关系出处计数在客户端对旁路载荷的 `link_source` 聚合——零新增上游调用
 - `assemble_evidence` 按命中三元组(单次 ≤3)返回证据窗口,支撑搜索面板的证据展开
 - 所有新报告在旧版 gbrain 上一律带内降级(`status: degraded|down`);web 对缺席区块或 404 端点按「不可用」处理,绝不报错
@@ -84,7 +88,7 @@ V1.1 的读取集(对照 0.60.558 实测钉形)走同一 MCP driver,按工具分
 - **令牌卫生**:令牌只走 `Authorization` 头——query 参数里出现令牌形态的值直接 400;浏览器侧令牌存 localStorage、仅以请求头发送、绝不进 URL;比较为常数时间
 - **Host/Origin 防线**:Host 白名单(防 DNS rebinding)+ 非 GET 请求的 Origin/`Sec-Fetch-Site` 校验 + 写请求仅接受 JSON body
 - **不可信内容渲染**:brain 内容(导入的页面/邮件/聊天记录)是持久化不可信输入。页面正文是 markdown(gbrain 仓库即 Markdown 的设计,已对上游文档与真实 brain 实证),只经唯一一条管线渲染——`marked → DOMPurify`(`lib/markdown.ts` + `components/PageBody.tsx`;script/图片/表单剥离,外链加固为 `_blank`+`noopener`);对话导入包装(引文标记行 + 裹住正文的 text 围栏)在渲染前解包,严格形状匹配、不匹配按原样渲染;该 `dangerouslySetInnerHTML` 是全站唯一一处,其余一律纯文本,图谱标签用 canvas 绘制
-- **SQL 面**:只读旁路只跑模块级常量 SELECT(pages/links 供图谱、take_proposals 供 Inbox takes 队列,专用只读账号);用户输入到不了 SQL
+- **SQL 面**:只读旁路只跑模块级常量 SELECT(pages/links 供图谱、take_proposals 供 Inbox takes 队列、sources 两键周期戳供夜间周期卡(0.5.0),专用只读账号);用户输入到不了 SQL
 - **错误信封**:浏览器只看得到 `{error: 概要, code}`;子进程 stderr 只进服务端日志
 - **审计留痕**:写动作追加到程序目录之外的 `~/.cockpit-audit/YYYY-MM-DD.jsonl`
 
@@ -123,7 +127,7 @@ gbrain-cockpit/
 
 cockpit 基于 gbrain 0.60.x 验证。耦合对策:
 
-1. 只依赖 (a) 文档化的 MCP 工具名与参数、(b) 白名单 CLI 子命令的 `--json` 输出、(c) 两张只读表——不解析人类可读 CLI 输出,不碰内部实现
+1. 只依赖 (a) 文档化的 MCP 工具名与参数、(b) 白名单 CLI 子命令的 `--json` 输出、(c) 上表枚举的只读表——不解析人类可读 CLI 输出,不碰内部实现
 2. MCP 调用失败或形状变化时可见降级(队列报「暂不可用」、图谱报「通道不可用」),而不是崩溃
 3. 只读旁路启动时对照 `information_schema` 检查列期望,漂移则自动禁用自身
 
