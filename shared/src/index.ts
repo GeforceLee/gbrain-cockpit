@@ -1243,6 +1243,45 @@ export interface OpsCalibrationReport {
   error?: string;
 }
 
+/** GET /api/ops/assets — the asset-health card (doctor assets set). */
+export interface OpsAssetsReport {
+  status: CheckStatus;
+  doctor?: OpsDoctorSet;
+  error?: string;
+}
+
+/**
+ * One writer binding row (sources writer status, probed 0.60.611
+ * 2026-11-10): the deploy-checkup card reads source_id / local_path / state
+ * / git_durability_state only — the payload is far richer (42KB on bip) and
+ * cockpit deliberately models the minimum it renders.
+ */
+export interface WriterBinding {
+  source_id?: string;
+  local_path?: string;
+  state?: string;
+  git_durability_state?: string;
+  [k: string]: unknown;
+}
+
+/** GET /api/ops/deploy — the deploy-checkup card's whole diet. */
+export interface OpsDeployReport {
+  status: CheckStatus;
+  writer?: {
+    status: CheckStatus;
+    mode?: string;
+    bindings?: WriterBinding[];
+    error?: string;
+  };
+  /** doctor topology set (cycle_phase_scope — upstream's own taxonomy) */
+  topology?: OpsDoctorSet;
+  /** the generated per-source two-segment unit text (reference copy, never executed) */
+  unitText?: string;
+  /** the pinned pitfall notes the text carries (repo_path 一钥两锁 etc.) */
+  notes?: string[];
+  error?: string;
+}
+
 /**
  * GET /api/ops/clients — the OAuth client registry (`auth clients --json`,
  * owner view via the CLI whitelist). Base token: a read. `selfClientId`

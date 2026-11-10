@@ -18,7 +18,7 @@ import { firstLine } from "../lib/text";
 // innerHTML, never through markdown.
 
 /** chip class per three-state check status (na renders neutral-muted). */
-function checkChipClass(status: DoctorCheckRow["status"]): string {
+export function checkChipClass(status: DoctorCheckRow["status"]): string {
   if (status === "ok") return "chip chip-ok";
   if (status === "warn") return "chip chip-degraded";
   if (status === "fail") return "chip chip-down";
@@ -32,8 +32,8 @@ function ageHours(iso: string | undefined): number | null {
   return Number.isNaN(t) ? null : (Date.now() - t) / 3_600_000;
 }
 
-/** fetch-on-first-open fold state shared by both cards. */
-function useLazyFetch<T>(url: string) {
+/** fetch-on-first-open fold state shared by the ops cards. */
+export function useLazyFetch<T>(url: string) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

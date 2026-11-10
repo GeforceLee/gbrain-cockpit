@@ -18,8 +18,10 @@ import type {
   InboxQueue,
   LinkRow,
   OpsCalibrationReport,
+  OpsAssetsReport,
   OpsClientGrant,
   OpsClientsReport,
+  OpsDeployReport,
   OpsDoctorSet,
   OpsDreamRun,
   OpsDreamRunsReport,
@@ -42,6 +44,7 @@ import type {
   TimelineEntry,
   TrustReviewEnvelope,
   TrustReviewItem,
+  WriterBinding,
   WriteConflictsReport,
   WriteReceipt,
   WriteRequestsReport,
@@ -56,6 +59,7 @@ import {
   TRUST_REF_RE,
 } from "@gbrain-cockpit/shared";
 import { auditTail, auditWrite } from "../audit";
+import { buildDeployUnitText, DEPLOY_NOTES } from "./deploy-unit";
 import type { BrainRegistry, BrainChannels } from "../brains";
 import type { Principal } from "../auth";
 import { BadRequestError, envelope, readJsonBody } from "../http";
@@ -852,6 +856,84 @@ export async function handleOpsCalibration(ctx: ApiContext): Promise<Response> {
   if (report.doctor.status !== "ok" && report.status === "ok") {
     report.status = "degraded";
   }
+  return Response.json(report);
+}
+
+/**
+ * GET /api/ops/assets — the asset-health card (0.5.0 3.1): the doctor
+ * assets set, nothing else. Three-state rows; `not a git repo` and
+ * `not computed yet` are REAL states rendered as such, never errors.
+ */
+export async function handleOpsAssets(ctx: ApiContext): Promise<Response> {
+  const report: OpsAssetsReport = { status: "ok" };
+  report.doctor = await doctorSetPart(ctx, "assets");
+  report.status = report.doctor.status === "ok" ? "ok" : "degraded";
+  return Response.json(report);
+}
+
+/**
+ * GET /api/ops/deploy — the deploy-checkup card (0.5.0 3.3): writer
+ * bindings (the brain's checkout topology), the doctor topology set
+ * (cycle_phase_scope — upstream's own phase taxonomy), and the generated
+ * per-source two-segment unit text. Everything here is REFERENCE material
+ * for the owner's terminal — cockpit generates text, never installs or
+ * runs units (AGENTS non-negotiable #1's neighbor: host operations are the
+ * owner's). Writer status is 42KB on a five-source brain — only the
+ * modeled slice (mode + bindings) leaves the server.
+ */
+export async function handleOpsDeploy(ctx: ApiContext): Promise<Response> {
+  const report: OpsDeployReport = { status: "ok" };
+  if (!ctx.cli) {
+    report.writer = {
+      status: "down",
+      error: "CLI channel not available on this host",
+    };
+  } else {
+    try {
+      const opts = await managementExecOpts(ctx);
+      const status = await ctx.cli.sourcesWriterStatus(opts);
+      const rawBindings = Array.isArray(
+        (status as { bindings?: unknown }).bindings,
+      )
+        ? ((status as { bindings: unknown[] }).bindings as WriterBinding[])
+        : [];
+      report.writer = {
+        status: "ok",
+        ...(typeof status.mode === "string" ? { mode: status.mode } : {}),
+        // the modeled slice only — the payload's richer rows stay server-side
+        bindings: rawBindings.map((b) => ({
+          ...(typeof b.source_id === "string" ? { source_id: b.source_id } : {}),
+          ...(typeof b.local_path === "string" ? { local_path: b.local_path } : {}),
+          ...(typeof b.state === "string" ? { state: b.state } : {}),
+          ...(typeof b.git_durability_state === "string"
+            ? { git_durability_state: b.git_durability_state }
+            : {}),
+        })),
+      };
+    } catch (err) {
+      report.writer = {
+        status: "down",
+        error: firstLineOf(err instanceof Error ? err.message : String(err)),
+      };
+    }
+  }
+  report.topology = await doctorSetPart(ctx, "topology");
+  if (report.writer?.status === "ok") {
+    report.unitText = buildDeployUnitText({
+      cliBin: ctx.profile.cliBin ?? "gbrain",
+      ...(ctx.takesGuard
+        ? { gbrainBin: ctx.takesGuard.bin, gbrainHome: ctx.takesGuard.home }
+        : {}),
+      bindings: report.writer.bindings ?? [],
+    });
+    report.notes = [...DEPLOY_NOTES];
+  }
+  const parts = [report.writer?.status ?? "down", report.topology.status];
+  report.status = parts.every((s) => s === "down")
+    ? "down"
+    : parts.some((s) => s !== "ok")
+      ? "degraded"
+      : "ok";
   return Response.json(report);
 }
 

@@ -32,6 +32,8 @@ import {
   handleOpsGrantRead,
   handleOpsNightly,
   handleOpsCalibration,
+  handleOpsAssets,
+  handleOpsDeploy,
   handleTakePropose,
   handleTakeResolve,
   handleTrustDrop,
@@ -197,6 +199,10 @@ const server = Bun.serve({
             return await handleOpsNightly(channels);
           case "GET /api/ops/calibration":
             return await handleOpsCalibration(channels);
+          case "GET /api/ops/assets":
+            return await handleOpsAssets(channels);
+          case "GET /api/ops/deploy":
+            return await handleOpsDeploy(channels);
           case "POST /api/ops/grant-read": {
             const res = await handleOpsGrantRead(
               channels,

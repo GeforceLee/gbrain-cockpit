@@ -69,7 +69,9 @@ import {
 } from "./api";
 import type { ApiContext } from "./api";
 import type {
+  OpsAssetsReport,
   OpsCalibrationReport,
+  OpsDeployReport,
   OpsNightlyReport,
   SearchHit,
 } from "@gbrain-cockpit/shared";
@@ -871,6 +873,8 @@ import {
   handleOpsDreamRuns,
   handleOpsNightly,
   handleOpsCalibration,
+  handleOpsAssets,
+  handleOpsDeploy,
   handleOpsGrantRead,
   handleOpsSourceDrift,
 } from "./api";
@@ -897,6 +901,7 @@ interface OpsStub {
   doctor?: { checks: Array<{ name: string; status: string; message?: string }> };
   // 0.5.0
   doctorChecks?: Record<string, { checks: Array<Record<string, unknown>> } | Error>;
+  writerStatus?: { mode?: string; bindings?: Array<Record<string, unknown>> } | Error;
   stamps?: Array<{ source_id: string; last_full_cycle_at?: string; last_source_cycle_at?: string }>;
   scorecard?: unknown;
   scorecardError?: Error;
@@ -937,6 +942,10 @@ function opsCtx(stub: OpsStub) {
             const answer = stub.doctorChecks?.[set];
             if (answer instanceof Error) throw answer;
             return answer ?? { checks: [] };
+          },
+          sourcesWriterStatus: async () => {
+            if (stub.writerStatus instanceof Error) throw stub.writerStatus;
+            return stub.writerStatus ?? { mode: "managed", bindings: [] };
           },
         } as unknown as CliDriver)
       : null,
@@ -1503,5 +1512,84 @@ describe("handleOpsCalibration", () => {
     const body2 = (await (await handleOpsCalibration(doctorDown.ctx)).json()) as OpsCalibrationReport;
     expect(body2.status).toBe("degraded");
     expect(body2.doctor?.status).toBe("down");
+  });
+});
+
+// --- 0.5.0 batch 3: assets + deploy ops -------------------------------------------
+
+describe("handleOpsAssets", () => {
+  test("three-state asset rows; na (not_applicable) renders as na", async () => {
+    const { ctx } = opsCtx({
+      id: "assets-a",
+      cli: true,
+      doctorChecks: {
+        assets: {
+          checks: [
+            { name: "backup_coverage", status: "warn", message: "5 knowledge asset(s) lack verified recovery" },
+            { name: "git_convergence", status: "ok", readiness_state: "not_applicable" },
+            { name: "unindexed_files", status: "ok", severity: "info", readiness_state: "unknown" },
+          ],
+        },
+      },
+    });
+    const res = await handleOpsAssets(ctx);
+    const body = (await res.json()) as OpsAssetsReport;
+    expect(body.status).toBe("ok");
+    const byName = Object.fromEntries((body.doctor?.checks ?? []).map((c) => [c.name, c]));
+    expect(byName.backup_coverage?.status).toBe("warn");
+    expect(byName.git_convergence?.status).toBe("na");
+    expect(byName.unindexed_files?.status).toBe("ok"); // unknown readiness is NOT na
+  });
+
+  test("CLI down degrades in-band", async () => {
+    const { ctx } = opsCtx({ id: "assets-b", cli: false });
+    const body = (await (await handleOpsAssets(ctx)).json()) as OpsAssetsReport;
+    expect(body.status).toBe("degraded");
+    expect(body.doctor?.status).toBe("down");
+  });
+});
+
+describe("handleOpsDeploy", () => {
+  const BINDINGS = [
+    { source_id: "default", local_path: "/home/dev/gbrain-bip/.gbrain/content/x/default", state: "active", git_durability_state: "unknown" },
+    { source_id: "yon-bip", local_path: "/home/dev/bip-gbrain/yon-bip", state: "active", git_durability_state: "unknown" },
+  ];
+
+  test("mode + modeled binding slice + generated unit text + notes", async () => {
+    const { ctx } = opsCtx({
+      id: "deploy-a",
+      cli: true,
+      writerStatus: { mode: "managed", bindings: BINDINGS },
+      doctorChecks: { topology: { checks: [{ name: "cycle_phase_scope", status: "ok", message: "Phase taxonomy: …" }] } },
+    });
+    const body = (await (await handleOpsDeploy(ctx)).json()) as OpsDeployReport;
+    expect(body.status).toBe("ok");
+    expect(body.writer?.mode).toBe("managed");
+    // the modeled slice ONLY — richer rows (42KB payload) never leave the server
+    expect(body.writer?.bindings).toEqual([
+      { source_id: "default", local_path: "/home/dev/gbrain-bip/.gbrain/content/x/default", state: "active", git_durability_state: "unknown" },
+      { source_id: "yon-bip", local_path: "/home/dev/bip-gbrain/yon-bip", state: "active", git_durability_state: "unknown" },
+    ]);
+    expect(body.unitText).toContain('dream --source "yon-bip" --phase propose_takes --phase grade_takes');
+    expect(body.unitText).toContain("--source \"default\" --json");
+    expect(body.notes).toEqual([
+      "repo-path-two-locks", "systemd-quoting", "propose-window",
+      "grade-window-global", "cron-not-systemd",
+    ]);
+    expect(body.topology?.checks[0]?.name).toBe("cycle_phase_scope");
+  });
+
+  test("writer down: no unit text, topology still carries the card", async () => {
+    const { ctx } = opsCtx({
+      id: "deploy-b",
+      cli: true,
+      writerStatus: new Error("boom"),
+      doctorChecks: { topology: { checks: [] } },
+    });
+    const body = (await (await handleOpsDeploy(ctx)).json()) as OpsDeployReport;
+    expect(body.writer?.status).toBe("down");
+    expect(body.unitText).toBeUndefined();
+    expect(body.status).toBe("degraded");
+    expect(body.topology?.status).toBe("ok");
   });
 });
