@@ -371,6 +371,13 @@ table.items td {
   box-shadow: 0 0 0 var(--ink);
 }
 
+/* in-flight verdict: pressed into the paper awaiting the receipt — no hover
+   raise, no press travel, the busy sub-line explains why */
+.stamp-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .stamp-btn .zh {
   font-size: 16px;
 }

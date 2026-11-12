@@ -190,11 +190,17 @@ export const en = {
   "inbox.batch.reject": "reject this page",
   "inbox.batch.confirm": "click again to confirm rejecting — rejection is final, there is no undo",
   "inbox.noSelection": "Pick an item on the left — the document and the decision rail unfold here.",
+  // ⌘⌫ is bound to the reject/drop side ONLY: a one-key "accept" must never
+  // advertise ⌘⌫ — a keyboard user aiming to accept cannot be steered into
+  // firing an irreversible reject
   "inbox.via.cliDrop": "one-key · CLI trust drop · ⌘⌫",
-  "inbox.via.cliEdge": "one-key · CLI edge · ⌘⌫",
-  "inbox.via.cliTake": "one-key · CLI takes · ⌘⌫",
+  "inbox.via.cliEdge": "one-key · CLI edge",
+  "inbox.via.cliEdgeDrop": "one-key · CLI edge · ⌘⌫",
+  "inbox.via.cliTake": "one-key · CLI takes",
+  "inbox.via.cliTakeDrop": "one-key · CLI takes · ⌘⌫",
   "inbox.via.mcp": "one-key · MCP confirm",
   "inbox.via.copy": "copy command · terminal confirm · ⌘↵",
+  "inbox.stamp.busy": "working… hold on",
   "inbox.edgeHint": "To reject, change accept to reject in the command (same id).",
   "inbox.takeHint":
     "Use this to accept; the next block rejects (same proposal id). Commands are built for the proposal's own source.",
@@ -268,7 +274,8 @@ export const en = {
   "inbox.contradiction.probeRan": "Probe last ran {at}, {n} visible contradiction(s).",
   "inbox.contradiction.probeUnavailable":
     "Probe state unavailable (this gbrain lacks find_contradictions, or the call failed).",
-  "inbox.via.cliDecide": "one-key · CLI decide · ⌘⌫",
+  "inbox.via.cliDecide": "one-key · CLI decide",
+  "inbox.via.cliDecideDrop": "one-key · CLI decide · ⌘⌫",
   "inbox.queue.extraction": "Entity stubs",
   "inbox.queue.extractionDesc":
     "Auto-extracted entity stubs in quarantine: nothing enters the brain without your review. Read-only here — the dispose verb (extraction_review) is owner-token-only, never cockpit's.",
