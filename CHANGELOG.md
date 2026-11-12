@@ -8,6 +8,18 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-12
+
+The inbox-you-can-live-in release: the 614-pending backlog stops being a wall. The inbox opens on today's pile — each source's newest pending batch — and the backlog collapses into one quiet number with the resident line: proposals are flow, not debt; leaving them costs nothing. Verified on the demo workstation's 657-row same-distribution synthetic backlog (the live atlas distribution: one flood night, a tapering tail, a freshest batch) plus a never-cycled dead-account source.
+
+### Added — inbox relief (owner-approved design, two review rounds)
+- **Today's pile (default view)**: the takes desk shows only each source's newest pending batch, clustered on `proposed_at` (already-read column — zero new table reads; probed batch shape: within-window rows ≤22min apart, nightly batches ≥24h apart, a 6h threshold with 4–16x margin). The pile carries its batch date; the rest becomes one neutral-styled backlog number (`this pile N · snoozed M · backlog K · S sources muted`). One toggle shows the full list verbatim; **the sidebar total keeps its full meaning in both views** (display-count vs queue-count split, pinned by test).
+- **Per-source mute** (reversible, never deletion): folds a source out of the default view and counts — the dead-account case (a never-cycled docs import) is the live example; source heads render even on single-source brains so the toggle never disappears; a fold lists muted sources with counts and one-click restore.
+- **Snooze (per entry, auto-reviving)**: parks one entry until its source's next completed nightly cycle revives it (strict string comparison of the cycle stamp — never a wall clock; no "never revive" form). Sources without a cycle stamp say so honestly. Snooze snapshots are taken server-side from the queue + stamps; anything the request claims about them is ignored.
+- **Anti-rejection guardrails (hard lines)**: the batch-reject confirmation now carries the terminal warning ("rejection is final — no undo", bilingual); a page holding a hidden entry (snoozed or muted) hides the batch button; no clear-list action exists anywhere. The "unsure" outs (leave it / snooze / accept now and re-stamp later) are visible with guidance copy.
+- **State**: cockpit-owned per-profile JSON (mutes + snoozes) — path rules deployment-safe (explicit env → alongside the profiles file → ~/.cockpit/, never the cwd which IS the release dir on managed hosts); atomic tmp+rename writes, 0600; read-modify-write under one mutex; a corrupt file is fail-visible and never overwritten. Zero new channels, zero writes to the brain DB, zero new table columns.
+- **Demo foundation**: the desensitized demo postgres now carries `take_proposals` + `sources` with a deterministic 657-row same-distribution backlog and a no-stamp source — acceptance runs at real scale, not on small data.
+
 ## [0.5.1] - 2026-11-12
 
 The keys-in-hand release: the model wiring behind the nightly cycle — which models each tier actually calls, whether provider keys are set, and whether the key/endpoint pair actually works — stops being a terminal-only question. The seed incident (bip, 2026-11-10: a subscription key against the pay-as-you-go endpoint failed every paid call silently) is now visible, testable in one click, and fixable through official copy-commands. Verified against gbrain 0.60.611 (leewin bip, live probes — the incident's own failure modes are the test fixtures).
