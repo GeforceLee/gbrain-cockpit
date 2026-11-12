@@ -8,6 +8,22 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-12
+
+The keys-in-hand release: the model wiring behind the nightly cycle — which models each tier actually calls, whether provider keys are set, and whether the key/endpoint pair actually works — stops being a terminal-only question. The seed incident (bip, 2026-11-10: a subscription key against the pay-as-you-go endpoint failed every paid call silently) is now visible, testable in one click, and fixable through official copy-commands. Verified against gbrain 0.60.611 (leewin bip, live probes — the incident's own failure modes are the test fixtures).
+
+### Added — model wiring (Admin panel)
+- **Model-wiring card**: the brain's active wiring (`models read --json`: which model each tier and each task resolves to — probed shapes), which provider keys are set (`providers explain --json`: env BOOLEANS only — key values never appear upstream and cockpit's server-side field picklist keeps it that way even if a future version starts echoing them; pinned by fixture assertions), and the new doctor model check set (6 ids: alternative_providers, provider_consent, embedding_key_source, embedding_env_override, derivation_unpriced_model, reranker_health — zero network, zero overlap with the nightly set).
+- **One-click live connection test** (`POST /api/ops/model/test` → `models doctor --json`): probes the brain's ACTIVE models — chat, expansion, embedding — through the exact gateway assembly dream uses. A few ping tokens per click (cost disclosed in the button copy). Gated to the admin tier (the third action class: paid, outward side effect — reads stay on the base token, management writes and this probe ask for step-up), single-flight per profile, audited; the 60s browser budget outlives the 30s exec cap.
+- **Fix guidance, copy-command only**: `config set/unset provider_base_urls.<recipe>` with an `<URL>` placeholder (cockpit never pre-fills an endpoint — the zhipu pay-as-you-go vs subscription split is teaching copy, the choice is the owner's), `providers test --model <active>` for isolated single-model probes, and key-location guidance naming the exact env variables from `provider_consent` details (values never travel).
+- **Pitfall notes** (stable ids → bilingual copy, pinned by probe 2026-11-12): the zhipu endpoint split, the parent-key addressing trap (`config get provider_base_urls` reads "not found"; the dotted key answers), key location and env shadowing, restart-to-apply (timer-spawned dream re-reads naturally), and breaker semantics.
+- **Nightly-card evidence slices**: the paid-loop breaker's tripped keys render with ready-made `dream reset-key` unlock copy-commands, and extract halt-reason counts (rate limit, billing) show as clues — never diagnoses; unknown reason strings echo verbatim. Empty details render nothing.
+
+### Probed and pinned (internal/probes/model-wiring-0.60.611-20261112.md)
+- `providers list --json` ignores the flag and prints a human table → NOT consumed (constitution #3). `providers explain --json` is the structured provider surface instead.
+- `providers test` has no `--json`, and live-proven on bip it does NOT see DB-plane `provider_base_urls` overrides: same-minute back-to-back, it failed with "insufficient balance" (default pay-as-you-go endpoint) while `models doctor` went green through the real endpoint — whitelisting it would have produced false alarms on exactly the brains this feature exists for. It ships as a copy-command with that caveat in its hint.
+- MCP `get_usage` requires the `admin` scope → dropped from this release (no scope widening to grab it).
+
 ## [0.5.0] - 2026-11-10
 
 The nightly-cycles-visible release: the brain's heartbeat — the nightly dream cycle — stops being a black box. Did each source run last night, did it succeed, whose beliefs are being graded, and is the memory asset healthy: visible the moment cockpit opens. Verified against gbrain 0.60.611 (leewin, both brains, live E2E — bip's real failure history is the test suite).
