@@ -912,6 +912,7 @@ interface OpsStub {
   providersExplain?: Record<string, unknown> | Error;
   modelsRead?: Record<string, unknown> | Error;
   modelsDoctor?: Record<string, unknown> | Error;
+  providerBaseUrls?: Array<{ key: string; value: string }> | Error;
 }
 
 function opsCtx(stub: OpsStub) {
@@ -992,6 +993,11 @@ function opsCtx(stub: OpsStub) {
       sourceCycleStamps: async () => {
         if (stub.pgError) throw stub.pgError;
         return stub.stamps ?? [];
+      },
+      providerBaseUrls: async () => {
+        if (stub.providerBaseUrls instanceof Error) throw stub.providerBaseUrls;
+        if (stub.pgError) throw stub.pgError;
+        return stub.providerBaseUrls ?? [];
       },
     },
     mcp: {
@@ -1344,12 +1350,20 @@ describe("handleOpsModel (GET /api/ops/model)", () => {
     expect(body.explain?.options?.[0]).toEqual({ id: "zhipu:glm-5.3" }); // picklist row only
   });
 
-  test("CLI down: parts down in-band; explain failure degrades without killing the card", async () => {
+  test("CLI down: cli parts down in-band (pg urls part may still be ok); explain failure degrades", async () => {
     const noCli = opsCtx({ id: "model-c", cli: false });
     const body = (await (await handleOpsModel(noCli.ctx)).json()) as OpsModelReport;
-    expect(body.status).toBe("down");
     expect(body.explain?.status).toBe("down");
     expect(body.wiring?.status).toBe("down");
+    expect(body.doctor?.status).toBe("down");
+    // urls part is pg-backed — it survives a CLI-down host, so the whole
+    // report reads "degraded", never "down", while pg answers
+    expect(body.urls?.status).toBe("ok");
+    expect(body.status).toBe("degraded");
+
+    const noCliNoPg = opsCtx({ id: "model-c2", cli: false, pgError: new Error("bypass unset") });
+    const allDown = (await (await handleOpsModel(noCliNoPg.ctx)).json()) as OpsModelReport;
+    expect(allDown.status).toBe("down");
 
     const { ctx } = opsCtx({
       id: "model-d",
@@ -1359,6 +1373,39 @@ describe("handleOpsModel (GET /api/ops/model)", () => {
     const degraded = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
     expect(degraded.explain?.status).toBe("down");
     expect(degraded.status).toBe("degraded");
+  });
+
+  test("urls part (D1 second case): overrides ship; non-URL or malformed rows NEVER leave", async () => {
+    const { ctx } = opsCtx({
+      id: "model-urls-a",
+      cli: true,
+      providerBaseUrls: [
+        { key: "provider_base_urls.zhipu", value: "https://open.bigmodel.cn/api/coding/paas/v4" },
+        { key: "provider_base_urls.evil", value: "https://x.cn/a;rm -rf" }, // metachar → dropped
+        { key: "provider_base_urls.Bad Recipe", value: "https://x.cn" }, // recipe charset → dropped
+        { key: "other.key", value: "https://x.cn" }, // not the prefix shape → dropped
+      ],
+    });
+    const raw = await (await handleOpsModel(ctx)).text();
+    const body = JSON.parse(raw) as OpsModelReport;
+    expect(body.urls?.status).toBe("ok");
+    expect(body.urls?.overrides).toEqual([
+      { recipe: "zhipu", url: "https://open.bigmodel.cn/api/coding/paas/v4" },
+    ]);
+    expect(raw).not.toContain("rm -rf");
+    expect(raw).not.toContain("other.key");
+  });
+
+  test("urls part: pg failure degrades in-band with the GRANT hint", async () => {
+    const { ctx } = opsCtx({
+      id: "model-urls-b",
+      cli: true,
+      providerBaseUrls: new Error('permission denied for table "config"'),
+    });
+    const body = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
+    expect(body.urls?.status).toBe("down");
+    expect(body.urls?.error).toContain("permission denied");
+    expect(body.status).toBe("degraded");
   });
 });
 

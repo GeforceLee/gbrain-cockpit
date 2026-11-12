@@ -1532,6 +1532,18 @@ export interface OpsModelReport {
   };
   /** doctor model set — static checks only (live probe is the test action) */
   doctor?: OpsDoctorSet;
+  /**
+   * pg `config` table: the effective base-URL overrides — the ONLY
+   * structured home of "which endpoint is actually in effect" (owner-
+   * approved fixed SELECT, the D1 second case). Values are recipe- and
+   * URL-validated server-side before leaving; rows that fail stay
+   * server-side entirely.
+   */
+  urls?: {
+    status: CheckStatus;
+    overrides?: { recipe: string; url: string }[];
+    error?: string;
+  };
   /** pinned incident-knowledge note ids → locale admin.model.note.<id> */
   notes?: string[];
   error?: string;

@@ -85,6 +85,24 @@ export function ModelCard({
       ? activeChat.split(":")[0]
       : undefined;
 
+  // the effective endpoints (pg fixed SELECT overrides); active providers
+  // without an override render the honest "default endpoint" line. The one
+  // annotation is static teaching copy for the incident's URL pattern —
+  // the endpoint is labeled, never the key's type inferred.
+  const overrides = model?.urls?.overrides ?? [];
+  const overrideRecipes = new Set(overrides.map((o) => o.recipe));
+  const wiringProviders = [
+    ...new Set(
+      [tiers, tasks]
+        .flatMap((group) => group.map((r) => r.resolved))
+        .filter((id): id is string => typeof id === "string" && id.includes(":"))
+        .map((id) => id.slice(0, id.indexOf(":"))),
+    ),
+  ];
+  const activeUncovered = wiringProviders.filter((p) => !overrideRecipes.has(p));
+  const channelLabel = (url: string): string | null =>
+    url.includes("/api/coding/") ? t("admin.model.urlChannelCoding") : null;
+
   // dynamic key guidance: which env vars the brain actually consumes
   // (provider_consent.details.provider_env — names, never values)
   const consent = checks.find((c) => c.name === "provider_consent");
@@ -207,6 +225,37 @@ export function ModelCard({
                 <span className="muted">{t("admin.model.explainEmpty")}</span>
               )}
             </p>
+          )}
+
+          {/* the effective endpoints — the URL verdict (pg fixed SELECT) */}
+          {model.urls?.status === "down" ? (
+            <p className="muted small">
+              {t("admin.model.urlsUnavailable")}
+              {model.urls.error ? `: ${firstLineOrEmpty(model.urls.error)}` : ""}
+            </p>
+          ) : (
+            <>
+              <p className="muted small">{t("admin.model.urlsLead")}</p>
+              <dl className="kv">
+                {overrides.map((o) => (
+                  <div className="kv-row" key={o.recipe}>
+                    <dt className="mono">{o.recipe}</dt>
+                    <dd className="mono small">
+                      {o.url}
+                      {channelLabel(o.url)
+                        ? ` · ${channelLabel(o.url)}`
+                        : ""}
+                    </dd>
+                  </div>
+                ))}
+                {activeUncovered.map((p) => (
+                  <div className="kv-row" key={p}>
+                    <dt className="mono">{p}</dt>
+                    <dd className="muted small">{t("admin.model.urlDefault")}</dd>
+                  </div>
+                ))}
+              </dl>
+            </>
           )}
 
           {/* static checks — same three-state rows as the nightly card */}

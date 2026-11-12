@@ -125,6 +125,23 @@ const SQL_SOURCE_CYCLE_STAMPS =
   "ORDER BY id";
 
 /**
+ * 0.5.1 model wiring (owner-approved, the D1 second case): base-URL
+ * overrides from the engine `config` table — the ONLY structured home of
+ * "which endpoint is actually in effect" (`config get` prints human text
+ * even with --json; `providers explain --json` and `models read --json`
+ * carry no base URLs; probed 2026-11-12 on 0.60.611). Fifth fixed table
+ * read: the statement reads ONLY the `provider_base_urls.` prefix, zero
+ * user input, and the route layer additionally URL-validates every value
+ * before it may leave the server — a non-URL value stored under the prefix
+ * (upstream drift) stays server-side. The read-only account needs GRANT
+ * SELECT ON public.config (deploy step, take_proposals/sources precedent).
+ * Fresh, uncached: this is the datum an incident response reads first.
+ */
+const SQL_PROVIDER_BASE_URLS =
+  "SELECT key, value FROM config WHERE key LIKE 'provider_base_urls.%' " +
+  "ORDER BY key";
+
+/**
  * Pages columns we consume; presence-checked against information_schema.
  * `source_id` (gbrain 0.60.558: TEXT NOT NULL DEFAULT 'default', with
  * UNIQUE(source_id, slug)) upgrades node identity from bare slug to
@@ -364,6 +381,24 @@ export class PgReadonlyDriver {
         ? { last_source_cycle_at: row.last_source_cycle_at }
         : {}),
     }));
+  }
+
+  /**
+   * Base-URL overrides for the model-wiring card (raw rows; the route layer
+   * recipe/URL-validates before anything may leave the server).
+   */
+  async providerBaseUrls(): Promise<Array<{ key: string; value: string }>> {
+    if (!this.configured) {
+      throw new Error("read-only bypass not configured (PG_READONLY_DSN unset)");
+    }
+    const rows = await this.#query(SQL_PROVIDER_BASE_URLS);
+    const out: Array<{ key: string; value: string }> = [];
+    for (const row of rows) {
+      if (typeof row.key === "string" && typeof row.value === "string") {
+        out.push({ key: row.key, value: row.value });
+      }
+    }
+    return out;
   }
 
   /**

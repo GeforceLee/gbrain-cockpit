@@ -62,6 +62,8 @@ import {
   dreamCalibrationCommand,
   isValidSourceId,
   normalizeDoctorCheck,
+  PROVIDER_BASE_URL_RE,
+  PROVIDER_RECIPE_RE,
   TRUST_REF_RE,
 } from "@gbrain-cockpit/shared";
 import { auditTail, auditWrite } from "../audit";
@@ -1250,10 +1252,33 @@ export async function handleOpsModel(ctx: ApiContext): Promise<Response> {
   report.explain = await explainPart(ctx);
   report.wiring = await wiringPart(ctx);
   report.doctor = await doctorSetPart(ctx, "model");
+  // the effective endpoints — the D1 second case fixed SELECT. Validation
+  // is the picklist here: only recipe-shaped keys with URL-shaped values
+  // may leave the server (a future upstream storing something else under
+  // the prefix stays invisible, non-negotiable #7 as structure).
+  try {
+    const rows = await ctx.pg.providerBaseUrls();
+    const overrides = rows.flatMap((r) => {
+      const recipe = r.key.replace(/^provider_base_urls\./, "");
+      return PROVIDER_RECIPE_RE.test(recipe) && PROVIDER_BASE_URL_RE.test(r.value)
+        ? [{ recipe, url: r.value }]
+        : [];
+    });
+    report.urls = {
+      status: "ok",
+      ...(overrides.length > 0 ? { overrides } : {}),
+    };
+  } catch (err) {
+    report.urls = {
+      status: "down",
+      error: firstLineOf(err instanceof Error ? err.message : String(err)),
+    };
+  }
   const parts = [
     report.explain?.status ?? "down",
     report.wiring?.status ?? "down",
     report.doctor.status,
+    report.urls?.status ?? "down",
   ];
   report.status = parts.every((s) => s === "down")
     ? "down"

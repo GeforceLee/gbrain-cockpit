@@ -43,6 +43,10 @@ const SQL_SOURCE_CYCLE_STAMPS =
   "SELECT id, config->>'last_full_cycle_at' AS last_full_cycle_at, " +
   "config->>'last_source_cycle_at' AS last_source_cycle_at FROM sources " +
   "ORDER BY id";
+// 0.5.1: the fifth fixed statement (owner D1 second case) — prefix-scoped
+const SQL_PROVIDER_BASE_URLS =
+  "SELECT key, value FROM config WHERE key LIKE 'provider_base_urls.%' " +
+  "ORDER BY key";
 const SQL_LINKS = 'SELECT "from", "to", "link_type", "link_source" FROM links';
 
 describe("PgReadonlyDriver", () => {
@@ -650,6 +654,55 @@ describe("PgReadonlyDriver sourceCycleStamps", () => {
     const log: string[] = [];
     const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([], log) });
     await expect(driver.sourceCycleStamps()).rejects.toThrow();
+    expect(log.length).toBe(0);
+  });
+});
+
+describe("PgReadonlyDriver providerBaseUrls (0.5.1, D1 second case)", () => {
+  test("reads the ONE prefix-scoped fixed statement; non-string rows drop", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: makeQuery(
+        [
+          {
+            text: SQL_PROVIDER_BASE_URLS,
+            rows: [
+              {
+                key: "provider_base_urls.zhipu",
+                value: "https://open.bigmodel.cn/api/coding/paas/v4",
+              },
+              { key: "provider_base_urls.weird", value: null },
+            ],
+          },
+        ],
+        log,
+      ),
+    });
+    const rows = await driver.providerBaseUrls();
+    expect(rows).toEqual([
+      {
+        key: "provider_base_urls.zhipu",
+        value: "https://open.bigmodel.cn/api/coding/paas/v4",
+      },
+    ]);
+    expect(log).toEqual([SQL_PROVIDER_BASE_URLS]);
+  });
+
+  test("permission-denied surfaces as-is (GRANT SELECT ON public.config is the deploy step)", async () => {
+    const driver = new PgReadonlyDriver({
+      dsn: "postgresql://x",
+      query: async () => {
+        throw new Error('permission denied for table "config"');
+      },
+    });
+    await expect(driver.providerBaseUrls()).rejects.toThrow(/permission denied/);
+  });
+
+  test("unconfigured throws without querying", async () => {
+    const log: string[] = [];
+    const driver = new PgReadonlyDriver({ dsn: null, query: makeQuery([], log) });
+    await expect(driver.providerBaseUrls()).rejects.toThrow();
     expect(log.length).toBe(0);
   });
 });
