@@ -19,6 +19,7 @@ import {
   buildGraphKey,
   contradictionAcceptCommand,
   contradictionRejectCommand,
+  computeTakePiles,
   edgeAcceptCommand,
   isValidSourceId,
   providerBaseUrlSetCommand,
@@ -32,6 +33,7 @@ import {
   validateFederatedReadList,
   worstStatus,
   type AdjudicationAction,
+  type TakeProposal,
   type Channel,
   type ManagementAction,
 } from "./index";
@@ -464,5 +466,83 @@ describe("model wiring copy-commands (0.5.1)", () => {
       "gbrain dream reset-key dream:patterns:source:kb",
     );
     expect(() => dreamResetKeyCommand("gbrain", ";rm")).toThrow();
+  });
+});
+
+// --- 0.5.2 inbox relief: pile clustering -----------------------------------------
+
+describe("computeTakePiles (0.5.2)", () => {
+  const take = (id: number, source: string, iso?: string): TakeProposal => ({
+    id,
+    source_id: source,
+    page_slug: "page",
+    claim_text: "claim",
+    ...(iso ? { proposed_at: iso } : {}),
+  });
+
+  test("newest contiguous batch per source; 6h gap splits (probe-pinned shape)", () => {
+    // main: three nightly batches 24h apart; newest = 2 rows
+    const items = [
+      take(1, "main", "2026-11-01T18:00:00Z"),
+      take(2, "main", "2026-11-01T18:05:00Z"),
+      take(3, "main", "2026-11-02T18:00:00Z"),
+      take(4, "main", "2026-11-03T18:00:00Z"),
+      take(5, "main", "2026-11-03T18:07:00Z"),
+      // another source is clustered independently
+      take(6, "archive", "2026-11-02T18:00:00Z"),
+    ];
+    const piles = computeTakePiles(items);
+    expect(piles).toHaveLength(2);
+    const main = piles.find((p) => p.source === "main")!;
+    expect(main.ids).toEqual([4, 5]); // newest batch only
+    expect(main.count).toBe(2);
+    expect(main.since).toBe("2026-11-03T18:00:00Z");
+    expect(main.night).toBe("2026-11-03T18:07:00Z");
+    const archive = piles.find((p) => p.source === "archive")!;
+    expect(archive.ids).toEqual([6]);
+  });
+
+  test("order-independent: newest-first (SQL order), oldest-first, shuffled all agree", () => {
+    const base = [
+      take(1, "main", "2026-11-01T18:00:00Z"),
+      take(2, "main", "2026-11-02T18:00:00Z"),
+      take(3, "main", "2026-11-02T18:04:00Z"),
+    ];
+    const fwd = computeTakePiles(base);
+    const rev = computeTakePiles([...base].reverse());
+    const rotated = computeTakePiles([base[1]!, base[0]!, base[2]!]);
+    expect(fwd).toEqual(rev);
+    expect(fwd).toEqual(rotated);
+    expect(fwd[0]!.ids).toEqual([2, 3]);
+  });
+
+  test("missing source_id normalizes to 'default' (bySource key convention)", () => {
+    const piles = computeTakePiles([take(9, "", "2026-11-02T18:00:00Z")]);
+    expect(piles[0]!.source).toBe("default");
+  });
+
+  test("undated / unparseable rows join their source's newest pile (fail-visible)", () => {
+    const piles = computeTakePiles([
+      take(1, "main", "2026-11-01T18:00:00Z"),
+      take(2, "main", "2026-11-02T18:00:00Z"),
+      take(3, "main"), // no proposed_at
+      take(4, "main", "not-a-date"),
+    ]);
+    expect(piles[0]!.ids).toEqual([2, 3, 4]);
+    // a source with ONLY undated rows still gets a pile (empty labels)
+    const only = computeTakePiles([take(7, "weird")]);
+    expect(only[0]).toEqual({ source: "weird", since: "", night: "", count: 1, ids: [7] });
+  });
+
+  test("one flood night is one pile (atlas 534 shape) and an empty input is empty", () => {
+    const flood = Array.from({ length: 50 }, (_, i) =>
+      take(
+        i + 1,
+        "main",
+        new Date(Date.parse("2026-11-01T18:00:00Z") + i * 4_000).toISOString(),
+      ),
+    );
+    expect(computeTakePiles(flood)[0]!.count).toBe(50);
+    expect(computeTakePiles([])).toEqual([]);
   });
 });

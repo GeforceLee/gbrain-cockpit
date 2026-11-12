@@ -1836,3 +1836,269 @@ describe("handleOpsDeploy", () => {
     expect(body.topology?.status).toBe("ok");
   });
 });
+
+// --- 0.5.2 inbox relief: assembly + route ---------------------------------------
+
+import { handleInboxRelief } from "./api";
+import { createInboxStateStore, type InboxStateStore } from "../inbox-state";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { TakeProposal } from "@gbrain-cockpit/shared";
+
+function reliefCtx(opts: {
+  pending?: TakeProposal[];
+  stamps?: Array<{ source_id: string; last_source_cycle_at?: string }>;
+  stampsError?: Error;
+  id?: string;
+}) {
+  return {
+    id: opts.id ?? "relief-test",
+    profile: { cliBin: "gbrain" },
+    cliBinResolved: null,
+    takesGuard: null,
+    cli: null,
+    pg: {
+      configured: true,
+      pendingTakeProposals: async () => opts.pending ?? [],
+      sourceCycleStamps: async () => {
+        if (opts.stampsError) throw opts.stampsError;
+        return opts.stamps ?? [];
+      },
+    },
+    // the sibling queues handleInbox also assembles — each fails soft
+    mcp: {
+      findContradictions: async () => ({ contradictions: [] }),
+      extractionPending: async () => ({ pending: [] }),
+      takesList: async () => [],
+    },
+  } as unknown as ApiContext;
+}
+
+function tempStore(): { store: InboxStateStore; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "cockpit-inbox-test-"));
+  return {
+    store: createInboxStateStore({
+      file: join(dir, "inbox-state.json"),
+      now: () => "2026-11-12T00:00:00Z",
+    }),
+    dir,
+  };
+}
+
+const TP = (id: number, source: string, iso: string): TakeProposal => ({
+  id,
+  source_id: source,
+  page_slug: "p",
+  claim_text: "c",
+  proposed_at: iso,
+});
+
+function RELIEF_REQ(body: unknown): Request {
+  return new Request("http://x/api/inbox/relief", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("inbox relief assembly (GET /api/inbox)", () => {
+  const pending = [
+    TP(1, "main", "2026-11-01T18:00:00Z"),
+    TP(2, "main", "2026-11-04T18:00:00Z"),
+    TP(3, "main", "2026-11-04T18:07:00Z"),
+    TP(9, "archive", "2026-11-02T18:00:00Z"),
+  ];
+  const stamps = [
+    { source_id: "main", last_source_cycle_at: "2026-11-04T18:45:00Z" },
+    { source_id: "archive" }, // never cycled
+  ];
+
+  test("piles + mutedCounts + resurrection (stamp changed) + noCycle copy flag", async () => {
+    const { store, dir } = tempStore();
+    try {
+      // archive muted; #2 snoozed against the CURRENT stamp (stays);
+      // #3 snoozed against an OLDER stamp (the source cycled — resurrected)
+      await store.mutate("relief-test", (s) => {
+        s.muted.push({ source: "archive", at: "2026-11-12T00:00:00Z" });
+        s.snoozed.push(
+          { id: 2, source: "main", snoozedAt: "2026-11-12T00:00:00Z", stamp: "2026-11-04T18:45:00Z" },
+          { id: 3, source: "main", snoozedAt: "2026-11-11T00:00:00Z", stamp: "2026-11-03T18:45:00Z" },
+          { id: 7, source: "main", snoozedAt: "2026-11-11T00:00:00Z" }, // adjudicated row → pruned
+        );
+      });
+      const body = (await (
+        await handleInbox(reliefCtx({ pending, stamps }), store)
+      ).json()) as InboxReport;
+      const relief = body.takes.relief!;
+      expect(relief.piles.map((p) => [p.source, p.ids])).toEqual([
+        ["main", [2, 3]],
+        ["archive", [9]],
+      ]);
+      expect(relief.muted).toEqual(["archive"]);
+      expect(relief.mutedCounts).toEqual({ archive: 1 });
+      expect(relief.snoozed).toEqual([
+        { id: 2, source: "main", snoozedAt: "2026-11-12T00:00:00Z" },
+      ]); // 3 resurrected, 7 gone
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no store wired ⇒ no relief key (pre-0.5.2 behavior verbatim)", async () => {
+    const body = (await (await handleInbox(reliefCtx({ pending }))).json()) as InboxReport;
+    expect(body.takes.relief).toBeUndefined();
+  });
+
+  test("stampsDown: resurrection SKIPPED, snoozes ride as-is (never a wipe)", async () => {
+    const { store, dir } = tempStore();
+    try {
+      await store.mutate("relief-test", (s) => {
+        s.snoozed.push({ id: 2, source: "main", snoozedAt: "x", stamp: "2026-11-03T18:45:00Z" });
+      });
+      const body = (await (
+        await handleInbox(
+          reliefCtx({ pending, stampsError: new Error("permission denied for table sources") }),
+          store,
+        )
+      ).json()) as InboxReport;
+      expect(body.takes.relief!.stampsDown).toBe(true);
+      expect(body.takes.relief!.snoozed.map((s) => s.id)).toEqual([2]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("corrupt state file is fail-visible: relief renders, stateError rides along", async () => {
+    const { store, dir } = tempStore();
+    try {
+      writeFileSync(join(dir, "inbox-state.json"), "{ not json", "utf8");
+      const body = (await (await handleInbox(reliefCtx({ pending, stamps }), store)).json()) as InboxReport;
+      expect(body.takes.relief!.stateError).toContain("unreadable");
+      expect(body.takes.relief!.muted).toEqual([]); // empty state rides along
+      await expect(
+        handleInboxRelief(reliefCtx({ pending, stamps }), RELIEF_REQ({ op: "mute", source: "main" }), store),
+      ).rejects.toThrow(/unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cross-profile isolation: atlas mutes never touch bip", async () => {
+    const { store, dir } = tempStore();
+    try {
+      await handleInboxRelief(
+        reliefCtx({ pending, stamps, id: "atlas" }),
+        RELIEF_REQ({ op: "mute", source: "main" }),
+        store,
+      );
+      const bip = (await (
+        await handleInbox(reliefCtx({ pending, stamps, id: "bip" }), store)
+      ).json()) as InboxReport;
+      expect(bip.takes.relief!.muted).toEqual([]);
+      const atlas = (await (
+        await handleInbox(reliefCtx({ pending, stamps, id: "atlas" }), store)
+      ).json()) as InboxReport;
+      expect(atlas.takes.relief!.muted).toEqual(["main"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("handleInboxRelief (POST /api/inbox/relief)", () => {
+  const pending = [
+    TP(2, "main", "2026-11-04T18:00:00Z"),
+    TP(9, "archive", "2026-11-02T18:00:00Z"),
+  ];
+  const stamps = [{ source_id: "main", last_source_cycle_at: "2026-11-04T18:45:00Z" }];
+
+  test("mute/unmute roundtrip persists server-side", async () => {
+    const { store, dir } = tempStore();
+    try {
+      const ctx = reliefCtx({ pending, stamps });
+      const res = await handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "archive" }), store);
+      expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+      const snap = await store.read("relief-test");
+      expect(snap.state.muted.map((m) => m.source)).toEqual(["archive"]);
+      await handleInboxRelief(ctx, RELIEF_REQ({ op: "unmute", source: "archive" }), store);
+      expect((await store.read("relief-test")).state.muted).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("snooze snapshots the SERVER-side source + stamp; noCycle sources allowed honestly", async () => {
+    const { store, dir } = tempStore();
+    try {
+      await handleInboxRelief(reliefCtx({ pending, stamps }), RELIEF_REQ({ op: "snooze", id: "9" }), store);
+      const snap = await store.read("relief-test");
+      expect(snap.state.snoozed).toEqual([
+        { id: 9, source: "archive", snoozedAt: "2026-11-12T00:00:00Z" }, // no stamp → no stamp key
+      ]);
+      // the body's claim about source/stamp is IGNORED — server truth wins
+      await handleInboxRelief(
+        reliefCtx({ pending, stamps }),
+        RELIEF_REQ({ op: "snooze", id: "2", source: "evil", stamp: "forged" }),
+        store,
+      );
+      const after = await store.read("relief-test");
+      expect(after.state.snoozed.find((e) => e.id === 2)).toEqual({
+        id: 2,
+        source: "main",
+        snoozedAt: "2026-11-12T00:00:00Z",
+        stamp: "2026-11-04T18:45:00Z",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("validation: bad op / bad source / unknown id / unreadable stamps", async () => {
+    const { store, dir } = tempStore();
+    try {
+      const ctx = reliefCtx({ pending, stamps });
+      await expect(handleInboxRelief(ctx, RELIEF_REQ({ op: "purge", source: "main" }), store)).rejects.toThrow(
+        /op must be/,
+      );
+      await expect(handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "../etc" }), store)).rejects.toThrow(
+        /invalid source/,
+      );
+      await expect(handleInboxRelief(ctx, RELIEF_REQ({ op: "snooze", id: "999" }), store)).rejects.toThrow(
+        /not in the pending queue/,
+      );
+      await expect(
+        handleInboxRelief(
+          reliefCtx({ pending, stampsError: new Error("pg down") }),
+          RELIEF_REQ({ op: "snooze", id: "2" }),
+          store,
+        ),
+      ).rejects.toThrow(/cycle stamps are unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no store wired ⇒ 400 with the wiring hint", async () => {
+    await expect(
+      handleInboxRelief(reliefCtx({ pending, stamps }), RELIEF_REQ({ op: "mute", source: "main" }), null),
+    ).rejects.toThrow(/not wired/);
+  });
+
+  test("concurrent mute+unmute serialize (read-modify-write under one mutex)", async () => {
+    const { store, dir } = tempStore();
+    try {
+      const ctx = reliefCtx({ pending, stamps });
+      await Promise.all([
+        handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "a" }), store),
+        handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "b" }), store),
+        handleInboxRelief(ctx, RELIEF_REQ({ op: "snooze", id: "2" }), store),
+      ]);
+      const snap = await store.read("relief-test");
+      expect(snap.state.muted.map((m) => m.source).sort()).toEqual(["a", "b"]);
+      expect(snap.state.snoozed.map((e) => e.id)).toEqual([2]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -28,3 +28,4 @@ tmp/
 
 # TypeScript incremental build info
 *.tsbuildinfo
+inbox-state.json

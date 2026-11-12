@@ -58,6 +58,7 @@ import type {
 import {
   authClientsListCommand,
   authRescopeCommand,
+  computeTakePiles,
   DOCTOR_CHECK_SETS,
   dreamCalibrationCommand,
   isValidSourceId,
@@ -65,8 +66,14 @@ import {
   PROVIDER_BASE_URL_RE,
   PROVIDER_RECIPE_RE,
   TRUST_REF_RE,
+  type TakesRelief,
+  type TakesSnoozedRow,
 } from "@gbrain-cockpit/shared";
 import { auditTail, auditWrite } from "../audit";
+import type {
+  InboxStateSnapshot,
+  InboxStateStore,
+} from "../inbox-state";
 import { buildDeployUnitText, DEPLOY_NOTES } from "./deploy-unit";
 import type { BrainRegistry, BrainChannels } from "../brains";
 import type { Principal } from "../auth";
@@ -1467,7 +1474,10 @@ async function edgeQueue(
   }
 }
 
-async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
+async function takesQueue(
+  ctx: ApiContext,
+  store?: InboxStateStore | null,
+): Promise<TakesQueue> {
   // The pending-takes queue reads the read-only bypass, NOT the CLI:
   // gbrain's `takes propose` list scopes to ONE source per run
   // (resolveSourceId → 'default' without GBRAIN_SOURCE), so on a
@@ -1523,6 +1533,10 @@ async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
           ? { guard: { bin: ctx.takesGuard.bin, home: ctx.takesGuard.home } }
           : {}),
       }),
+      // 0.5.2 relief (wired deployments only): slicing metadata + mutes +
+      // snoozes with resurrection already applied. Assembly degrades to
+      // "absent" — the queue itself must never fail on it.
+      ...(store ? { relief: await reliefPart(ctx, items, store) } : {}),
     };
   } catch (err) {
     return {
@@ -1530,6 +1544,170 @@ async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * The relief half of the takes queue (0.5.2): piles (per-source newest
+ * batch), effective snoozes (resurrected + adjudicated entries pruned
+ * server-side), mutes with honest counts. Resurrection is STRICT string
+ * inequality between the snooze-time stamp and the CURRENT stamp from the
+ * same SQL extraction — never Date.parse, never a wall clock. Stamps
+ * unreadable ⇒ judgment skipped and snoozes ride as-is (the safe direction:
+ * no surprise revival, no wipe). State file corrupt ⇒ fail-visible
+ * stateError; relief still renders from the queue alone.
+ */
+async function reliefPart(
+  ctx: ApiContext,
+  items: TakeProposal[],
+  store: InboxStateStore,
+): Promise<TakesRelief> {
+  const piles = computeTakePiles(items);
+  let snapshot: InboxStateSnapshot;
+  try {
+    snapshot = await store.read(ctx.id);
+  } catch (err) {
+    return {
+      piles,
+      snoozed: [],
+      muted: [],
+      stateError: firstLineOf(err instanceof Error ? err.message : String(err)),
+    };
+  }
+  let stamps: Array<{ source_id: string; last_source_cycle_at?: string }> | null =
+    null;
+  let stampsDown = false;
+  try {
+    stamps = await ctx.pg.sourceCycleStamps();
+  } catch {
+    stampsDown = true;
+  }
+  const stampOf = (source: string): string | undefined =>
+    stamps?.find((s) => s.source_id === source)?.last_source_cycle_at;
+  const pendingIds = new Set(items.map((i) => i.id));
+  const snoozed: TakesSnoozedRow[] = [];
+  for (const e of snapshot.state.snoozed) {
+    if (!pendingIds.has(e.id)) continue; // adjudicated — out of view; the file compacts on the next mutation
+    const current = stampOf(e.source);
+    if (!stampsDown && current !== e.stamp) continue; // the source cycled since — resurrected
+    snoozed.push({
+      id: e.id,
+      source: e.source,
+      ...(e.snoozedAt ? { snoozedAt: e.snoozedAt } : {}),
+      ...(current === undefined ? { noCycle: true } : {}),
+    });
+  }
+  const muted = [...new Set(snapshot.state.muted.map((m) => m.source))];
+  const mutedCounts: Record<string, number> = {};
+  for (const s of muted) {
+    mutedCounts[s] = items.filter((i) => (i.source_id ?? "default") === s).length;
+  }
+  return {
+    piles,
+    snoozed,
+    muted,
+    ...(Object.keys(mutedCounts).length > 0 ? { mutedCounts } : {}),
+    ...(stampsDown ? { stampsDown: true } : {}),
+    ...(snapshot.error ? { stateError: snapshot.error } : {}),
+  };
+}
+
+/**
+ * POST /api/inbox/relief (0.5.2) — cockpit-OWN UI state, not a gbrain
+ * action: per-source mute/unmute and per-proposal snooze/unsnooze. Base
+ * token (same trust level as the token itself); audited like every write;
+ * deliberately NOT in the channel matrices and NEVER dispatching a verdict
+ * event. The snooze's source and stamp snapshot are taken SERVER-side from
+ * the queue + cycle stamps — anything the request body claims about them is
+ * ignored (no client-shaped state).
+ */
+export async function handleInboxRelief(
+  ctx: ApiContext,
+  req: Request,
+  store: InboxStateStore | null,
+): Promise<Response> {
+  if (!store) {
+    throw new BadRequestError(
+      "inbox relief state is not wired on this deployment (server startup)",
+    );
+  }
+  const body = await readJsonBody(req);
+  const op = body.op;
+  if (op !== "mute" && op !== "unmute" && op !== "snooze" && op !== "unsnooze") {
+    throw new BadRequestError("op must be mute|unmute|snooze|unsnooze");
+  }
+  let detail: Record<string, unknown>;
+  if (op === "mute" || op === "unmute") {
+    const source = typeof body.source === "string" ? body.source : undefined;
+    if (source === undefined || !isValidSourceId(source)) {
+      throw new BadRequestError("invalid source");
+    }
+    detail = { source };
+    await store.mutate(ctx.id, (s) => {
+      if (op === "mute") {
+        if (!s.muted.some((m) => m.source === source)) {
+          s.muted.push({ source, at: store.now() });
+        }
+      } else {
+        s.muted = s.muted.filter((m) => m.source !== source);
+      }
+    });
+  } else {
+    const id = requirePattern(
+      typeof body.id === "string" ? body.id : undefined,
+      "id",
+      ID_RE,
+    );
+    detail = { id };
+    if (op === "unsnooze") {
+      await store.mutate(ctx.id, (s) => {
+        s.snoozed = s.snoozed.filter((e) => e.id !== Number(id));
+      });
+    } else {
+      if (!ctx.pg?.configured) {
+        throw new CliExecutionError(
+          "cannot snooze: the read-only bypass is unavailable on this profile",
+        );
+      }
+      // server-authoritative row + stamp snapshot — the body's say is ignored
+      const pending = await ctx.pg.pendingTakeProposals();
+      const row = pending.find((p) => String(p.id) === id);
+      if (!row) {
+        throw new BadRequestError(
+          `proposal #${id} is not in the pending queue — already adjudicated?`,
+        );
+      }
+      const source = row.source_id ?? "default";
+      let stamp: string | undefined;
+      try {
+        stamp = (await ctx.pg.sourceCycleStamps()).find(
+          (s) => s.source_id === source,
+        )?.last_source_cycle_at;
+      } catch {
+        // a failed stamps read must not become stamp=undefined (that would
+        // false-resurrect on the next successful read) — refuse and retry
+        throw new CliExecutionError(
+          "cannot snooze: cycle stamps are unreadable right now — try again in a moment",
+        );
+      }
+      detail = { id, source };
+      await store.mutate(ctx.id, (s) => {
+        if (!s.snoozed.some((e) => e.id === Number(id))) {
+          s.snoozed.push({
+            id: Number(id),
+            source,
+            snoozedAt: store.now(),
+            ...(stamp !== undefined ? { stamp } : {}),
+          });
+        }
+      });
+    }
+  }
+  await auditWrite("owner", {
+    action: `inbox.relief.${op}`,
+    profile: ctx.id,
+    detail,
+  });
+  return Response.json({ ok: true });
 }
 
 async function contradictionsQueue(
@@ -1619,12 +1797,15 @@ async function activeTakesQueue(ctx: ApiContext): Promise<InboxQueue<TakeItem>> 
   }
 }
 
-export async function handleInbox(ctx: ApiContext): Promise<Response> {
+export async function handleInbox(
+  ctx: ApiContext,
+  inboxStore?: InboxStateStore | null,
+): Promise<Response> {
   const [trust, edgeProposals, takes, contradictions, extraction, activeTakes] =
     await Promise.all([
       trustQueue(ctx),
       edgeQueue(ctx),
-      takesQueue(ctx),
+      takesQueue(ctx, inboxStore),
       contradictionsQueue(ctx),
       extractionQueue(ctx),
       activeTakesQueue(ctx),

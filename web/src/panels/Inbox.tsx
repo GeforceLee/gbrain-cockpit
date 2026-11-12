@@ -57,10 +57,16 @@ import { firstLine } from "../lib/text";
 import {
   PILE_MEMBERS,
   batchablePage,
+  batchablePageRelief,
   dedupeDpTwins,
   pileTabCount,
+  reliefCounts,
+  reliefKeeps,
+  reliefPileCount,
+  reliefView,
   sidebarTotal,
   type QueueId,
+  type ReliefView,
   type TabId,
 } from "../lib/piles";
 
@@ -288,6 +294,17 @@ export function Inbox({
   });
   const edges = report?.edgeProposals.items ?? [];
   const takes = report?.takes.items ?? [];
+  // 0.5.2 relief: the default view keeps only each source's newest pending
+  // batch (the pile); the backlog collapses into one quiet number. effView is
+  // DERIVED (never setState'd on fallback) so a transiently-down takes
+  // channel falls back to the full list without a state bounce.
+  const [view, setView] = useState<"relief" | "all">("relief");
+  const relief = report?.takes.relief ?? null;
+  const reliefV = reliefView(relief);
+  const effView: "relief" | "all" =
+    view === "relief" && reliefV !== null && report?.takes.status === "ok"
+      ? "relief"
+      : "all";
   const decideProposals = report?.contradictions.items ?? [];
   const dpTrustItems = dedupeDpTwins(trustItems, decideProposals);
   const extractionStubs = report?.extraction.items ?? [];
@@ -304,6 +321,24 @@ export function Inbox({
     judgments: activeTakes.filter((x) => !x.resolved_outcome).length,
     others: others.length,
   };
+
+  // 0.5.2 counts dual-track (review-pinned): queueCounts stays FULL in every
+  // view — it is the sidebar's diet and its meaning is pinned by test. The
+  // pile count is a DISPLAY count: it feeds the pile tabs and the quiet
+  // numbers line in relief mode only. The tabs "all" count stays full too.
+  const reliefNumbers = relief && reliefV ? reliefCounts(takes, reliefV) : null;
+  const pileDisplayCount = reliefV ? reliefPileCount(takes, reliefV) : 0;
+  const displayCounts: Record<QueueId, number> =
+    effView === "relief" && reliefV !== null
+      ? { ...queueCounts, takes: pileDisplayCount }
+      : queueCounts;
+  const tabCounts = effView === "relief" ? displayCounts : queueCounts;
+  const newestPileNight = relief
+    ? relief.piles.reduce<string>(
+        (acc, p) => (p.night > acc ? p.night : acc),
+        "",
+      )
+    : "";
 
   // Channel down ≠ queue empty (e.g. gbrain thin-client hosts cannot run the
   // trust CLI family): surface unavailability per queue instead of "empty".
@@ -543,12 +578,15 @@ export function Inbox({
   const entriesWithSource = allEntries.filter(
     (e) => sourceFilter === null || e.sourceId === sourceFilter,
   );
-  const visibleEntries =
+  const visibleEntries = (
     tab === "all"
       ? entriesWithSource
       : entriesWithSource.filter((e) =>
           PILE_MEMBERS[tab].includes(e.queueId),
-        );
+        )
+    // 0.5.2 relief slice: takes-only (non-takes always stay); the full-list
+    // behavior is one toggle away and remains the "all" view verbatim.
+  ).filter((e) => effView !== "relief" || reliefV === null || reliefKeeps(e, reliefV));
 
   /**
    * 0.5.0 pile rendering: within a pile tab, a section head per constituent
@@ -565,7 +603,10 @@ export function Inbox({
     const takeSources = new Set(
       takeEntries.flatMap((e) => (e.sourceId ? [e.sourceId] : [])),
     );
-    const multiSource = takeSources.size > 1;
+    // 0.5.2: source heads also render single-source in the relief view —
+    // the per-source mute toggle lives there, and atlas-style single-source
+    // brains must not lose the entry point.
+    const showTakeSourceHeads = takeSources.size > 1 || effView === "relief";
     let lastQueue: QueueId | null = null;
     let lastTakeSource: string | null | null = null;
     for (const e of pageEntries) {
@@ -581,9 +622,15 @@ export function Inbox({
           </p>,
         );
       }
-      if (e.queueId === "takes" && multiSource && e.sourceId && e.sourceId !== lastTakeSource) {
+      if (
+        e.queueId === "takes" &&
+        showTakeSourceHeads &&
+        e.sourceId &&
+        e.sourceId !== lastTakeSource
+      ) {
         lastTakeSource = e.sourceId;
         const n = takeEntries.filter((x) => x.sourceId === e.sourceId).length;
+        const isMuted = reliefV !== null && reliefV.muted.has(e.sourceId);
         out.push(
           <p key={`src-head-${e.sourceId}`} className="src-group-head">
             <span className="src-chip mono">{e.sourceId}</span>
@@ -591,7 +638,25 @@ export function Inbox({
               {t("inbox.group.source")
                 .replace("{name}", e.sourceId)
                 .replace("{n}", String(n))}
+              {isMuted && (
+                <>
+                  {" "}
+                  <span className="muted small">· {t("inbox.relief.mutedBadge")}</span>
+                </>
+              )}
             </span>
+            {reliefV !== null && (
+              <button
+                type="button"
+                className="small"
+                title={t("inbox.relief.muteTitle")}
+                onClick={() =>
+                  void reliefOp(isMuted ? "unmute" : "mute", { source: e.sourceId })
+                }
+              >
+                {isMuted ? t("inbox.relief.unmute") : t("inbox.relief.mute")}
+              </button>
+            )}
           </p>,
         );
       }
@@ -641,6 +706,32 @@ export function Inbox({
       setActionError(msg);
       return false;
     }
+  }
+
+  // 0.5.2 relief actions: cockpit-OWN UI state (mute/snooze) — deliberately
+  // NOT routed through act(): that dispatches cockpit:verdict (the verdict
+  // event Nebula and the judgment history listen to) and a shelving action
+  // is not a verdict. Plain send + audit line + refresh.
+  async function reliefOp(
+    op: "mute" | "unmute" | "snooze" | "unsnooze",
+    payload: Record<string, unknown>,
+  ) {
+    setActionError(null);
+    try {
+      await apiSend("/api/inbox/relief", "POST", { op, ...payload });
+      appendAudit(`inbox.${op} ${JSON.stringify(payload)} -> OK`);
+      await refresh();
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : String(err));
+    }
+  }
+
+  // view switches reset exactly what tab switches reset (page + armed batch;
+  // the open detail survives — an entry stays inspectable even when hidden)
+  function switchView(next: "relief" | "all") {
+    setView(next);
+    setPage(0);
+    setBatchArmed(false);
   }
 
   // j/k walk the visible queue (the terminal mail-client feel; inert while
@@ -723,10 +814,10 @@ export function Inbox({
   const tabs: { id: TabId; label: string; n: number | "?" }[] = [
     { id: "all", label: t("inbox.tab.all"), n: allEntries.length },
     // three piles + the read-only stub stack (owner-approved 0.5.0 model)
-    { id: "viewpoint", label: t("inbox.stack.viewpoint"), n: pileTabCount("viewpoint", queueCounts, queueDown) },
-    { id: "trust", label: t("inbox.stack.trust"), n: pileTabCount("trust", queueCounts, queueDown) },
-    { id: "verdict", label: t("inbox.stack.verdict"), n: pileTabCount("verdict", queueCounts, queueDown) },
-    { id: "stubs", label: t("inbox.stack.stubs"), n: pileTabCount("stubs", queueCounts, queueDown) },
+    { id: "viewpoint", label: t("inbox.stack.viewpoint"), n: pileTabCount("viewpoint", tabCounts, queueDown) },
+    { id: "trust", label: t("inbox.stack.trust"), n: pileTabCount("trust", tabCounts, queueDown) },
+    { id: "verdict", label: t("inbox.stack.verdict"), n: pileTabCount("verdict", tabCounts, queueDown) },
+    { id: "stubs", label: t("inbox.stack.stubs"), n: pileTabCount("stubs", tabCounts, queueDown) },
   ];
 
   return (
@@ -810,6 +901,102 @@ export function Inbox({
       {report && (
         <div className="split">
           <div className="list">
+            {/* 0.5.2 relief header: the resident motto + the quiet numbers
+                line. Neutral styling on purpose — the backlog number must
+                never read as an alarm (tokens: muted ink, no warn/stop). */}
+            {effView === "relief" && relief && reliefNumbers && (
+              <div className="relief-head">
+                <p className="muted small">{t("inbox.relief.motto")}</p>
+                <p className="muted small">
+                  {t("inbox.relief.line")
+                    .replace("{n}", String(reliefNumbers.pile))
+                    .replace("{m}", String(relief.snoozed.length))
+                    .replace("{k}", String(reliefNumbers.backlog))
+                    .replace("{s}", String(relief.muted.length))}
+                  {newestPileNight &&
+                    " " +
+                      t("inbox.relief.pileNight").replace(
+                        "{night}",
+                        newestPileNight.slice(0, 10),
+                      )}{" "}
+                  <button type="button" className="small" onClick={() => switchView("all")}>
+                    {t("inbox.relief.showAll")}
+                  </button>
+                </p>
+                {relief.stampsDown && (
+                  <p className="muted small">{t("inbox.relief.stampsDown")}</p>
+                )}
+                {relief.stateError && (
+                  <p className="muted small">{firstLine(relief.stateError)}</p>
+                )}
+                {relief.muted.length > 0 && (
+                  <details className="detail-block">
+                    <summary className="cap">
+                      {t("inbox.relief.mutedFold").replace(
+                        "{s}",
+                        String(relief.muted.length),
+                      )}
+                    </summary>
+                    {relief.muted.map((src) => (
+                      <p key={src} className="small">
+                        <span className="mono">{src}</span> ·{" "}
+                        {t("inbox.relief.mutedItems").replace(
+                          "{n}",
+                          String(relief.mutedCounts?.[src] ?? 0),
+                        )}{" "}
+                        <button
+                          type="button"
+                          className="small"
+                          onClick={() => void reliefOp("unmute", { source: src })}
+                        >
+                          {t("inbox.relief.unmute")}
+                        </button>
+                      </p>
+                    ))}
+                    <p className="muted small">{t("inbox.relief.unmuteHint")}</p>
+                  </details>
+                )}
+                {relief.snoozed.length > 0 && (
+                  <details className="detail-block">
+                    <summary className="cap">
+                      {t("inbox.relief.snoozedFold").replace(
+                        "{m}",
+                        String(relief.snoozed.length),
+                      )}
+                    </summary>
+                    {relief.snoozed.map((s) => (
+                      <p key={s.id} className="small">
+                        <span className="mono">#{s.id}</span> ·{" "}
+                        <span className="mono">{s.source}</span>{" "}
+                        <button
+                          type="button"
+                          className="small"
+                          onClick={() =>
+                            void reliefOp("unsnooze", { id: String(s.id) })
+                          }
+                        >
+                          {t("inbox.relief.snoozeCancel")}
+                        </button>
+                        {s.noCycle === true && (
+                          <span className="muted small">
+                            {" "}
+                            · {t("inbox.relief.snoozeNoCycle")}
+                          </span>
+                        )}
+                      </p>
+                    ))}
+                    <p className="muted small">{t("inbox.relief.snoozeRevive")}</p>
+                  </details>
+                )}
+              </div>
+            )}
+            {view === "all" && reliefV !== null && (
+              <p className="muted small">
+                <button type="button" className="small" onClick={() => switchView("relief")}>
+                  {t("inbox.relief.backToPile")}
+                </button>
+              </p>
+            )}
             <div className="list-tools">
               <span className="muted">
                 {t("inbox.listCaption")} · {visibleEntries.length}
@@ -834,8 +1021,11 @@ export function Inbox({
                 // batch applies only when EVERY entry on the page is a
                 // batchable queue (takes/edges, CLI one-key); judgments are
                 // MCP-resolved and contradictions carry no batch form, so a
-                // mixed pile page simply hides the button (0.5.0 rule)
-                batchablePage(pagedEntries) && (
+                // mixed pile page simply hides the button (0.5.0 rule).
+                // 0.5.2: a page holding a HIDDEN take (snoozed / muted
+                // source) also hides it — the all-view must never
+                // terminally kill entries the user deliberately shelved.
+                batchablePageRelief(pagedEntries, reliefV) && (
                 <button
                   type="button"
                   className={batchArmed ? "batch-arm" : ""}
@@ -997,6 +1187,8 @@ export function Inbox({
                     canConfirm={canConfirm}
                     act={act}
                     takeCommands={report.takes.commands}
+                    reliefV={reliefV}
+                    reliefOp={reliefOp}
                   />
                 </div>
                 <AuditBlock />
@@ -1444,6 +1636,8 @@ function DecisionRail({
   canConfirm,
   act,
   takeCommands,
+  reliefV,
+  reliefOp,
 }: {
   entry: Entry;
   cliAvailable: boolean;
@@ -1453,6 +1647,13 @@ function DecisionRail({
   canConfirm?: boolean;
   /** server-built degraded-rail templates for the takes queue */
   takeCommands?: TakeQueueCommands;
+  /** 0.5.2 relief membership sets (null = relief not wired) */
+  reliefV?: ReliefView | null;
+  /** 0.5.2 shelving action (cockpit-local; never dispatches a verdict) */
+  reliefOp?: (
+    op: "mute" | "unmute" | "snooze" | "unsnooze",
+    payload: Record<string, unknown>,
+  ) => Promise<void>;
   act: (
     path: string,
     body: unknown,
@@ -1481,6 +1682,8 @@ function DecisionRail({
 
   let rail: ReactNode = null;
   let rows: ChannelRow[] = [];
+  /** 0.5.2: the "not sure yet" shelving row (takes only, relief wired) */
+  let reliefExtra: ReactNode = null;
   /** set for terminal-confirmation items: ⌘↵ copies it */
   let acceptCmd: string | null = null;
   /** set when the CLI one-key drop is live: ⌘⌫ runs it */
@@ -1835,6 +2038,31 @@ function DecisionRail({
         },
         { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
       ];
+      // 0.5.2: the third out for "拿不准" — park the entry; the source's
+      // next completed nightly cycle revives it automatically. Reversible,
+      // cockpit-local, deliberately OUTSIDE the channel matrix (no gbrain
+      // action happens) — hence no matrix row, just this quiet button.
+      if (reliefV && reliefOp) {
+        const snoozedNow = reliefV.snoozed.has(take.id);
+        reliefExtra = (
+          <p className="small" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="small"
+              onClick={() =>
+                void reliefOp(snoozedNow ? "unsnooze" : "snooze", {
+                  id: String(take.id),
+                })
+              }
+            >
+              {snoozedNow
+                ? t("inbox.relief.snoozeCancel")
+                : t("inbox.relief.snooze")}
+            </button>{" "}
+            <span className="muted">{t("inbox.relief.snoozeHint")}</span>
+          </p>
+        );
+      }
       break;
     }
     case "judgments": {
@@ -2010,6 +2238,7 @@ function DecisionRail({
     <div className="rail">
       <p className="cap">{t("inbox.rail.caption")}</p>
       {rail}
+      {reliefExtra}
       <ChannelMatrixCard rows={rows} />
     </div>
   );

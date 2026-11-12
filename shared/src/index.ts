@@ -41,7 +41,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.5.1";
+export const COCKPIT_VERSION = "0.5.2";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>
@@ -1147,6 +1147,129 @@ export interface TakesQueue extends InboxQueue<TakeProposal> {
     items?: Array<{ slug?: string; source_id?: string; [k: string]: unknown }>;
     error?: string;
   };
+  /**
+   * 0.5.2 inbox relief: the default view's slicing metadata + cockpit-owned
+   * mute/snooze state (owner-approved design, ROADMAP-0.5.2). Present only
+   * when the deployment wires a state store; absent ⇒ the client keeps the
+   * pre-0.5.2 full-list behavior (an honest capability, not an error).
+   */
+  relief?: TakesRelief;
+}
+
+// --- Inbox relief (0.5.2) ------------------------------------------------------
+// 「收件箱,住得下」: proposals are flow, not debt. The default view shows
+// only each source's NEWEST pending batch (the pile); the backlog collapses
+// into one quiet number. All of it is presentation over the SAME fixed
+// reads — proposed_at (in SQL_TAKES_PENDING since 0.2.2) and the cycle
+// stamps (0.5.0 D1). Zero new channels, zero new table columns.
+
+/** The newest pending batch of one source (computeTakePiles output). */
+export interface TakePile {
+  /** normalized source id (`source_id ?? "default"` — same key convention as
+   *  TakeQueueCommands.bySource, so mute keys can never miss) */
+  source: string;
+  /** earliest proposed_at of the batch, verbatim ISO as the DB returned it */
+  since: string;
+  /** the batch's latest row time (ISO) — the pile's label material */
+  night: string;
+  count: number;
+  /** the batch's proposal ids — explicit membership beats client-side
+   *  timestamp re-derivation (one implementation, no drift); undated rows
+   *  ride their source's newest batch (fail-visible on the hiding side) */
+  ids: number[];
+}
+
+/**
+ * Per-source newest-batch clustering. Batch boundary (owner D3, probed on
+ * 0.60.611 — internal/probes/inbox-relief-0.60.611-20261112.md): consecutive
+ * rows of one source whose proposed_at gap exceeds 6h start a new batch;
+ * within a real propose window rows are ≤22 minutes apart and nightly
+ * batches sit ≥24h apart, so the threshold has 4–16x margin both ways.
+ * Order-independent (sorts internally); input order is newest-first from
+ * SQL_TAKES_PENDING but nothing here relies on it.
+ */
+export const TAKE_PILE_GAP_MS = 6 * 3_600_000;
+
+export function computeTakePiles(
+  items: TakeProposal[],
+  opts: { gapMs?: number } = {},
+): TakePile[] {
+  const gapMs = opts.gapMs ?? TAKE_PILE_GAP_MS;
+  const dated = new Map<string, Array<{ id: number; at: number; iso: string }>>();
+  const undated = new Map<string, number[]>();
+  for (const it of items) {
+    const source =
+      typeof it.source_id === "string" && it.source_id ? it.source_id : "default";
+    const iso = typeof it.proposed_at === "string" ? it.proposed_at : "";
+    const at = iso ? Date.parse(iso) : NaN;
+    if (Number.isFinite(at)) {
+      const rows = dated.get(source) ?? [];
+      rows.push({ id: it.id, at, iso });
+      dated.set(source, rows);
+    } else {
+      const ids = undated.get(source) ?? [];
+      ids.push(it.id);
+      undated.set(source, ids);
+    }
+  }
+  const out: TakePile[] = [];
+  for (const [source, rows] of dated) {
+    if (rows.length === 0) continue;
+    rows.sort((a, b) => a.at - b.at);
+    // walk back from the newest row while consecutive gaps stay under the
+    // threshold — the newest contiguous run IS the pile
+    let start = rows.length - 1;
+    while (start > 0 && rows[start]!.at - rows[start - 1]!.at <= gapMs) {
+      start--;
+    }
+    const batch = rows.slice(start);
+    const extra = undated.get(source) ?? [];
+    undated.delete(source); // consumed by the pile
+    const ids = [...batch.map((r) => r.id), ...extra];
+    out.push({
+      source,
+      since: batch[0]!.iso,
+      night: batch[batch.length - 1]!.iso,
+      count: ids.length,
+      ids,
+    });
+  }
+  // sources whose every row is undated: the pile is what there is, labels empty
+  for (const [source, ids] of undated) {
+    if (ids.length === 0) continue;
+    out.push({ source, since: "", night: "", count: ids.length, ids });
+  }
+  return out;
+}
+
+/** One active snooze as the client renders it (server-pruned view). */
+export interface TakesSnoozedRow {
+  id: number;
+  source: string;
+  /** when the snooze was set (ISO) */
+  snoozedAt?: string;
+  /** the source has no cycle stamp right now — the honest "won't auto-revive
+   *  until its first completed cycle" copy rides on this */
+  noCycle?: boolean;
+}
+
+/** The relief half of the takes queue (0.5.2, owner-approved D2 option A). */
+export interface TakesRelief {
+  /** newest batch per source — the default view's pile membership */
+  piles: TakePile[];
+  /** ACTIVE snoozes: resurrection already applied (stamp changed or row
+   *  adjudicated entries pruned server-side before shipping) */
+  snoozed: TakesSnoozedRow[];
+  /** muted source ids (deduped) */
+  muted: string[];
+  /** pending count per muted source — the fold's honest numbers */
+  mutedCounts?: Record<string, number>;
+  /** cycle stamps unreadable this pass: resurrection SKIPPED (snoozes ride
+   *  as-is — the safe direction: never a surprise revival, never a wipe) */
+  stampsDown?: boolean;
+  /** state file exists but is unreadable: relief still renders from the
+   *  queue; mutations refuse until the operator fixes the file */
+  stateError?: string;
 }
 
 /** One auto-extracted entity stub awaiting owner review (extraction_pending). */

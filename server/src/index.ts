@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { TokenVerifier } from "./auth";
 import { BrainRegistry } from "./brains";
 import { loadConfig, ConfigError, type Config } from "./config";
+import { createInboxStateStore } from "./inbox-state";
 import { loadRootEnv } from "./env";
 import { envelope, guardRequest } from "./http";
 import { loadProfiles } from "./profiles";
@@ -37,6 +38,7 @@ import {
   handleOpsModel,
   handleOpsModelTest,
   handleTakePropose,
+  handleInboxRelief,
   handleTakeResolve,
   handleTrustDrop,
   handleWriteCancel,
@@ -87,6 +89,14 @@ for (const v of brainsConfig.ignoredLegacyVars) {
 const verifier = new TokenVerifier({
   base: cfg.cockpitToken,
   admin: cfg.adminToken,
+});
+
+// 0.5.2 inbox relief state (cockpit-own, never the brain DB): path rules —
+// explicit env wins, else alongside the profiles file (release-safe), else
+// ~/.cockpit/ (never the cwd — that IS the release dir on managed hosts).
+const inboxStore = createInboxStateStore({
+  file: process.env.COCKPIT_INBOX_STATE_FILE,
+  profilesFile: process.env.COCKPIT_PROFILES_FILE,
 });
 
 // Static web root: explicit env wins (compiled-binary deployments), then the
@@ -229,7 +239,11 @@ const server = Bun.serve({
             return res;
           }
           case "GET /api/inbox":
-            return await handleInbox(channels);
+            return await handleInbox(channels, inboxStore);
+          // 0.5.2: cockpit-own relief state (mute/snooze) — NOT a gbrain
+          // action, so no channel-matrix row; base token + audit like any UI write
+          case "POST /api/inbox/relief":
+            return await handleInboxRelief(channels, req, inboxStore);
           case "POST /api/inbox/trust/drop":
             return await handleTrustDrop(channels, req);
           case "POST /api/inbox/edge":
@@ -280,6 +294,7 @@ const server = Bun.serve({
 });
 
 console.log(`[cockpit] v${COCKPIT_VERSION} listening on http://${cfg.bind}:${cfg.port}`);
+console.log(`[cockpit] inbox relief state: ${inboxStore.path} (one file per server; cockpit-owned, never the brain DB)`);
 console.log("[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>'");
 console.log(
   verifier.adminConfigured
