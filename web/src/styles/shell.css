@@ -427,6 +427,18 @@
 
 /* --- responsive (mockup breakpoint) --- */
 
+/* Base rule MUST precede the media query: same specificity means the later
+   source-order rule wins, so a base `display: none` placed after the query
+   would keep the strip hidden at every width (the <1240px no-navigation bug
+   this ordering guard comments). */
+.side-mobile {
+  display: none;
+}
+
+.side-mobile .nav-item .desc {
+  display: none;
+}
+
 @media (max-width: 1240px) {
   .side {
     display: none;
@@ -444,13 +456,4 @@
   .side-mobile .nav-item {
     width: auto;
   }
-}
-
-/* Sidebar reappears as a horizontal strip below the topbar on narrow viewports. */
-.side-mobile {
-  display: none;
-}
-
-.side-mobile .nav-item .desc {
-  display: none;
 }
