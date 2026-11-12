@@ -34,6 +34,8 @@ import {
   handleOpsCalibration,
   handleOpsAssets,
   handleOpsDeploy,
+  handleOpsModel,
+  handleOpsModelTest,
   handleTakePropose,
   handleTakeResolve,
   handleTrustDrop,
@@ -187,6 +189,8 @@ const server = Bun.serve({
             return await handleSourcesStatus(channels);
           // 0.4.0 ops surface: reads on the base token, grant-read gated to
           // the admin tier inside the handler (two distinct 403 messages).
+          // 0.5.1 adds the third action class: the paid model probe — admin
+          // tier too, for the same reason (money leaves the host).
           case "GET /api/ops/sources-drift":
             return await handleOpsSourceDrift(channels);
           case "GET /api/ops/clients":
@@ -203,6 +207,17 @@ const server = Bun.serve({
             return await handleOpsAssets(channels);
           case "GET /api/ops/deploy":
             return await handleOpsDeploy(channels);
+          // 0.5.1 model wiring: the read is perception (base token); the
+          // LIVE probe is the third action class — paid, outward side effect
+          // — so it gates to the admin tier like the management write does.
+          case "GET /api/ops/model":
+            return await handleOpsModel(channels);
+          case "POST /api/ops/model/test":
+            return await handleOpsModelTest(
+              channels,
+              principal,
+              verifier.adminConfigured,
+            );
           case "POST /api/ops/grant-read": {
             const res = await handleOpsGrantRead(
               channels,
@@ -268,8 +283,8 @@ console.log(`[cockpit] v${COCKPIT_VERSION} listening on http://${cfg.bind}:${cfg
 console.log("[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>'");
 console.log(
   verifier.adminConfigured
-    ? "[cockpit] auth: management writes require the COCKPIT_ADMIN_TOKEN tier"
-    : "[cockpit] auth: COCKPIT_ADMIN_TOKEN unset — management writes answer 403 and degrade to copy-commands",
+    ? "[cockpit] auth: management writes and the paid model probe require the COCKPIT_ADMIN_TOKEN tier"
+    : "[cockpit] auth: COCKPIT_ADMIN_TOKEN unset — management writes and the paid model probe answer 403 and degrade to copy-commands",
 );
 
 process.on("SIGINT", () => {

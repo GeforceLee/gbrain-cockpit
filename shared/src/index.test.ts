@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
   ADJUDICATION_CHANNELS,
+  DREAM_BREAKER_KEY_RE,
   ERROR_CODES,
   FEDERATED_LIST_RE,
   MANAGEMENT_CHANNELS,
+  MODEL_ID_RE,
   OWNER_BIN_RE,
   PROFILE_ID_RE,
+  PROVIDER_BASE_URL_RE,
   SOURCE_ID_RE,
   authClientsListCommand,
   authRescopeCommand,
   dreamCalibrationCommand,
+  dreamResetKeyCommand,
   normalizeDoctorCheck,
   authRevokeClientCommand,
   buildGraphKey,
@@ -17,6 +21,10 @@ import {
   contradictionRejectCommand,
   edgeAcceptCommand,
   isValidSourceId,
+  providerBaseUrlSetCommand,
+  providerBaseUrlSetTemplate,
+  providerBaseUrlUnsetCommand,
+  providersTestCommand,
   trustConfirmCommand,
   trustDropCommand,
   trustExplainCommand,
@@ -338,5 +346,123 @@ describe("dreamCalibrationCommand (0.5.0 1.3)", () => {
     expect(
       dreamCalibrationCommand("gbrain", "default", { gbrainBin: "/bin/gbrain" }),
     ).toBe("gbrain dream --source default --phase propose_takes --phase grade_takes");
+  });
+});
+
+// --- 0.5.1 model wiring -----------------------------------------------------------
+// Shapes pinned on 0.60.611 (internal/probes/model-wiring-0.60.611-20261112.md):
+// copy-command text the owner pastes into a shell, so every charset here is
+// metachar-free by construction (& $ ; ' " would background/inject).
+
+describe("model wiring regexes (0.5.1)", () => {
+  test("MODEL_ID_RE accepts real upstream shapes, rejects injection", () => {
+    for (const ok of [
+      "zhipu:glm-5.3",
+      "zhipu:glm-5.3-flash",
+      "ollama:qwen2.5-coder:14b", // interior colon
+      "together:Qwen/Qwen2.5-72B-Instruct-Turbo", // slash + caps
+      "openrouter:openai/gpt-5.2",
+      "claude-cli:claude-haiku-5-5",
+      "anthropic:claude-haiku-4-5-20251001",
+    ]) {
+      expect(MODEL_ID_RE.test(ok)).toBe(true);
+    }
+    for (const bad of [
+      "zhipu:glm;rm -rf", // semicolon
+      "zhipu:glm&&cat", // ampersand
+      "zhipu:", // empty tail
+      ":glm", // empty provider
+      "zhipu glm", // space instead of colon
+      "ZHIPU:glm", // provider must be lowercase
+      "", // empty
+    ]) {
+      expect(MODEL_ID_RE.test(bad)).toBe(false);
+    }
+  });
+
+  test("PROVIDER_BASE_URL_RE accepts the bip-verified endpoint, rejects shell metachars", () => {
+    expect(
+      PROVIDER_BASE_URL_RE.test("https://open.bigmodel.cn/api/coding/paas/v4"),
+    ).toBe(true);
+    expect(PROVIDER_BASE_URL_RE.test("http://localhost:11434/v1")).toBe(true);
+    for (const bad of [
+      "https://x.cn/a&rm", // & backgrounds the pasted command
+      "https://x.cn/a;rm", // ;
+      "https://x.cn/a$(id)", // $()
+      "https://x.cn/a`id`", // backtick
+      "https://x.cn/a'quoted'", // quote
+      "ftp://x.cn", // scheme
+      "open.bigmodel.cn/api", // scheme-less
+      "",
+    ]) {
+      expect(PROVIDER_BASE_URL_RE.test(bad)).toBe(false);
+    }
+  });
+
+  test("DREAM_BREAKER_KEY_RE accepts probed key names, rejects anything else", () => {
+    for (const ok of [
+      "dream:patterns:source:kb",
+      "dream:synth-v2:xyz",
+      "dream:phase:propose_takes",
+    ]) {
+      expect(DREAM_BREAKER_KEY_RE.test(ok)).toBe(true);
+    }
+    for (const bad of ["dream:;rm", "patterns:source:kb", "dream:", ""]) {
+      expect(DREAM_BREAKER_KEY_RE.test(bad)).toBe(false);
+    }
+  });
+});
+
+describe("model wiring copy-commands (0.5.1)", () => {
+  test("providerBaseUrlSetCommand: nested key addressing, direct-call form on wrapper brains", () => {
+    expect(
+      providerBaseUrlSetCommand(
+        "gbrain-bip",
+        "zhipu",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+        { gbrainBin: "/home/dev/.bun/bin/gbrain", gbrainHome: "/home/dev/gbrain-bip" },
+      ),
+    ).toBe(
+      "GBRAIN_HOME=/home/dev/gbrain-bip /home/dev/.bun/bin/gbrain config set provider_base_urls.zhipu https://open.bigmodel.cn/api/coding/paas/v4",
+    );
+    // unset is the rollback twin and needs no URL
+    expect(providerBaseUrlUnsetCommand("gbrain", "zhipu")).toBe(
+      "gbrain config unset provider_base_urls.zhipu",
+    );
+  });
+
+  test("providerBaseUrlSetTemplate ships a <URL> placeholder — cockpit never picks the endpoint", () => {
+    expect(providerBaseUrlSetTemplate("gbrain", "zhipu")).toBe(
+      "gbrain config set provider_base_urls.zhipu <URL>",
+    );
+  });
+
+  test("refuses bad recipes, URLs and bins — no known-bad paste ever ships", () => {
+    expect(() =>
+      providerBaseUrlSetCommand("gbrain", "Zhipu", "https://x.cn"),
+    ).toThrow(); // recipe charset
+    expect(() =>
+      providerBaseUrlSetCommand("gbrain", "zhipu", "https://x.cn/a&rm"),
+    ).toThrow(); // metachar URL
+    expect(() =>
+      providerBaseUrlSetCommand("gbrain;rm", "zhipu", "https://x.cn"),
+    ).toThrow(); // bin
+    expect(() => providerBaseUrlSetTemplate("gbrain", "a b")).toThrow();
+    expect(() => providerBaseUrlUnsetCommand("gbrain", "../etc")).toThrow();
+  });
+
+  test("providersTestCommand: chat touchpoint fixed, model id charset-pinned", () => {
+    expect(providersTestCommand("gbrain", "zhipu:glm-5.3")).toBe(
+      "gbrain providers test --touchpoint chat --model zhipu:glm-5.3",
+    );
+    expect(() => providersTestCommand("gbrain", "zhipu:glm;rm")).toThrow();
+    expect(() => providersTestCommand("gbrain", "")).toThrow();
+  });
+
+  test("dreamResetKeyCommand: base key shape only", () => {
+    expect(dreamResetKeyCommand("gbrain", "dream:patterns:source:kb")).toBe(
+      "gbrain dream reset-key dream:patterns:source:kb",
+    );
+    expect(() => dreamResetKeyCommand("gbrain", ";rm")).toThrow();
   });
 });

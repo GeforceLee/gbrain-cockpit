@@ -876,6 +876,8 @@ import {
   handleOpsAssets,
   handleOpsDeploy,
   handleOpsGrantRead,
+  handleOpsModel,
+  handleOpsModelTest,
   handleOpsSourceDrift,
 } from "./api";
 import type {
@@ -906,6 +908,10 @@ interface OpsStub {
   scorecard?: unknown;
   scorecardError?: Error;
   profile?: unknown;
+  // 0.5.1 model wiring
+  providersExplain?: Record<string, unknown> | Error;
+  modelsRead?: Record<string, unknown> | Error;
+  modelsDoctor?: Record<string, unknown> | Error;
 }
 
 function opsCtx(stub: OpsStub) {
@@ -946,6 +952,31 @@ function opsCtx(stub: OpsStub) {
           sourcesWriterStatus: async () => {
             if (stub.writerStatus instanceof Error) throw stub.writerStatus;
             return stub.writerStatus ?? { mode: "managed", bindings: [] };
+          },
+          providersExplain: async () => {
+            note("providersExplain", null);
+            if (stub.providersExplain instanceof Error) throw stub.providersExplain;
+            return (
+              stub.providersExplain ?? {
+                env_detected: { ANTHROPIC_API_KEY: true },
+                options: [],
+              }
+            );
+          },
+          modelsRead: async () => {
+            note("modelsRead", null);
+            if (stub.modelsRead instanceof Error) throw stub.modelsRead;
+            return stub.modelsRead ?? { tiers: [], per_task: [] };
+          },
+          modelsDoctor: async () => {
+            note("modelsDoctor", null);
+            if (stub.modelsDoctor instanceof Error) throw stub.modelsDoctor;
+            return (
+              stub.modelsDoctor ?? {
+                probes: [],
+                summary: { total: 0, ok: 0, failed: 0 },
+              }
+            );
           },
         } as unknown as CliDriver)
       : null,
@@ -1233,6 +1264,171 @@ describe("handleOpsGrantRead", () => {
     await expect(handleOpsGrantRead(legacy.ctx, ADMIN, true)).rejects.toThrow(
       /not an OAuth client/,
     );
+  });
+});
+
+// --- 0.5.1 model wiring: GET /api/ops/model + POST /api/ops/model/test -----------
+
+import type { OpsModelReport, OpsModelTestResult } from "@gbrain-cockpit/shared";
+
+describe("handleOpsModel (GET /api/ops/model)", () => {
+  test("assembles the three parts + pinned notes; each a modeled slice", async () => {
+    const { ctx } = opsCtx({
+      id: "model-a",
+      cli: true,
+      providersExplain: {
+        env_detected: { ANTHROPIC_API_KEY: true, OPENAI_API_KEY: false },
+        options: [
+          {
+            id: "zhipu:glm-5.3",
+            touchpoint: "chat",
+            model: "glm-5.3",
+            tier: "openai-compat",
+            env_ready: true,
+            cost_per_1m_input_usd: 0.07,
+          },
+        ],
+        recommended: "ollama:nomic-embed-text",
+      },
+      modelsRead: {
+        tiers: {
+          reasoning: { tier: "reasoning", resolved: "zhipu:glm-5.3", source: "config: models.tier.reasoning" },
+        },
+        per_task: [
+          { key: "models.dream.synthesize", tier: "reasoning", resolved: "zhipu:glm-5.3", description: "Dream synthesis" },
+        ],
+      },
+      doctorChecks: {
+        model: {
+          checks: [
+            { name: "provider_consent", status: "ok", details: { provider_env: ["ANTHROPIC_API_KEY"] } },
+          ],
+        },
+      },
+    });
+    const body = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
+    expect(body.status).toBe("ok");
+    expect(body.explain?.env_detected).toEqual({ ANTHROPIC_API_KEY: true, OPENAI_API_KEY: false });
+    expect(body.explain?.options?.[0]?.id).toBe("zhipu:glm-5.3");
+    // tiers arrive as a record on 611 — normalized to rows
+    expect(body.wiring?.tiers?.[0]?.resolved).toBe("zhipu:glm-5.3");
+    expect(body.wiring?.per_task?.[0]?.key).toBe("models.dream.synthesize");
+    expect(body.doctor?.checks[0]?.name).toBe("provider_consent");
+    expect((body.doctor?.checks[0]?.details as { provider_env?: string[] }).provider_env).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(body.notes?.length).toBeGreaterThan(0);
+  });
+
+  test("field picklist: poisoned upstream rows never reach the browser (#7 as structure)", async () => {
+    const { ctx } = opsCtx({
+      id: "model-b",
+      cli: true,
+      providersExplain: {
+        env_detected: { ANTHROPIC_API_KEY: "sk-live-secret-value" }, // wrong type — dropped
+        options: [
+          {
+            id: "zhipu:glm-5.3",
+            api_key: "sk-should-never-travel",
+            token: "tok-should-never-travel",
+            env_detected: { ZHIPUAI_API_KEY: "also-secret" },
+          },
+        ],
+      },
+    });
+    const raw = await (await handleOpsModel(ctx)).text();
+    expect(raw).not.toContain("sk-should-never-travel");
+    expect(raw).not.toContain("tok-should-never-travel");
+    expect(raw).not.toContain("also-secret");
+    expect(raw).not.toContain("sk-live-secret-value");
+    const body = JSON.parse(raw) as OpsModelReport;
+    expect(body.explain?.env_detected).toBeUndefined(); // non-boolean dropped whole
+    expect(body.explain?.options?.[0]).toEqual({ id: "zhipu:glm-5.3" }); // picklist row only
+  });
+
+  test("CLI down: parts down in-band; explain failure degrades without killing the card", async () => {
+    const noCli = opsCtx({ id: "model-c", cli: false });
+    const body = (await (await handleOpsModel(noCli.ctx)).json()) as OpsModelReport;
+    expect(body.status).toBe("down");
+    expect(body.explain?.status).toBe("down");
+    expect(body.wiring?.status).toBe("down");
+
+    const { ctx } = opsCtx({
+      id: "model-d",
+      cli: true,
+      providersExplain: new Error("providers explain failed (exit 2): boom"),
+    });
+    const degraded = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
+    expect(degraded.explain?.status).toBe("down");
+    expect(degraded.status).toBe("degraded");
+  });
+});
+
+describe("handleOpsModelTest (POST /api/ops/model/test)", () => {
+  test("base principal gets 403 with the two distinct step-up messages", async () => {
+    const { ctx } = opsCtx({ id: "model-test-a", cli: true });
+    const res1 = await handleOpsModelTest(ctx, BASE, true);
+    expect(res1.status).toBe(403);
+    expect(((await res1.json()) as { error?: string }).error).toContain("COCKPIT_ADMIN_TOKEN");
+    const res2 = await handleOpsModelTest(ctx, BASE, false);
+    expect(res2.status).toBe(403);
+    expect(((await res2.json()) as { error?: string }).error).toContain("not configured");
+  });
+
+  test("admin happy path: all-green probes → ok; failed probes → degraded (data, not 500)", async () => {
+    const okStub = opsCtx({
+      id: "model-test-b",
+      cli: true,
+      modelsDoctor: {
+        probes: [
+          { model: "zhipu:glm-5.3", touchpoint: "chat", status: "ok", message: "reachable", elapsed_ms: 1589 },
+        ],
+        summary: { total: 5, ok: 5, failed: 0 },
+      },
+    });
+    const okBody = (await (await handleOpsModelTest(okStub.ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(okBody.status).toBe("ok");
+    expect(okBody.summary?.failed).toBe(0);
+
+    const failStub = opsCtx({
+      id: "model-test-c",
+      cli: true,
+      modelsDoctor: {
+        probes: [
+          { model: "zhipu:glm-5.3", touchpoint: "chat", status: "fail", message: "余额不足或无可用资源包" },
+        ],
+        summary: { total: 5, ok: 4, failed: 1 },
+      },
+    });
+    const failBody = (await (await handleOpsModelTest(failStub.ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(failBody.status).toBe("degraded");
+    expect(failBody.probes?.[0]?.status).toBe("fail");
+  });
+
+  test("verb failure → in-band down with first line; CLI absent → down, never a throw", async () => {
+    const { ctx } = opsCtx({
+      id: "model-test-d",
+      cli: true,
+      modelsDoctor: new Error("models doctor failed (exit 2): panic on line one\nsecond line"),
+    });
+    const body = (await (await handleOpsModelTest(ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(body.status).toBe("down");
+    expect(body.error).toBe("models doctor failed (exit 2): panic on line one");
+
+    const noCli = opsCtx({ id: "model-test-e", cli: false });
+    const down = (await (await handleOpsModelTest(noCli.ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(down.status).toBe("down");
+    expect(down.error).toContain("CLI channel");
+  });
+
+  test("concurrent double-clicks share one run (single-flight — paid action)", async () => {
+    const { ctx, calls } = opsCtx({ id: "model-test-f", cli: true });
+    const [r1, r2] = await Promise.all([
+      handleOpsModelTest(ctx, ADMIN, true),
+      handleOpsModelTest(ctx, ADMIN, true),
+    ]);
+    const b1 = (await r1.json()) as OpsModelTestResult;
+    const b2 = (await r2.json()) as OpsModelTestResult;
+    expect(b1.status).toBe(b2.status);
+    expect(calls["modelsDoctor"]).toHaveLength(1);
   });
 });
 
