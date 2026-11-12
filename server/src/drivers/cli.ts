@@ -274,6 +274,31 @@ const WHITELIST: Readonly<Record<string, SubcommandSpec>> = {
     args: [{ kind: "flag", literal: "--json" }],
     json: true,
   },
+  // 0.5.1: model wiring (probed 2026-11-12 on 0.60.611 — internal/probes/
+  // model-wiring-0.60.611-20261112.md). providers explain = choice matrix
+  // (env BOOLEANS + priced options; key values never appear upstream);
+  // models read = the brain's ACTIVE wiring; doctor model = static checks.
+  // models doctor is the LIVE paid probe of the active path — the ROUTE
+  // gates it to the admin tier; here it is just another flag-only verb, so
+  // zero request data ever reaches argv. `providers test` is deliberately
+  // absent (no --json upstream + false verdicts under db-plane base-url
+  // overrides — copy-command only).
+  "providers explain": {
+    words: ["providers", "explain"],
+    args: [{ kind: "flag", literal: "--json" }],
+    json: true,
+  },
+  "models read": {
+    words: ["models", "read"],
+    args: [{ kind: "flag", literal: "--json" }],
+    json: true,
+  },
+  "doctor model": doctorSetSpec("model"),
+  "models doctor": {
+    words: ["models", "doctor"],
+    args: [{ kind: "flag", literal: "--json" }],
+    json: true,
+  },
 };
 
 export function getSpec(key: string): SubcommandSpec {
@@ -557,30 +582,11 @@ export class CliDriver {
     try {
       return await this.#runJson(key, { check: "cycle_freshness" }, opts);
     } catch (err) {
-      if (
-        err instanceof CliExecutionError &&
-        err.exitCode === 1 &&
-        typeof err.stdout === "string"
-      ) {
-        try {
-          const recovered = JSON.parse(err.stdout) as {
-            checks?: unknown[];
-          };
-          if (Array.isArray(recovered.checks)) {
-            return recovered as {
-              checks?: {
-                name?: string;
-                status?: string;
-                message?: string;
-                [k: string]: unknown;
-              }[];
-              [k: string]: unknown;
-            };
-          }
-        } catch {
-          // fall through — not the verdict shape
-        }
-      }
+      const recovered = this.#recoverJsonVerdict<{
+        checks?: unknown[];
+        [k: string]: unknown;
+      }>(err, [1], (v) => Array.isArray((v as { checks?: unknown }).checks));
+      if (recovered) return recovered as { checks?: { [k: string]: unknown }[]; [k: string]: unknown };
       throw err;
     }
   }
@@ -616,18 +622,12 @@ export class CliDriver {
     try {
       return await this.#runJson<DoctorSetEnvelope>(key, { check: value }, opts);
     } catch (err) {
-      if (
-        err instanceof CliExecutionError &&
-        err.exitCode === 1 &&
-        typeof err.stdout === "string"
-      ) {
-        try {
-          const recovered = JSON.parse(err.stdout) as DoctorSetEnvelope;
-          if (Array.isArray(recovered.checks)) return recovered;
-        } catch {
-          // fall through — not the verdict shape
-        }
-      }
+      const recovered = this.#recoverJsonVerdict<DoctorSetEnvelope>(
+        err,
+        [1],
+        (v) => Array.isArray((v as { checks?: unknown }).checks),
+      );
+      if (recovered) return recovered;
       throw err;
     }
   }
@@ -641,6 +641,77 @@ export class CliDriver {
     opts: ScopedExecOpts = {},
   ): Promise<{ [k: string]: unknown }> {
     return this.#runJson("sources writer status", {}, opts);
+  }
+
+  // --- model wiring verbs (0.5.1, MANAGEMENT_CHANNELS) -------------------------
+
+  /** Provider choice matrix: env BOOLEANS + priced options (probed 611). */
+  async providersExplain(
+    opts: ScopedExecOpts = {},
+  ): Promise<{ [k: string]: unknown }> {
+    return this.#runJson("providers explain", {}, opts);
+  }
+
+  /** The brain's ACTIVE model wiring, per tier and per task (probed 611). */
+  async modelsRead(
+    opts: ScopedExecOpts = {},
+  ): Promise<{ [k: string]: unknown }> {
+    return this.#runJson("models read", {}, opts);
+  }
+
+  /**
+   * One LIVE reachability pass over the brain's ACTIVE models — the same
+   * gateway assembly the dream pipeline uses (chat/expansion/embedding
+   * probes; a few ping tokens, which is why the route gates this to the
+   * admin tier, single-flights it and audits it). Envelope (probed 611):
+   * exit 0 all green; failed probes exit 1 with the full JSON still on
+   * stdout — recovered here so a wiring failure reads as DATA, never a 500.
+   */
+  async modelsDoctor(
+    opts: ScopedExecOpts = {},
+  ): Promise<{ [k: string]: unknown }> {
+    try {
+      return await this.#runJson("models doctor", {}, opts);
+    } catch (err) {
+      const recovered = this.#recoverJsonVerdict<{ [k: string]: unknown }>(
+        err,
+        [1],
+        (v) =>
+          typeof v === "object" &&
+          v !== null &&
+          Array.isArray((v as { probes?: unknown }).probes),
+      );
+      if (recovered) return recovered;
+      throw err;
+    }
+  }
+
+  /**
+   * Shared exit-envelope recovery: certain whitelisted verbs exit nonzero BY
+   * DESIGN while printing their full JSON verdict on stdout (doctor:
+   * unhealthy → 1 with checks[]; models doctor: failed probes → 1 with
+   * probes[]). Recovery is per-verb honest — `codes` + `isVerdict` pin the
+   * expected shape, never a generic "nonzero exit + any parseable JSON".
+   */
+  #recoverJsonVerdict<T>(
+    err: unknown,
+    codes: readonly number[],
+    isVerdict: (v: unknown) => boolean,
+  ): T | null {
+    if (
+      err instanceof CliExecutionError &&
+      err.exitCode !== undefined &&
+      codes.includes(err.exitCode) &&
+      typeof err.stdout === "string"
+    ) {
+      try {
+        const recovered: unknown = JSON.parse(err.stdout);
+        if (isVerdict(recovered)) return recovered as T;
+      } catch {
+        // fall through — not the verdict shape
+      }
+    }
+    return null;
   }
 
   async #runJson<T>(

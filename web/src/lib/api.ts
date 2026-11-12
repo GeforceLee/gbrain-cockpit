@@ -52,12 +52,14 @@ export async function apiSend<T>(
   path: string,
   method: "POST" | "PUT",
   payload: unknown,
-  opts: { token?: string } = {},
+  opts: { token?: string; timeoutMs?: number } = {},
 ): Promise<T> {
   // opts.token overrides the stored bearer for THIS request only — the
   // management step-up (0.4.0): the admin token is pasted at the action,
   // travels in the Authorization header of that one call, and is never
-  // written to persistent storage.
+  // written to persistent storage. opts.timeoutMs widens the abort budget
+  // for calls whose server side legitimately outlives the default (the live
+  // model probe runs paid reachability checks with retries).
   const token = opts.token ?? getToken();
   if (!token) throw new ApiError("no token stored", "E_NO_TOKEN", 0);
 
@@ -68,7 +70,7 @@ export async function apiSend<T>(
       "content-type": "application/json",
     }),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
   });
   const body = (await res.json().catch(() => null)) as (Envelope & T) | null;
   if (!res.ok) {

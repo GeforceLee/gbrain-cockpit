@@ -4,9 +4,11 @@ import type {
   OpsCalibrationReport,
   OpsNightlyReport,
 } from "@gbrain-cockpit/shared";
+import { dreamResetKeyCommand } from "@gbrain-cockpit/shared";
 import { PALETTE } from "../design/tokens";
 import { copyCommandText } from "../lib/clipboard";
 import { apiGet } from "../lib/api";
+import { currentProfile } from "../lib/brain";
 import { useI18n } from "../lib/i18n";
 import { firstLine } from "../lib/text";
 
@@ -30,6 +32,48 @@ function ageHours(iso: string | undefined): number | null {
   if (!iso) return null;
   const t = Date.parse(iso);
   return Number.isNaN(t) ? null : (Date.now() - t) / 3_600_000;
+}
+
+// --- 0.5.1 details slices (modeled shapes only; empty renders nothing) -------
+// The bip incident's evidence lives in the nightly set's details payloads:
+// dream_paid_loop.keys (which paid phases died) and extract_health's
+// halt_reasons (rate-limit/billing counts). Modeled as optional slices —
+// message prose stays verbatim-never-parsed; unknown reason strings echo
+// as-is. A healthy row (keys:[] / all-zero counts) renders NOTHING.
+
+/** dream_paid_loop: tripped breaker keys — names only, never secrets. */
+function breakerKeys(c: DoctorCheckRow): string[] {
+  const d = c.details;
+  if (!d || Array.isArray(d)) return [];
+  return Array.isArray(d.keys)
+    ? d.keys.filter((k): k is string => typeof k === "string" && k.length > 0)
+    : [];
+}
+
+/** extract_health: per-kind halt reasons with nonzero counts. */
+function haltReasons(
+  c: DoctorCheckRow,
+): { kind: string; reasons: [string, number][] }[] {
+  const d = c.details;
+  if (!d || Array.isArray(d)) return [];
+  const kinds = Array.isArray(d.kinds) ? d.kinds : [];
+  const out: { kind: string; reasons: [string, number][] }[] = [];
+  for (const k of kinds) {
+    if (k === null || typeof k !== "object") continue;
+    const r = k as Record<string, unknown>;
+    const hr = r.halt_reasons;
+    if (hr === null || typeof hr !== "object" || Array.isArray(hr)) continue;
+    const entries = Object.entries(hr).filter(
+      (entry): entry is [string, number] =>
+        typeof entry[1] === "number" && entry[1] > 0,
+    );
+    if (entries.length === 0) continue;
+    out.push({
+      kind: typeof r.kind === "string" ? r.kind : "?",
+      reasons: entries,
+    });
+  }
+  return out;
 }
 
 /** fetch-on-first-open fold state shared by the ops cards. */
@@ -141,20 +185,54 @@ export function NightlyCard() {
             })}
           </dl>
         ) : null}
-        {/* doctor rows — message verbatim, three-state chip */}
+        {/* doctor rows — message verbatim, three-state chip; 0.5.1 modeled
+            details slices ride under their rows (evidence, never prose-parse) */}
         {checks.length > 0 && (
           <div className="cycle-checks">
-            {checks.map((c) => (
-              <p key={c.name} className="small" title={c.message ?? c.name}>
-                <span className={checkChipClass(c.status)}>
-                  {c.status === "na" ? t("health.cycle.na") : c.status}
-                </span>{" "}
-                <span className="mono">{c.name}</span>{" "}
-                <span className="muted">
-                  {c.message ? c.message.slice(0, 120) : ""}
-                </span>
-              </p>
-            ))}
+            {checks.map((c) => {
+              const breaker = c.name === "dream_paid_loop" ? breakerKeys(c) : [];
+              const halts = c.name === "extract_health" ? haltReasons(c) : [];
+              return (
+                <div key={c.name}>
+                  <p className="small" title={c.message ?? c.name}>
+                    <span className={checkChipClass(c.status)}>
+                      {c.status === "na" ? t("health.cycle.na") : c.status}
+                    </span>{" "}
+                    <span className="mono">{c.name}</span>{" "}
+                    <span className="muted">
+                      {c.message ? c.message.slice(0, 120) : ""}
+                    </span>
+                  </p>
+                  {breaker.length > 0 && (
+                    <p className="small">
+                      <span className="muted">
+                        {t("health.cycle.breakerKeys")}:{" "}
+                      </span>
+                      <span className="mono">{breaker.join(", ")}</span>
+                    </p>
+                  )}
+                  {halts.map((h) => (
+                    <p key={h.kind} className="small">
+                      <span className="muted">
+                        {t("health.cycle.haltLine")
+                          .replace("{kind}", h.kind)
+                          .replace(
+                            "{reasons}",
+                            h.reasons
+                              .map(
+                                ([reason, n]) =>
+                                  `${reason === "provider_rate_limit"
+                                    ? t("health.cycle.haltRateLimit")
+                                    : reason}×${n}`,
+                              )
+                              .join(", "),
+                          )}
+                      </span>
+                    </p>
+                  ))}
+                </div>
+              );
+            })}
             {(data?.doctor?.missing ?? []).map((name) => (
               <p key={name} className="small">
                 <span className="chip">{t("health.cycle.na")}</span>{" "}
@@ -189,6 +267,49 @@ export function NightlyCard() {
             <p className="muted small">{t("health.cycle.runNowVerify")}</p>
           </details>
         )}
+        {/* breaker unlock — only when dream_paid_loop carries tripped keys
+            (paid phases died after the call; the model-wiring card holds the
+            why and the fix teaching). Charset-refused keys get NO command. */}
+        {(() => {
+          const keys = checks
+            .filter((c) => c.name === "dream_paid_loop")
+            .flatMap((c) => breakerKeys(c));
+          if (keys.length === 0) return null;
+          return (
+            <details className="detail-block">
+              <summary className="cap">{t("health.cycle.breakerFold")}</summary>
+              <p className="muted small">{t("health.cycle.breakerIntro")}</p>
+              {keys.map((key) => {
+                let command: string | null = null;
+                try {
+                  command = dreamResetKeyCommand(
+                    currentProfile()?.cliCommand ?? "gbrain",
+                    key,
+                  );
+                } catch {
+                  command = null; // no command beats a known-bad paste
+                }
+                return command === null ? null : (
+                  <p key={key} className="small cmd-row">
+                    <code className="mono">{command}</code>{" "}
+                    <button
+                      type="button"
+                      className="small"
+                      onClick={() => {
+                        void copyCommandText(command!).then(() => {
+                          setCopied(key);
+                          setTimeout(() => setCopied(null), 2000);
+                        });
+                      }}
+                    >
+                      {copied === key ? t("cmd.copied") : t("cmd.copy")}
+                    </button>
+                  </p>
+                );
+              })}
+            </details>
+          );
+        })()}
       </details>
     </div>
   );

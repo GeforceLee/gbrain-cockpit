@@ -876,6 +876,8 @@ import {
   handleOpsAssets,
   handleOpsDeploy,
   handleOpsGrantRead,
+  handleOpsModel,
+  handleOpsModelTest,
   handleOpsSourceDrift,
 } from "./api";
 import type {
@@ -906,6 +908,11 @@ interface OpsStub {
   scorecard?: unknown;
   scorecardError?: Error;
   profile?: unknown;
+  // 0.5.1 model wiring
+  providersExplain?: Record<string, unknown> | Error;
+  modelsRead?: Record<string, unknown> | Error;
+  modelsDoctor?: Record<string, unknown> | Error;
+  providerBaseUrls?: Array<{ key: string; value: string }> | Error;
 }
 
 function opsCtx(stub: OpsStub) {
@@ -947,6 +954,31 @@ function opsCtx(stub: OpsStub) {
             if (stub.writerStatus instanceof Error) throw stub.writerStatus;
             return stub.writerStatus ?? { mode: "managed", bindings: [] };
           },
+          providersExplain: async () => {
+            note("providersExplain", null);
+            if (stub.providersExplain instanceof Error) throw stub.providersExplain;
+            return (
+              stub.providersExplain ?? {
+                env_detected: { ANTHROPIC_API_KEY: true },
+                options: [],
+              }
+            );
+          },
+          modelsRead: async () => {
+            note("modelsRead", null);
+            if (stub.modelsRead instanceof Error) throw stub.modelsRead;
+            return stub.modelsRead ?? { tiers: [], per_task: [] };
+          },
+          modelsDoctor: async () => {
+            note("modelsDoctor", null);
+            if (stub.modelsDoctor instanceof Error) throw stub.modelsDoctor;
+            return (
+              stub.modelsDoctor ?? {
+                probes: [],
+                summary: { total: 0, ok: 0, failed: 0 },
+              }
+            );
+          },
         } as unknown as CliDriver)
       : null,
     pg: {
@@ -961,6 +993,11 @@ function opsCtx(stub: OpsStub) {
       sourceCycleStamps: async () => {
         if (stub.pgError) throw stub.pgError;
         return stub.stamps ?? [];
+      },
+      providerBaseUrls: async () => {
+        if (stub.providerBaseUrls instanceof Error) throw stub.providerBaseUrls;
+        if (stub.pgError) throw stub.pgError;
+        return stub.providerBaseUrls ?? [];
       },
     },
     mcp: {
@@ -1233,6 +1270,212 @@ describe("handleOpsGrantRead", () => {
     await expect(handleOpsGrantRead(legacy.ctx, ADMIN, true)).rejects.toThrow(
       /not an OAuth client/,
     );
+  });
+});
+
+// --- 0.5.1 model wiring: GET /api/ops/model + POST /api/ops/model/test -----------
+
+import type { OpsModelReport, OpsModelTestResult } from "@gbrain-cockpit/shared";
+
+describe("handleOpsModel (GET /api/ops/model)", () => {
+  test("assembles the three parts + pinned notes; each a modeled slice", async () => {
+    const { ctx } = opsCtx({
+      id: "model-a",
+      cli: true,
+      providersExplain: {
+        env_detected: { ANTHROPIC_API_KEY: true, OPENAI_API_KEY: false },
+        options: [
+          {
+            id: "zhipu:glm-5.3",
+            touchpoint: "chat",
+            model: "glm-5.3",
+            tier: "openai-compat",
+            env_ready: true,
+            cost_per_1m_input_usd: 0.07,
+          },
+        ],
+        recommended: "ollama:nomic-embed-text",
+      },
+      modelsRead: {
+        tiers: {
+          reasoning: { tier: "reasoning", resolved: "zhipu:glm-5.3", source: "config: models.tier.reasoning" },
+        },
+        per_task: [
+          { key: "models.dream.synthesize", tier: "reasoning", resolved: "zhipu:glm-5.3", description: "Dream synthesis" },
+        ],
+      },
+      doctorChecks: {
+        model: {
+          checks: [
+            { name: "provider_consent", status: "ok", details: { provider_env: ["ANTHROPIC_API_KEY"] } },
+          ],
+        },
+      },
+    });
+    const body = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
+    expect(body.status).toBe("ok");
+    expect(body.explain?.env_detected).toEqual({ ANTHROPIC_API_KEY: true, OPENAI_API_KEY: false });
+    expect(body.explain?.options?.[0]?.id).toBe("zhipu:glm-5.3");
+    // tiers arrive as a record on 611 — normalized to rows
+    expect(body.wiring?.tiers?.[0]?.resolved).toBe("zhipu:glm-5.3");
+    expect(body.wiring?.per_task?.[0]?.key).toBe("models.dream.synthesize");
+    expect(body.doctor?.checks[0]?.name).toBe("provider_consent");
+    expect((body.doctor?.checks[0]?.details as { provider_env?: string[] }).provider_env).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(body.notes?.length).toBeGreaterThan(0);
+  });
+
+  test("field picklist: poisoned upstream rows never reach the browser (#7 as structure)", async () => {
+    const { ctx } = opsCtx({
+      id: "model-b",
+      cli: true,
+      providersExplain: {
+        env_detected: { ANTHROPIC_API_KEY: "sk-live-secret-value" }, // wrong type — dropped
+        options: [
+          {
+            id: "zhipu:glm-5.3",
+            api_key: "sk-should-never-travel",
+            token: "tok-should-never-travel",
+            env_detected: { ZHIPUAI_API_KEY: "also-secret" },
+          },
+        ],
+      },
+    });
+    const raw = await (await handleOpsModel(ctx)).text();
+    expect(raw).not.toContain("sk-should-never-travel");
+    expect(raw).not.toContain("tok-should-never-travel");
+    expect(raw).not.toContain("also-secret");
+    expect(raw).not.toContain("sk-live-secret-value");
+    const body = JSON.parse(raw) as OpsModelReport;
+    expect(body.explain?.env_detected).toBeUndefined(); // non-boolean dropped whole
+    expect(body.explain?.options?.[0]).toEqual({ id: "zhipu:glm-5.3" }); // picklist row only
+  });
+
+  test("CLI down: cli parts down in-band (pg urls part may still be ok); explain failure degrades", async () => {
+    const noCli = opsCtx({ id: "model-c", cli: false });
+    const body = (await (await handleOpsModel(noCli.ctx)).json()) as OpsModelReport;
+    expect(body.explain?.status).toBe("down");
+    expect(body.wiring?.status).toBe("down");
+    expect(body.doctor?.status).toBe("down");
+    // urls part is pg-backed — it survives a CLI-down host, so the whole
+    // report reads "degraded", never "down", while pg answers
+    expect(body.urls?.status).toBe("ok");
+    expect(body.status).toBe("degraded");
+
+    const noCliNoPg = opsCtx({ id: "model-c2", cli: false, pgError: new Error("bypass unset") });
+    const allDown = (await (await handleOpsModel(noCliNoPg.ctx)).json()) as OpsModelReport;
+    expect(allDown.status).toBe("down");
+
+    const { ctx } = opsCtx({
+      id: "model-d",
+      cli: true,
+      providersExplain: new Error("providers explain failed (exit 2): boom"),
+    });
+    const degraded = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
+    expect(degraded.explain?.status).toBe("down");
+    expect(degraded.status).toBe("degraded");
+  });
+
+  test("urls part (D1 second case): overrides ship; non-URL or malformed rows NEVER leave", async () => {
+    const { ctx } = opsCtx({
+      id: "model-urls-a",
+      cli: true,
+      providerBaseUrls: [
+        { key: "provider_base_urls.zhipu", value: "https://open.bigmodel.cn/api/coding/paas/v4" },
+        { key: "provider_base_urls.evil", value: "https://x.cn/a;rm -rf" }, // metachar → dropped
+        { key: "provider_base_urls.Bad Recipe", value: "https://x.cn" }, // recipe charset → dropped
+        { key: "other.key", value: "https://x.cn" }, // not the prefix shape → dropped
+      ],
+    });
+    const raw = await (await handleOpsModel(ctx)).text();
+    const body = JSON.parse(raw) as OpsModelReport;
+    expect(body.urls?.status).toBe("ok");
+    expect(body.urls?.overrides).toEqual([
+      { recipe: "zhipu", url: "https://open.bigmodel.cn/api/coding/paas/v4" },
+    ]);
+    expect(raw).not.toContain("rm -rf");
+    expect(raw).not.toContain("other.key");
+  });
+
+  test("urls part: pg failure degrades in-band with the GRANT hint", async () => {
+    const { ctx } = opsCtx({
+      id: "model-urls-b",
+      cli: true,
+      providerBaseUrls: new Error('permission denied for table "config"'),
+    });
+    const body = (await (await handleOpsModel(ctx)).json()) as OpsModelReport;
+    expect(body.urls?.status).toBe("down");
+    expect(body.urls?.error).toContain("permission denied");
+    expect(body.status).toBe("degraded");
+  });
+});
+
+describe("handleOpsModelTest (POST /api/ops/model/test)", () => {
+  test("base principal gets 403 with the two distinct step-up messages", async () => {
+    const { ctx } = opsCtx({ id: "model-test-a", cli: true });
+    const res1 = await handleOpsModelTest(ctx, BASE, true);
+    expect(res1.status).toBe(403);
+    expect(((await res1.json()) as { error?: string }).error).toContain("COCKPIT_ADMIN_TOKEN");
+    const res2 = await handleOpsModelTest(ctx, BASE, false);
+    expect(res2.status).toBe(403);
+    expect(((await res2.json()) as { error?: string }).error).toContain("not configured");
+  });
+
+  test("admin happy path: all-green probes → ok; failed probes → degraded (data, not 500)", async () => {
+    const okStub = opsCtx({
+      id: "model-test-b",
+      cli: true,
+      modelsDoctor: {
+        probes: [
+          { model: "zhipu:glm-5.3", touchpoint: "chat", status: "ok", message: "reachable", elapsed_ms: 1589 },
+        ],
+        summary: { total: 5, ok: 5, failed: 0 },
+      },
+    });
+    const okBody = (await (await handleOpsModelTest(okStub.ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(okBody.status).toBe("ok");
+    expect(okBody.summary?.failed).toBe(0);
+
+    const failStub = opsCtx({
+      id: "model-test-c",
+      cli: true,
+      modelsDoctor: {
+        probes: [
+          { model: "zhipu:glm-5.3", touchpoint: "chat", status: "fail", message: "余额不足或无可用资源包" },
+        ],
+        summary: { total: 5, ok: 4, failed: 1 },
+      },
+    });
+    const failBody = (await (await handleOpsModelTest(failStub.ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(failBody.status).toBe("degraded");
+    expect(failBody.probes?.[0]?.status).toBe("fail");
+  });
+
+  test("verb failure → in-band down with first line; CLI absent → down, never a throw", async () => {
+    const { ctx } = opsCtx({
+      id: "model-test-d",
+      cli: true,
+      modelsDoctor: new Error("models doctor failed (exit 2): panic on line one\nsecond line"),
+    });
+    const body = (await (await handleOpsModelTest(ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(body.status).toBe("down");
+    expect(body.error).toBe("models doctor failed (exit 2): panic on line one");
+
+    const noCli = opsCtx({ id: "model-test-e", cli: false });
+    const down = (await (await handleOpsModelTest(noCli.ctx, ADMIN, true)).json()) as OpsModelTestResult;
+    expect(down.status).toBe("down");
+    expect(down.error).toContain("CLI channel");
+  });
+
+  test("concurrent double-clicks share one run (single-flight — paid action)", async () => {
+    const { ctx, calls } = opsCtx({ id: "model-test-f", cli: true });
+    const [r1, r2] = await Promise.all([
+      handleOpsModelTest(ctx, ADMIN, true),
+      handleOpsModelTest(ctx, ADMIN, true),
+    ]);
+    const b1 = (await r1.json()) as OpsModelTestResult;
+    const b2 = (await r2.json()) as OpsModelTestResult;
+    expect(b1.status).toBe(b2.status);
+    expect(calls["modelsDoctor"]).toHaveLength(1);
   });
 });
 
@@ -1591,5 +1834,271 @@ describe("handleOpsDeploy", () => {
     expect(body.unitText).toBeUndefined();
     expect(body.status).toBe("degraded");
     expect(body.topology?.status).toBe("ok");
+  });
+});
+
+// --- 0.5.2 inbox relief: assembly + route ---------------------------------------
+
+import { handleInboxRelief } from "./api";
+import { createInboxStateStore, type InboxStateStore } from "../inbox-state";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { TakeProposal } from "@gbrain-cockpit/shared";
+
+function reliefCtx(opts: {
+  pending?: TakeProposal[];
+  stamps?: Array<{ source_id: string; last_source_cycle_at?: string }>;
+  stampsError?: Error;
+  id?: string;
+}) {
+  return {
+    id: opts.id ?? "relief-test",
+    profile: { cliBin: "gbrain" },
+    cliBinResolved: null,
+    takesGuard: null,
+    cli: null,
+    pg: {
+      configured: true,
+      pendingTakeProposals: async () => opts.pending ?? [],
+      sourceCycleStamps: async () => {
+        if (opts.stampsError) throw opts.stampsError;
+        return opts.stamps ?? [];
+      },
+    },
+    // the sibling queues handleInbox also assembles — each fails soft
+    mcp: {
+      findContradictions: async () => ({ contradictions: [] }),
+      extractionPending: async () => ({ pending: [] }),
+      takesList: async () => [],
+    },
+  } as unknown as ApiContext;
+}
+
+function tempStore(): { store: InboxStateStore; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "cockpit-inbox-test-"));
+  return {
+    store: createInboxStateStore({
+      file: join(dir, "inbox-state.json"),
+      now: () => "2026-11-12T00:00:00Z",
+    }),
+    dir,
+  };
+}
+
+const TP = (id: number, source: string, iso: string): TakeProposal => ({
+  id,
+  source_id: source,
+  page_slug: "p",
+  claim_text: "c",
+  proposed_at: iso,
+});
+
+function RELIEF_REQ(body: unknown): Request {
+  return new Request("http://x/api/inbox/relief", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("inbox relief assembly (GET /api/inbox)", () => {
+  const pending = [
+    TP(1, "main", "2026-11-01T18:00:00Z"),
+    TP(2, "main", "2026-11-04T18:00:00Z"),
+    TP(3, "main", "2026-11-04T18:07:00Z"),
+    TP(9, "archive", "2026-11-02T18:00:00Z"),
+  ];
+  const stamps = [
+    { source_id: "main", last_source_cycle_at: "2026-11-04T18:45:00Z" },
+    { source_id: "archive" }, // never cycled
+  ];
+
+  test("piles + mutedCounts + resurrection (stamp changed) + noCycle copy flag", async () => {
+    const { store, dir } = tempStore();
+    try {
+      // archive muted; #2 snoozed against the CURRENT stamp (stays);
+      // #3 snoozed against an OLDER stamp (the source cycled — resurrected)
+      await store.mutate("relief-test", (s) => {
+        s.muted.push({ source: "archive", at: "2026-11-12T00:00:00Z" });
+        s.snoozed.push(
+          { id: 2, source: "main", snoozedAt: "2026-11-12T00:00:00Z", stamp: "2026-11-04T18:45:00Z" },
+          { id: 3, source: "main", snoozedAt: "2026-11-11T00:00:00Z", stamp: "2026-11-03T18:45:00Z" },
+          { id: 7, source: "main", snoozedAt: "2026-11-11T00:00:00Z" }, // adjudicated row → pruned
+        );
+      });
+      const body = (await (
+        await handleInbox(reliefCtx({ pending, stamps }), store)
+      ).json()) as InboxReport;
+      const relief = body.takes.relief!;
+      expect(relief.piles.map((p) => [p.source, p.ids])).toEqual([
+        ["main", [2, 3]],
+        ["archive", [9]],
+      ]);
+      expect(relief.muted).toEqual(["archive"]);
+      expect(relief.mutedCounts).toEqual({ archive: 1 });
+      expect(relief.snoozed).toEqual([
+        { id: 2, source: "main", snoozedAt: "2026-11-12T00:00:00Z" },
+      ]); // 3 resurrected, 7 gone
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no store wired ⇒ no relief key (pre-0.5.2 behavior verbatim)", async () => {
+    const body = (await (await handleInbox(reliefCtx({ pending }))).json()) as InboxReport;
+    expect(body.takes.relief).toBeUndefined();
+  });
+
+  test("stampsDown: resurrection SKIPPED, snoozes ride as-is (never a wipe)", async () => {
+    const { store, dir } = tempStore();
+    try {
+      await store.mutate("relief-test", (s) => {
+        s.snoozed.push({ id: 2, source: "main", snoozedAt: "x", stamp: "2026-11-03T18:45:00Z" });
+      });
+      const body = (await (
+        await handleInbox(
+          reliefCtx({ pending, stampsError: new Error("permission denied for table sources") }),
+          store,
+        )
+      ).json()) as InboxReport;
+      expect(body.takes.relief!.stampsDown).toBe(true);
+      expect(body.takes.relief!.snoozed.map((s) => s.id)).toEqual([2]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("corrupt state file is fail-visible: relief renders, stateError rides along", async () => {
+    const { store, dir } = tempStore();
+    try {
+      writeFileSync(join(dir, "inbox-state.json"), "{ not json", "utf8");
+      const body = (await (await handleInbox(reliefCtx({ pending, stamps }), store)).json()) as InboxReport;
+      expect(body.takes.relief!.stateError).toContain("unreadable");
+      expect(body.takes.relief!.muted).toEqual([]); // empty state rides along
+      await expect(
+        handleInboxRelief(reliefCtx({ pending, stamps }), RELIEF_REQ({ op: "mute", source: "main" }), store),
+      ).rejects.toThrow(/unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("cross-profile isolation: atlas mutes never touch bip", async () => {
+    const { store, dir } = tempStore();
+    try {
+      await handleInboxRelief(
+        reliefCtx({ pending, stamps, id: "atlas" }),
+        RELIEF_REQ({ op: "mute", source: "main" }),
+        store,
+      );
+      const bip = (await (
+        await handleInbox(reliefCtx({ pending, stamps, id: "bip" }), store)
+      ).json()) as InboxReport;
+      expect(bip.takes.relief!.muted).toEqual([]);
+      const atlas = (await (
+        await handleInbox(reliefCtx({ pending, stamps, id: "atlas" }), store)
+      ).json()) as InboxReport;
+      expect(atlas.takes.relief!.muted).toEqual(["main"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("handleInboxRelief (POST /api/inbox/relief)", () => {
+  const pending = [
+    TP(2, "main", "2026-11-04T18:00:00Z"),
+    TP(9, "archive", "2026-11-02T18:00:00Z"),
+  ];
+  const stamps = [{ source_id: "main", last_source_cycle_at: "2026-11-04T18:45:00Z" }];
+
+  test("mute/unmute roundtrip persists server-side", async () => {
+    const { store, dir } = tempStore();
+    try {
+      const ctx = reliefCtx({ pending, stamps });
+      const res = await handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "archive" }), store);
+      expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+      const snap = await store.read("relief-test");
+      expect(snap.state.muted.map((m) => m.source)).toEqual(["archive"]);
+      await handleInboxRelief(ctx, RELIEF_REQ({ op: "unmute", source: "archive" }), store);
+      expect((await store.read("relief-test")).state.muted).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("snooze snapshots the SERVER-side source + stamp; noCycle sources allowed honestly", async () => {
+    const { store, dir } = tempStore();
+    try {
+      await handleInboxRelief(reliefCtx({ pending, stamps }), RELIEF_REQ({ op: "snooze", id: "9" }), store);
+      const snap = await store.read("relief-test");
+      expect(snap.state.snoozed).toEqual([
+        { id: 9, source: "archive", snoozedAt: "2026-11-12T00:00:00Z" }, // no stamp → no stamp key
+      ]);
+      // the body's claim about source/stamp is IGNORED — server truth wins
+      await handleInboxRelief(
+        reliefCtx({ pending, stamps }),
+        RELIEF_REQ({ op: "snooze", id: "2", source: "evil", stamp: "forged" }),
+        store,
+      );
+      const after = await store.read("relief-test");
+      expect(after.state.snoozed.find((e) => e.id === 2)).toEqual({
+        id: 2,
+        source: "main",
+        snoozedAt: "2026-11-12T00:00:00Z",
+        stamp: "2026-11-04T18:45:00Z",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("validation: bad op / bad source / unknown id / unreadable stamps", async () => {
+    const { store, dir } = tempStore();
+    try {
+      const ctx = reliefCtx({ pending, stamps });
+      await expect(handleInboxRelief(ctx, RELIEF_REQ({ op: "purge", source: "main" }), store)).rejects.toThrow(
+        /op must be/,
+      );
+      await expect(handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "../etc" }), store)).rejects.toThrow(
+        /invalid source/,
+      );
+      await expect(handleInboxRelief(ctx, RELIEF_REQ({ op: "snooze", id: "999" }), store)).rejects.toThrow(
+        /not in the pending queue/,
+      );
+      await expect(
+        handleInboxRelief(
+          reliefCtx({ pending, stampsError: new Error("pg down") }),
+          RELIEF_REQ({ op: "snooze", id: "2" }),
+          store,
+        ),
+      ).rejects.toThrow(/cycle stamps are unreadable/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("no store wired ⇒ 400 with the wiring hint", async () => {
+    await expect(
+      handleInboxRelief(reliefCtx({ pending, stamps }), RELIEF_REQ({ op: "mute", source: "main" }), null),
+    ).rejects.toThrow(/not wired/);
+  });
+
+  test("concurrent mute+unmute serialize (read-modify-write under one mutex)", async () => {
+    const { store, dir } = tempStore();
+    try {
+      const ctx = reliefCtx({ pending, stamps });
+      await Promise.all([
+        handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "a" }), store),
+        handleInboxRelief(ctx, RELIEF_REQ({ op: "mute", source: "b" }), store),
+        handleInboxRelief(ctx, RELIEF_REQ({ op: "snooze", id: "2" }), store),
+      ]);
+      const snap = await store.read("relief-test");
+      expect(snap.state.muted.map((m) => m.source).sort()).toEqual(["a", "b"]);
+      expect(snap.state.snoozed.map((e) => e.id)).toEqual([2]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

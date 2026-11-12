@@ -642,3 +642,124 @@ describe("doctor check sets (0.5.0)", () => {
     expect(out.bindings).toEqual([]);
   });
 });
+
+// --- 0.5.1: model wiring verbs ---------------------------------------------------
+// Shapes pinned on 0.60.611 (internal/probes/model-wiring-0.60.611-20261112.md):
+// providers explain / models read / doctor model set are flag-only reads;
+// models doctor is the paid live probe (admin tier at the route). providers
+// list/test are deliberately NOT whitelisted (human output / no --json).
+
+describe("model wiring verbs: buildArgv shape (0.5.1)", () => {
+  test("providers explain / models read / models doctor are flag-only --json", () => {
+    expect(buildArgv("providers explain", {})).toEqual([
+      "providers",
+      "explain",
+      "--json",
+    ]);
+    expect(buildArgv("models read", {})).toEqual(["models", "read", "--json"]);
+    expect(buildArgv("models doctor", {})).toEqual(["models", "doctor", "--json"]);
+  });
+
+  test("doctor model set is the frozen comma string from the shared table", () => {
+    expect(() =>
+      buildArgv("doctor model", { check: "alternative_providers" }),
+    ).toThrow(CliValidationError);
+    expect(
+      buildArgv("doctor model", {
+        check:
+          "alternative_providers,provider_consent,embedding_key_source,embedding_env_override,derivation_unpriced_model,reranker_health",
+      }),
+    ).toEqual([
+      "doctor",
+      "--only",
+      "alternative_providers,provider_consent,embedding_key_source,embedding_env_override,derivation_unpriced_model,reranker_health",
+      "--json",
+    ]);
+  });
+
+  test("providers list and providers test are NOT whitelisted (human output)", () => {
+    expect(() => buildArgv("providers list", {})).toThrow(CliValidationError);
+    expect(() =>
+      buildArgv("providers test", { model: "zhipu:glm-5.3" }),
+    ).toThrow(CliValidationError);
+  });
+});
+
+describe("model wiring verbs: CliDriver (0.5.1)", () => {
+  test("providersExplain / modelsRead parse and pass scoped exec opts through", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: JSON.stringify({ env_detected: { ANTHROPIC_API_KEY: true }, options: [] }),
+      stderr: "",
+    }));
+    const out = await driver.providersExplain({
+      bin: "/real/gbrain",
+      env: { GBRAIN_HOME: "/home/dev/gbrain-bip" },
+    });
+    expect(out.env_detected).toEqual({ ANTHROPIC_API_KEY: true });
+    expect(calls[0]!.bin).toBe("/real/gbrain");
+    expect(calls[0]!.env?.GBRAIN_HOME).toBe("/home/dev/gbrain-bip");
+
+    const { driver: r } = makeDriver(async () => ({
+      stdout: JSON.stringify({ tiers: [], per_task: [] }),
+      stderr: "",
+    }));
+    const wiring = await r.modelsRead();
+    expect(wiring.tiers).toEqual([]);
+  });
+
+  test("modelsDoctor parses the all-green envelope", async () => {
+    const { driver, calls } = makeDriver(async () => ({
+      stdout: JSON.stringify({
+        schema_version: 1,
+        probes: [
+          { model: "zhipu:glm-5.3", touchpoint: "chat", status: "ok", message: "reachable", elapsed_ms: 1589 },
+        ],
+        summary: { total: 1, ok: 1, failed: 0 },
+      }),
+      stderr: "",
+    }));
+    const out = await driver.modelsDoctor();
+    expect(calls[0]!.argv).toEqual(["models", "doctor", "--json"]);
+    expect(out.summary).toEqual({ total: 1, ok: 1, failed: 0 });
+  });
+
+  test("failed probes (exit 1 + probes[] envelope) recover as DATA, not errors", async () => {
+    const { driver } = makeDriver(async () => {
+      const err = new Error("exit 1") as Error & {
+        code?: number | string;
+        stderr?: string;
+        stdout?: string;
+      };
+      err.code = 1;
+      err.stderr = "✗ transient error …";
+      err.stdout = JSON.stringify({
+        probes: [
+          { model: "zhipu:glm-5.3", touchpoint: "chat", status: "fail", message: "余额不足" },
+        ],
+        summary: { total: 5, ok: 4, failed: 1 },
+      });
+      throw err;
+    });
+    const out = await driver.modelsDoctor();
+    expect((out.probes as { status?: string }[])[0]?.status).toBe("fail");
+    expect((out.summary as { failed?: number }).failed).toBe(1);
+  });
+
+  test("modelsDoctor exit 1 with non-verdict stdout still throws; exit 2 never recovers", async () => {
+    const { driver: bad } = makeDriver(async () => {
+      const err = new Error("exit 1") as Error & { code?: number; stdout?: string };
+      err.code = 1;
+      err.stdout = "panic: something else";
+      throw err;
+    });
+    await expect(bad.modelsDoctor()).rejects.toBeInstanceOf(CliExecutionError);
+
+    const { driver: two } = makeDriver(async () => {
+      const err = new Error("exit 2") as Error & { code?: number; stdout?: string };
+      err.code = 2;
+      err.stdout = JSON.stringify({ probes: [] });
+      throw err;
+    });
+    await expect(two.modelsDoctor()).rejects.toThrow(/exit 2/);
+  });
+});

@@ -26,6 +26,11 @@ import type {
   OpsDreamRun,
   OpsDreamRunsReport,
   OpsGrantReadResult,
+  ModelProbeRow,
+  ModelsTaskRow,
+  ModelsTierRow,
+  OpsModelReport,
+  OpsModelTestResult,
   OpsNightlyReport,
   OpsSourceDriftReport,
   OpsSourcePages,
@@ -34,6 +39,7 @@ import type {
   PageVersion,
   PagesFacets,
   ProfilesResponse,
+  ProviderOptionRow,
   SearchHit,
   SourceDiagnostic,
   SourcesReport,
@@ -52,13 +58,22 @@ import type {
 import {
   authClientsListCommand,
   authRescopeCommand,
+  computeTakePiles,
   DOCTOR_CHECK_SETS,
   dreamCalibrationCommand,
   isValidSourceId,
   normalizeDoctorCheck,
+  PROVIDER_BASE_URL_RE,
+  PROVIDER_RECIPE_RE,
   TRUST_REF_RE,
+  type TakesRelief,
+  type TakesSnoozedRow,
 } from "@gbrain-cockpit/shared";
 import { auditTail, auditWrite } from "../audit";
+import type {
+  InboxStateSnapshot,
+  InboxStateStore,
+} from "../inbox-state";
 import { buildDeployUnitText, DEPLOY_NOTES } from "./deploy-unit";
 import type { BrainRegistry, BrainChannels } from "../brains";
 import type { Principal } from "../auth";
@@ -1031,6 +1046,329 @@ async function runGrantRead(ctx: ApiContext): Promise<OpsGrantReadResult> {
   return { status: "ok", added, federatedRead: afterList };
 }
 
+// --- 0.5.1 model-wiring ops -----------------------------------------------------
+//
+// GET /api/ops/model — the model-wiring card (Admin panel): providers
+// explain (env BOOLEANS + the priced option catalog), models read (the
+// brain's ACTIVE wiring per tier/task) and the doctor model set (static
+// provider/embedding checks). Every upstream payload leaves the server as a
+// PICKLIST slice — upstream never echoes key VALUES (probed 611) and this
+// layer keeps it that way even if a future version starts to (non-negotiable
+// #7 as a structural guarantee, not an upstream promise).
+//
+// POST /api/ops/model/test — one live `models doctor --json` pass over the
+// ACTIVE models (a few ping tokens): the third action class — paid probe.
+// Reads stay on the base token; management WRITES require the admin tier
+// (grant-read); this one also gates to the admin tier + single-flight +
+// audit, because it spends provider credits with an outward side effect.
+
+/** Pinned incident-knowledge note ids → locale admin.model.note.<id>. */
+const MODEL_NOTES = [
+  "zhipu-endpoint-split",
+  "parent-key-addressing",
+  "key-location",
+  "env-shadowing",
+  "restart-to-apply",
+  "breaker-unlock",
+  "providers-test-caveat",
+] as const satisfies readonly string[];
+
+const MODEL_PART_CACHE_TTL_MS = 60_000;
+const explainCache = new Map<string, { at: number; value: OpsModelReport["explain"] }>();
+const wiringCache = new Map<string, { at: number; value: OpsModelReport["wiring"] }>();
+
+/** Picklist slice of `providers explain` option rows (whitelist fields only). */
+function sliceProviderOptions(raw: unknown): ProviderOptionRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ProviderOptionRow[] = [];
+  for (const o of raw) {
+    if (o === null || typeof o !== "object") continue;
+    const r = o as Record<string, unknown>;
+    if (typeof r.id !== "string" || !r.id) continue;
+    out.push({
+      id: r.id,
+      ...(typeof r.touchpoint === "string" ? { touchpoint: r.touchpoint } : {}),
+      ...(typeof r.model === "string" ? { model: r.model } : {}),
+      ...(typeof r.tier === "string" ? { tier: r.tier } : {}),
+      ...(typeof r.env_ready === "boolean" ? { env_ready: r.env_ready } : {}),
+      ...(typeof r.dims === "number" ? { dims: r.dims } : {}),
+      ...(typeof r.cost_per_1m_tokens_usd === "number"
+        ? { cost_per_1m_tokens_usd: r.cost_per_1m_tokens_usd }
+        : {}),
+      ...(typeof r.cost_per_1m_input_usd === "number"
+        ? { cost_per_1m_input_usd: r.cost_per_1m_input_usd }
+        : {}),
+      ...(typeof r.cost_per_1m_output_usd === "number"
+        ? { cost_per_1m_output_usd: r.cost_per_1m_output_usd }
+        : {}),
+    });
+  }
+  return out;
+}
+
+/** env_detected picklist: variable NAMES → booleans, nothing else survives. */
+function sliceEnvDetected(raw: unknown): Record<string, boolean> | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === "boolean") out[k] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Picklist slice of `models read` tier rows. */
+function sliceModelsTiers(raw: unknown): ModelsTierRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ModelsTierRow[] = [];
+  for (const o of raw) {
+    if (o === null || typeof o !== "object") continue;
+    const r = o as Record<string, unknown>;
+    out.push({
+      ...(typeof r.tier === "string" ? { tier: r.tier } : {}),
+      ...(typeof r.resolved === "string" ? { resolved: r.resolved } : {}),
+      ...(typeof r.source === "string" ? { source: r.source } : {}),
+    });
+  }
+  return out;
+}
+
+/** Picklist slice of `models read` per-task rows. */
+function sliceModelsTasks(raw: unknown): ModelsTaskRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ModelsTaskRow[] = [];
+  for (const o of raw) {
+    if (o === null || typeof o !== "object") continue;
+    const r = o as Record<string, unknown>;
+    out.push({
+      ...(typeof r.key === "string" ? { key: r.key } : {}),
+      ...(typeof r.tier === "string" ? { tier: r.tier } : {}),
+      ...(typeof r.resolved === "string" ? { resolved: r.resolved } : {}),
+      ...(typeof r.description === "string" ? { description: r.description } : {}),
+    });
+  }
+  return out;
+}
+
+/** Picklist slice of `models doctor` probe rows. */
+function sliceModelProbes(raw: unknown): ModelProbeRow[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ModelProbeRow[] = [];
+  for (const o of raw) {
+    if (o === null || typeof o !== "object") continue;
+    const r = o as Record<string, unknown>;
+    out.push({
+      ...(typeof r.model === "string" ? { model: r.model } : {}),
+      ...(typeof r.touchpoint === "string" ? { touchpoint: r.touchpoint } : {}),
+      ...(typeof r.status === "string" ? { status: r.status } : {}),
+      ...(typeof r.message === "string" ? { message: r.message } : {}),
+      ...(typeof r.elapsed_ms === "number" ? { elapsed_ms: r.elapsed_ms } : {}),
+    });
+  }
+  return out;
+}
+
+/** One cached providers-explain part; cached per profile. */
+async function explainPart(ctx: ApiContext): Promise<OpsModelReport["explain"]> {
+  const cacheKey = `${ctx.id}:explain`;
+  const cached = explainCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < MODEL_PART_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  let value: OpsModelReport["explain"];
+  if (!ctx.cli) {
+    value = { status: "down", error: "CLI channel not available on this host" };
+  } else {
+    try {
+      const opts = await managementExecOpts(ctx);
+      const raw = await ctx.cli.providersExplain(opts);
+      const env_detected = sliceEnvDetected(
+        (raw as { env_detected?: unknown }).env_detected,
+      );
+      const options = sliceProviderOptions((raw as { options?: unknown }).options);
+      value = {
+        status: "ok",
+        ...(env_detected !== undefined ? { env_detected } : {}),
+        ...(options.length > 0 ? { options } : {}),
+        ...(typeof (raw as { recommended?: unknown }).recommended === "string"
+          ? { recommended: (raw as { recommended: string }).recommended }
+          : {}),
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[ops] providers explain failed: ${message}`);
+      value = { status: "down", error: firstLineOf(message) };
+    }
+  }
+  explainCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+/** One cached models-read part; cached per profile. */
+async function wiringPart(ctx: ApiContext): Promise<OpsModelReport["wiring"]> {
+  const cacheKey = `${ctx.id}:wiring`;
+  const cached = wiringCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < MODEL_PART_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  let value: OpsModelReport["wiring"];
+  if (!ctx.cli) {
+    value = { status: "down", error: "CLI channel not available on this host" };
+  } else {
+    try {
+      const opts = await managementExecOpts(ctx);
+      const raw = await ctx.cli.modelsRead(opts);
+      const tiers = sliceModelsTiers((raw as { tiers?: unknown }).tiers);
+      const per_task = sliceModelsTasks((raw as { per_task?: unknown }).per_task);
+      // tiers arrive as a record keyed by tier name on 611 — accept both
+      // shapes without parsing prose: record→rows when the array is absent
+      const tierRows =
+        tiers.length > 0
+          ? tiers
+          : Object.entries((raw as { tiers?: Record<string, unknown> }).tiers ?? {})
+              .filter(([, v]) => v !== null && typeof v === "object")
+              .map(([tier, v]) => {
+                const r = v as Record<string, unknown>;
+                return {
+                  ...(tier ? { tier } : {}),
+                  ...(typeof r.resolved === "string" ? { resolved: r.resolved } : {}),
+                  ...(typeof r.source === "string" ? { source: r.source } : {}),
+                } satisfies ModelsTierRow;
+              });
+      value = {
+        status: "ok",
+        ...(tierRows.length > 0 ? { tiers: tierRows } : {}),
+        ...(per_task.length > 0 ? { per_task } : {}),
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[ops] models read failed: ${message}`);
+      value = { status: "down", error: firstLineOf(message) };
+    }
+  }
+  wiringCache.set(cacheKey, { at: Date.now(), value });
+  return value;
+}
+
+/**
+ * GET /api/ops/model — the model-wiring card's whole diet. Three in-band
+ * parts (explain / wiring / doctor model set) + the pinned note ids; base
+ * token (perception reads).
+ */
+export async function handleOpsModel(ctx: ApiContext): Promise<Response> {
+  const report: OpsModelReport = { status: "ok", notes: [...MODEL_NOTES] };
+  report.explain = await explainPart(ctx);
+  report.wiring = await wiringPart(ctx);
+  report.doctor = await doctorSetPart(ctx, "model");
+  // the effective endpoints — the D1 second case fixed SELECT. Validation
+  // is the picklist here: only recipe-shaped keys with URL-shaped values
+  // may leave the server (a future upstream storing something else under
+  // the prefix stays invisible, non-negotiable #7 as structure).
+  try {
+    const rows = await ctx.pg.providerBaseUrls();
+    const overrides = rows.flatMap((r) => {
+      const recipe = r.key.replace(/^provider_base_urls\./, "");
+      return PROVIDER_RECIPE_RE.test(recipe) && PROVIDER_BASE_URL_RE.test(r.value)
+        ? [{ recipe, url: r.value }]
+        : [];
+    });
+    report.urls = {
+      status: "ok",
+      ...(overrides.length > 0 ? { overrides } : {}),
+    };
+  } catch (err) {
+    report.urls = {
+      status: "down",
+      error: firstLineOf(err instanceof Error ? err.message : String(err)),
+    };
+  }
+  const parts = [
+    report.explain?.status ?? "down",
+    report.wiring?.status ?? "down",
+    report.doctor.status,
+    report.urls?.status ?? "down",
+  ];
+  report.status = parts.every((s) => s === "down")
+    ? "down"
+    : parts.some((s) => s !== "ok")
+      ? "degraded"
+      : "ok";
+  return Response.json(report);
+}
+
+/** single-flight per profile (the probe is paid — a double click must not double-bill) */
+const modelTestLocks = new Map<string, Promise<OpsModelTestResult>>();
+
+/**
+ * POST /api/ops/model/test — one live reachability pass over the brain's
+ * ACTIVE models (`models doctor --json`; a few ping tokens). Admin tier:
+ * paid + outward side effect. ZERO request parameters — the verb is
+ * flag-only, so nothing from the request can ever reach argv.
+ */
+export async function handleOpsModelTest(
+  ctx: ApiContext,
+  principal: Principal,
+  adminConfigured: boolean,
+): Promise<Response> {
+  if (principal.tier !== "admin") {
+    return envelope(
+      403,
+      "E_FORBIDDEN",
+      adminConfigured
+        ? "the live model probe requires the COCKPIT_ADMIN_TOKEN tier — paste it at the action's step-up prompt"
+        : "COCKPIT_ADMIN_TOKEN is not configured on this cockpit — set it in the server env, or run `gbrain models doctor` on the brain host",
+    );
+  }
+  const inflight = modelTestLocks.get(ctx.id);
+  if (inflight) return Response.json(await inflight);
+  const run = runModelTest(ctx).finally(() => modelTestLocks.delete(ctx.id));
+  modelTestLocks.set(ctx.id, run);
+  return Response.json(await run);
+}
+
+async function runModelTest(ctx: ApiContext): Promise<OpsModelTestResult> {
+  if (!ctx.cli) {
+    return {
+      status: "down",
+      error:
+        "CLI channel not available on this host — run `gbrain models doctor` on the brain host instead",
+    };
+  }
+  try {
+    const opts = await managementExecOpts(ctx);
+    const env = await ctx.cli.modelsDoctor(opts);
+    const probes = sliceModelProbes((env as { probes?: unknown }).probes);
+    const rawSummary = (env as { summary?: Record<string, unknown> }).summary;
+    const summary = {
+      ...(typeof rawSummary?.total === "number" ? { total: rawSummary.total } : {}),
+      ...(typeof rawSummary?.ok === "number" ? { ok: rawSummary.ok } : {}),
+      ...(typeof rawSummary?.failed === "number" ? { failed: rawSummary.failed } : {}),
+    };
+    const failed =
+      typeof rawSummary?.failed === "number"
+        ? rawSummary.failed
+        : probes.filter((p) => p.status !== undefined && p.status !== "ok").length;
+    await auditWrite("owner (admin)", {
+      action: "ops.model-test",
+      profile: ctx.id,
+      detail: { total: probes.length, failed },
+    });
+    return {
+      // failed probes are the test WORKING (data, not a channel failure)
+      status: failed > 0 ? "degraded" : "ok",
+      ...(probes.length > 0 ? { probes } : {}),
+      ...(Object.keys(summary).length > 0 ? { summary } : {}),
+    };
+  } catch (err) {
+    const message = firstLineOf(err instanceof Error ? err.message : String(err));
+    await auditWrite("owner (admin)", {
+      action: "ops.model-test",
+      profile: ctx.id,
+      detail: { error: message },
+    });
+    return { status: "down", error: message };
+  }
+}
+
 /**
  * POST /api/evidence — whole evidence for prior search hits (assemble_evidence,
  * minimal V1.1 form: ≤3 triples per call, window unit around the hit chunk).
@@ -1136,7 +1474,10 @@ async function edgeQueue(
   }
 }
 
-async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
+async function takesQueue(
+  ctx: ApiContext,
+  store?: InboxStateStore | null,
+): Promise<TakesQueue> {
   // The pending-takes queue reads the read-only bypass, NOT the CLI:
   // gbrain's `takes propose` list scopes to ONE source per run
   // (resolveSourceId → 'default' without GBRAIN_SOURCE), so on a
@@ -1192,6 +1533,10 @@ async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
           ? { guard: { bin: ctx.takesGuard.bin, home: ctx.takesGuard.home } }
           : {}),
       }),
+      // 0.5.2 relief (wired deployments only): slicing metadata + mutes +
+      // snoozes with resurrection already applied. Assembly degrades to
+      // "absent" — the queue itself must never fail on it.
+      ...(store ? { relief: await reliefPart(ctx, items, store) } : {}),
     };
   } catch (err) {
     return {
@@ -1199,6 +1544,170 @@ async function takesQueue(ctx: ApiContext): Promise<TakesQueue> {
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * The relief half of the takes queue (0.5.2): piles (per-source newest
+ * batch), effective snoozes (resurrected + adjudicated entries pruned
+ * server-side), mutes with honest counts. Resurrection is STRICT string
+ * inequality between the snooze-time stamp and the CURRENT stamp from the
+ * same SQL extraction — never Date.parse, never a wall clock. Stamps
+ * unreadable ⇒ judgment skipped and snoozes ride as-is (the safe direction:
+ * no surprise revival, no wipe). State file corrupt ⇒ fail-visible
+ * stateError; relief still renders from the queue alone.
+ */
+async function reliefPart(
+  ctx: ApiContext,
+  items: TakeProposal[],
+  store: InboxStateStore,
+): Promise<TakesRelief> {
+  const piles = computeTakePiles(items);
+  let snapshot: InboxStateSnapshot;
+  try {
+    snapshot = await store.read(ctx.id);
+  } catch (err) {
+    return {
+      piles,
+      snoozed: [],
+      muted: [],
+      stateError: firstLineOf(err instanceof Error ? err.message : String(err)),
+    };
+  }
+  let stamps: Array<{ source_id: string; last_source_cycle_at?: string }> | null =
+    null;
+  let stampsDown = false;
+  try {
+    stamps = await ctx.pg.sourceCycleStamps();
+  } catch {
+    stampsDown = true;
+  }
+  const stampOf = (source: string): string | undefined =>
+    stamps?.find((s) => s.source_id === source)?.last_source_cycle_at;
+  const pendingIds = new Set(items.map((i) => i.id));
+  const snoozed: TakesSnoozedRow[] = [];
+  for (const e of snapshot.state.snoozed) {
+    if (!pendingIds.has(e.id)) continue; // adjudicated — out of view; the file compacts on the next mutation
+    const current = stampOf(e.source);
+    if (!stampsDown && current !== e.stamp) continue; // the source cycled since — resurrected
+    snoozed.push({
+      id: e.id,
+      source: e.source,
+      ...(e.snoozedAt ? { snoozedAt: e.snoozedAt } : {}),
+      ...(current === undefined ? { noCycle: true } : {}),
+    });
+  }
+  const muted = [...new Set(snapshot.state.muted.map((m) => m.source))];
+  const mutedCounts: Record<string, number> = {};
+  for (const s of muted) {
+    mutedCounts[s] = items.filter((i) => (i.source_id ?? "default") === s).length;
+  }
+  return {
+    piles,
+    snoozed,
+    muted,
+    ...(Object.keys(mutedCounts).length > 0 ? { mutedCounts } : {}),
+    ...(stampsDown ? { stampsDown: true } : {}),
+    ...(snapshot.error ? { stateError: snapshot.error } : {}),
+  };
+}
+
+/**
+ * POST /api/inbox/relief (0.5.2) — cockpit-OWN UI state, not a gbrain
+ * action: per-source mute/unmute and per-proposal snooze/unsnooze. Base
+ * token (same trust level as the token itself); audited like every write;
+ * deliberately NOT in the channel matrices and NEVER dispatching a verdict
+ * event. The snooze's source and stamp snapshot are taken SERVER-side from
+ * the queue + cycle stamps — anything the request body claims about them is
+ * ignored (no client-shaped state).
+ */
+export async function handleInboxRelief(
+  ctx: ApiContext,
+  req: Request,
+  store: InboxStateStore | null,
+): Promise<Response> {
+  if (!store) {
+    throw new BadRequestError(
+      "inbox relief state is not wired on this deployment (server startup)",
+    );
+  }
+  const body = await readJsonBody(req);
+  const op = body.op;
+  if (op !== "mute" && op !== "unmute" && op !== "snooze" && op !== "unsnooze") {
+    throw new BadRequestError("op must be mute|unmute|snooze|unsnooze");
+  }
+  let detail: Record<string, unknown>;
+  if (op === "mute" || op === "unmute") {
+    const source = typeof body.source === "string" ? body.source : undefined;
+    if (source === undefined || !isValidSourceId(source)) {
+      throw new BadRequestError("invalid source");
+    }
+    detail = { source };
+    await store.mutate(ctx.id, (s) => {
+      if (op === "mute") {
+        if (!s.muted.some((m) => m.source === source)) {
+          s.muted.push({ source, at: store.now() });
+        }
+      } else {
+        s.muted = s.muted.filter((m) => m.source !== source);
+      }
+    });
+  } else {
+    const id = requirePattern(
+      typeof body.id === "string" ? body.id : undefined,
+      "id",
+      ID_RE,
+    );
+    detail = { id };
+    if (op === "unsnooze") {
+      await store.mutate(ctx.id, (s) => {
+        s.snoozed = s.snoozed.filter((e) => e.id !== Number(id));
+      });
+    } else {
+      if (!ctx.pg?.configured) {
+        throw new CliExecutionError(
+          "cannot snooze: the read-only bypass is unavailable on this profile",
+        );
+      }
+      // server-authoritative row + stamp snapshot — the body's say is ignored
+      const pending = await ctx.pg.pendingTakeProposals();
+      const row = pending.find((p) => String(p.id) === id);
+      if (!row) {
+        throw new BadRequestError(
+          `proposal #${id} is not in the pending queue — already adjudicated?`,
+        );
+      }
+      const source = row.source_id ?? "default";
+      let stamp: string | undefined;
+      try {
+        stamp = (await ctx.pg.sourceCycleStamps()).find(
+          (s) => s.source_id === source,
+        )?.last_source_cycle_at;
+      } catch {
+        // a failed stamps read must not become stamp=undefined (that would
+        // false-resurrect on the next successful read) — refuse and retry
+        throw new CliExecutionError(
+          "cannot snooze: cycle stamps are unreadable right now — try again in a moment",
+        );
+      }
+      detail = { id, source };
+      await store.mutate(ctx.id, (s) => {
+        if (!s.snoozed.some((e) => e.id === Number(id))) {
+          s.snoozed.push({
+            id: Number(id),
+            source,
+            snoozedAt: store.now(),
+            ...(stamp !== undefined ? { stamp } : {}),
+          });
+        }
+      });
+    }
+  }
+  await auditWrite("owner", {
+    action: `inbox.relief.${op}`,
+    profile: ctx.id,
+    detail,
+  });
+  return Response.json({ ok: true });
 }
 
 async function contradictionsQueue(
@@ -1288,12 +1797,15 @@ async function activeTakesQueue(ctx: ApiContext): Promise<InboxQueue<TakeItem>> 
   }
 }
 
-export async function handleInbox(ctx: ApiContext): Promise<Response> {
+export async function handleInbox(
+  ctx: ApiContext,
+  inboxStore?: InboxStateStore | null,
+): Promise<Response> {
   const [trust, edgeProposals, takes, contradictions, extraction, activeTakes] =
     await Promise.all([
       trustQueue(ctx),
       edgeQueue(ctx),
-      takesQueue(ctx),
+      takesQueue(ctx, inboxStore),
       contradictionsQueue(ctx),
       extractionQueue(ctx),
       activeTakesQueue(ctx),

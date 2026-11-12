@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   OpsClientsReport,
+  OpsModelReport,
   OpsSourceDriftReport,
 } from "@gbrain-cockpit/shared";
 import { authRevokeClientCommand } from "@gbrain-cockpit/shared";
@@ -10,6 +11,7 @@ import { DriftCard } from "../components/DriftCard";
 import { ApiError, apiGet } from "../lib/api";
 import { currentProfile } from "../lib/brain";
 import { useI18n } from "../lib/i18n";
+import { ModelCard } from "./model-card";
 
 // Admin panel (0.4.x): the management surface proper. Visibility is a
 // DEPLOYMENT capability (COCKPIT_ADMIN_TOKEN configured — the server says
@@ -18,6 +20,8 @@ import { useI18n } from "../lib/i18n";
 // its step-up. One-key management writes stay EXACTLY the union grant-read;
 // revoke and every other grant reshaping are copy-commands the owner runs
 // on the brain host (owner-presence class — same as trust verbs upstream).
+// 0.5.1 adds the model-wiring card here: reads on the base token, the live
+// model probe (paid) at the admin step-up like the grant write.
 
 function firstLine(error?: string): string {
   if (!error) return "";
@@ -28,17 +32,21 @@ export function Admin() {
   const { t } = useI18n();
   const [clients, setClients] = useState<OpsClientsReport | null>(null);
   const [drift, setDrift] = useState<OpsSourceDriftReport | null>(null);
+  const [model, setModel] = useState<OpsModelReport | null>(null);
   const [busy, setBusy] = useState(false);
 
   const probe = useCallback(async () => {
     setBusy(true);
-    // both fails-soft — a half-down deployment still shows the other card
+    // all fails-soft — a half-down deployment still shows the other cards
     apiGet<OpsClientsReport>("/api/ops/clients")
       .then(setClients)
       .catch(() => setClients(null));
     apiGet<OpsSourceDriftReport>("/api/ops/sources-drift")
       .then(setDrift)
       .catch(() => setDrift(null));
+    apiGet<OpsModelReport>("/api/ops/model")
+      .then(setModel)
+      .catch(() => setModel(null));
     setBusy(false);
   }, []);
 
@@ -158,6 +166,8 @@ export function Admin() {
             </>
           )}
         </div>
+
+        <ModelCard model={model} refresh={() => void probe()} />
 
         <DriftCard drift={drift} refresh={() => void probe()} />
       </div>

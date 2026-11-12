@@ -41,7 +41,7 @@ export type AdjudicationAction =
 export type Channel = "mcp" | "cli-whitelist" | "copy-command";
 
 /** cockpit's own version; shown in Health and sent as MCP clientInfo. */
-export const COCKPIT_VERSION = "0.5.0";
+export const COCKPIT_VERSION = "0.5.2";
 
 export const ADJUDICATION_CHANNELS: Readonly<
   Record<AdjudicationAction, Channel>
@@ -99,7 +99,17 @@ export type ManagementAction =
   | "doctor.calibration" // …calibration set (takes_count, takes_weight_grid)
   | "doctor.assets" // …assets set (backup/git/unindexed/ghost)
   | "doctor.topology" // …topology set (cycle_phase_scope)
-  | "sources.writer-status"; // `gbrain sources writer status --json` (0.5.0 batch 3)
+  | "sources.writer-status" // `gbrain sources writer status --json` (0.5.0 batch 3)
+  // 0.5.1 model wiring (probed 0.60.611, internal/probes/model-wiring):
+  // explain = provider choice matrix (env BOOLEANS only, never key values);
+  // models.read = the brain's ACTIVE model wiring; doctor.model = static
+  // provider/embedding checks (zero network). models.doctor is the paid LIVE
+  // probe of the active path — admin tier at the route, but still one fixed
+  // CLI verb (`--json` only, no request data ever reaches argv).
+  | "providers.explain" // `gbrain providers explain --json`
+  | "models.read" // `gbrain models read --json`
+  | "doctor.model" // `gbrain doctor --only <DOCTOR_CHECK_SETS.model> --json`
+  | "models.doctor"; // `gbrain models doctor --json` (live probe, paid)
 
 export const MANAGEMENT_CHANNELS: Readonly<
   Record<ManagementAction, Channel>
@@ -113,6 +123,10 @@ export const MANAGEMENT_CHANNELS: Readonly<
   "doctor.assets": "cli-whitelist",
   "doctor.topology": "cli-whitelist",
   "sources.writer-status": "cli-whitelist",
+  "providers.explain": "cli-whitelist",
+  "models.read": "cli-whitelist",
+  "doctor.model": "cli-whitelist",
+  "models.doctor": "cli-whitelist",
 };
 
 // --- 0.5.0 doctor check sets (nightly-cycle observability) --------------------
@@ -148,6 +162,20 @@ export const DOCTOR_CHECK_SETS = {
   ],
   /** the deploy-checkup card's phase taxonomy source */
   topology: ["cycle_phase_scope"],
+  /**
+   * the model-wiring card's static half (0.5.1): provider/embedding checks
+   * that never call out (probed 0.60.611 — all six answer; zero overlap with
+   * the nightly set). Live reachability of the active models is NOT here —
+   * that is the models.doctor action (paid, admin tier).
+   */
+  model: [
+    "alternative_providers",
+    "provider_consent",
+    "embedding_key_source",
+    "embedding_env_override",
+    "derivation_unpriced_model",
+    "reranker_health",
+  ],
 } as const satisfies Record<string, readonly string[]>;
 
 export type DoctorCheckSetName = keyof typeof DOCTOR_CHECK_SETS;
@@ -171,6 +199,13 @@ export interface DoctorCheckRow {
     why?: string;
     [k: string]: unknown;
   } | null;
+  /**
+   * Upstream's structured details payload, when present. Consumption rule
+   * (0.5.1): model the slices the cards render (dream_paid_loop.keys,
+   * extract_health halt_reasons, provider_consent.provider_env) as optional
+   * fields; unknown shapes stay opaque — message prose is never parsed.
+   */
+  details?: Record<string, unknown> | null;
   [k: string]: unknown;
 }
 
@@ -197,14 +232,19 @@ export function normalizeDoctorCheck(raw: {
     name: raw.name,
     status: na ? "na" : status,
   };
-  // passthrough (details/severity/category/…) without re-widening the
-  // fields we type explicitly
+  // passthrough (severity/category/…) without re-widening the fields we
+  // type explicitly
   for (const [k, v] of Object.entries(raw)) {
-    if (k === "name" || k === "status" || k === "message" || k === "fix") continue;
+    if (k === "name" || k === "status" || k === "message" || k === "fix" || k === "details") {
+      continue;
+    }
     (out as Record<string, unknown>)[k] = v;
   }
   if (typeof raw.message === "string" && raw.message) out.message = raw.message;
   if (fix !== undefined) out.fix = fix;
+  if (raw.details !== null && typeof raw.details === "object") {
+    out.details = raw.details as Record<string, unknown>;
+  }
   return out;
 }
 
@@ -290,6 +330,39 @@ export function isValidSourceId(v: string): boolean {
  */
 export const OWNER_BIN_RE =
   /^(?:[a-z0-9][a-z0-9_-]{0,30}|\/[A-Za-z0-9._/-]{1,200})$/;
+
+// --- Model wiring (0.5.1) ------------------------------------------------------
+// Shapes pinned on gbrain 0.60.611 (internal/probes/model-wiring-0.60.611-
+// 20261112.md). These strings can end up inside owner copy-commands, so every
+// charset here is metachar-free by construction (an `&` in a URL would
+// background the pasted command; `;`/`$`/quotes would inject).
+
+/**
+ * Provider-qualified model ids as gbrain prints them: `zhipu:glm-5.3`,
+ * `ollama:qwen2.5-coder:14b` (interior colons), `together:Qwen/Qwen2.5-72B
+ * -Instruct-Turbo` (slashes + caps). Provider segment first, then a bounded
+ * metachar-free tail.
+ */
+export const MODEL_ID_RE =
+  /^[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9._/:~-]{0,127}$/;
+
+/** Recipe ids of provider configs (`provider_base_urls.<recipe>` keys). */
+export const PROVIDER_RECIPE_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * A base-URL override value for a copy-command: http(s), no `& $ ; ' " #`
+ * and no whitespace — the bip-verified endpoint
+ * `https://open.bigmodel.cn/api/coding/paas/v4` passes; cockpit never
+ * pre-fills one (the UI ships a placeholder + teaching notes only).
+ */
+export const PROVIDER_BASE_URL_RE = /^https?:\/\/[A-Za-z0-9./:?=%~-]{1,300}$/;
+
+/**
+ * Dream breaker base keys (`dream reset-key <base-key>`): upstream shapes
+ * like `dream:patterns:source:<id>`, `dream:synth-v2:*`, `dream:phase:*`.
+ * Key NAMES from doctor dream_paid_loop details — never secrets.
+ */
+export const DREAM_BREAKER_KEY_RE = /^dream:[a-z0-9_.:-]{1,120}$/;
 
 /** One gbrain deployment as configured server-side (secrets never leave). */
 export interface BrainProfileConfig {
@@ -463,6 +536,31 @@ export function authClientsListCommand(bin: string): string {
 }
 
 /**
+ * The env-prefixed head of a direct-call copy-command: `GBRAIN_HOME=<home>
+ * <real-bin>` for wrapper-brain profiles (so the pasted command targets the
+ * right brain), else the profile's plain bin. Degrades to `bin` unless BOTH
+ * a metachar-free home and a valid real bin are present — a half-built
+ * prefix must never reach a shell. Shared by every per-brain copy-command
+ * builder (dreamCalibration, provider base-url, breaker unlock…).
+ */
+function ownerPrefix(
+  bin: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  // mirrors takes-source.ts OWNER_HOME_RE (env-prefix text the owner pastes)
+  const homeOk =
+    opts.gbrainHome !== undefined && /^\/[A-Za-z0-9._/-]{1,200}$/.test(opts.gbrainHome);
+  if (opts.gbrainHome !== undefined && !homeOk) {
+    throw new Error("owner command gbrainHome rejected (metachar-free absolute path only)");
+  }
+  if (opts.gbrainBin !== undefined && homeOk && OWNER_BIN_RE.test(opts.gbrainBin)) {
+    return `GBRAIN_HOME=${opts.gbrainHome} ${opts.gbrainBin}`;
+  }
+  assertOwnerBin(bin);
+  return bin;
+}
+
+/**
  * The per-source "run one calibration pass now" copy-command (0.5.0 1.3):
  * `dream --source <s> --phase propose_takes --phase grade_takes` — repeatable
  * --phase verified upstream (dream.ts:143-149, canonical order), and the
@@ -482,20 +580,99 @@ export function dreamCalibrationCommand(
   if (!GBRAIN_SOURCE_ID_RE.test(sourceId)) {
     throw new Error(`dream command source rejected by upstream charset: ${sourceId}`);
   }
-  // mirrors takes-source.ts OWNER_HOME_RE (env-prefix text the owner pastes)
-  const homeOk =
-    opts.gbrainHome !== undefined && /^\/[A-Za-z0-9._/-]{1,200}$/.test(opts.gbrainHome);
-  if (opts.gbrainHome !== undefined && !homeOk) {
-    throw new Error("dream command gbrainHome rejected (metachar-free absolute path only)");
+  return `${ownerPrefix(bin, opts)} dream --source ${sourceId} --phase propose_takes --phase grade_takes`;
+}
+
+/**
+ * Base-URL override set copy-command (0.5.1). Nested key addressing is
+ * upstream-verbatim: `provider_base_urls.<recipe>` (the PARENT key reads as
+ * "not found" — probed 0.60.611; pinned as a card note). The url is pasted
+ * into a shell by the owner, so PROVIDER_BASE_URL_RE is the gate; cockpit
+ * never pre-fills an endpoint — the UI ships a placeholder and teaching
+ * notes. Rollback is the unset twin. `config set` on this key is
+ * DB-plane-backed and bip-verified (ENVIRONMENT §8.2).
+ */
+export function providerBaseUrlSetCommand(
+  bin: string,
+  recipe: string,
+  url: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  if (!PROVIDER_RECIPE_RE.test(recipe)) {
+    throw new Error(`provider recipe rejected by PROVIDER_RECIPE_RE: ${recipe}`);
   }
-  const prefix =
-    opts.gbrainBin !== undefined && homeOk && OWNER_BIN_RE.test(opts.gbrainBin)
-      ? `GBRAIN_HOME=${opts.gbrainHome} ${opts.gbrainBin}`
-      : (() => {
-          assertOwnerBin(bin);
-          return bin;
-        })();
-  return `${prefix} dream --source ${sourceId} --phase propose_takes --phase grade_takes`;
+  if (!PROVIDER_BASE_URL_RE.test(url)) {
+    throw new Error("provider base url rejected by PROVIDER_BASE_URL_RE (metachar-free http(s) URL only)");
+  }
+  return `${ownerPrefix(bin, opts)} config set provider_base_urls.${recipe} ${url}`;
+}
+
+/** The rollback twin of providerBaseUrlSetCommand. */
+export function providerBaseUrlUnsetCommand(
+  bin: string,
+  recipe: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  if (!PROVIDER_RECIPE_RE.test(recipe)) {
+    throw new Error(`provider recipe rejected by PROVIDER_RECIPE_RE: ${recipe}`);
+  }
+  return `${ownerPrefix(bin, opts)} config unset provider_base_urls.${recipe}`;
+}
+
+/**
+ * Teaching form of the set command: identical shape, `<URL>` placeholder.
+ * cockpit never pre-fills an endpoint — the owner picks per their key's
+ * channel (the card's notes teach the known zhipu split), so the rendered
+ * text deliberately cannot be pasted-and-run without an owner decision.
+ */
+export function providerBaseUrlSetTemplate(
+  bin: string,
+  recipe: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  if (!PROVIDER_RECIPE_RE.test(recipe)) {
+    throw new Error(`provider recipe rejected by PROVIDER_RECIPE_RE: ${recipe}`);
+  }
+  return `${ownerPrefix(bin, opts)} config set provider_base_urls.${recipe} <URL>`;
+}
+
+/**
+ * The isolated single-model probe copy-command. NOT a whitelist verb on
+ * purpose (0.5.1 verdict): upstream prints prose (no --json), and on brains
+ * whose provider_base_urls override lives in the DB plane this verb probes
+ * the recipe's DEFAULT endpoint — live-proven on bip 2026-11-12: false
+ * "insufficient balance" while `models doctor` went green through the real
+ * endpoint. The hint must carry that caveat; chat touchpoint fixed because
+ * the incident class it debugs is chat wiring.
+ */
+export function providersTestCommand(
+  bin: string,
+  model: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  if (!MODEL_ID_RE.test(model)) {
+    throw new Error(`model id rejected by MODEL_ID_RE: ${model}`);
+  }
+  return `${ownerPrefix(bin, opts)} providers test --touchpoint chat --model ${model}`;
+}
+
+/**
+ * Breaker unlock copy-command: `dream reset-key <base-key>` re-enables a
+ * paid-loop key the breaker tripped (3+ dead paid submissions in 24h) AFTER
+ * the owner fixed the wiring. Base keys come from doctor dream_paid_loop
+ * details.keys — key NAMES, never secrets (probed shape
+ * `dream:patterns:source:<id>`). Reset is stored in the brain and survives
+ * restarts; deaths after it count again.
+ */
+export function dreamResetKeyCommand(
+  bin: string,
+  baseKey: string,
+  opts: { gbrainBin?: string; gbrainHome?: string } = {},
+): string {
+  if (!DREAM_BREAKER_KEY_RE.test(baseKey)) {
+    throw new Error(`dream breaker key rejected by DREAM_BREAKER_KEY_RE: ${baseKey}`);
+  }
+  return `${ownerPrefix(bin, opts)} dream reset-key ${baseKey}`;
 }
 
 /**
@@ -970,6 +1147,129 @@ export interface TakesQueue extends InboxQueue<TakeProposal> {
     items?: Array<{ slug?: string; source_id?: string; [k: string]: unknown }>;
     error?: string;
   };
+  /**
+   * 0.5.2 inbox relief: the default view's slicing metadata + cockpit-owned
+   * mute/snooze state (owner-approved design, ROADMAP-0.5.2). Present only
+   * when the deployment wires a state store; absent ⇒ the client keeps the
+   * pre-0.5.2 full-list behavior (an honest capability, not an error).
+   */
+  relief?: TakesRelief;
+}
+
+// --- Inbox relief (0.5.2) ------------------------------------------------------
+// 「收件箱,住得下」: proposals are flow, not debt. The default view shows
+// only each source's NEWEST pending batch (the pile); the backlog collapses
+// into one quiet number. All of it is presentation over the SAME fixed
+// reads — proposed_at (in SQL_TAKES_PENDING since 0.2.2) and the cycle
+// stamps (0.5.0 D1). Zero new channels, zero new table columns.
+
+/** The newest pending batch of one source (computeTakePiles output). */
+export interface TakePile {
+  /** normalized source id (`source_id ?? "default"` — same key convention as
+   *  TakeQueueCommands.bySource, so mute keys can never miss) */
+  source: string;
+  /** earliest proposed_at of the batch, verbatim ISO as the DB returned it */
+  since: string;
+  /** the batch's latest row time (ISO) — the pile's label material */
+  night: string;
+  count: number;
+  /** the batch's proposal ids — explicit membership beats client-side
+   *  timestamp re-derivation (one implementation, no drift); undated rows
+   *  ride their source's newest batch (fail-visible on the hiding side) */
+  ids: number[];
+}
+
+/**
+ * Per-source newest-batch clustering. Batch boundary (owner D3, probed on
+ * 0.60.611 — internal/probes/inbox-relief-0.60.611-20261112.md): consecutive
+ * rows of one source whose proposed_at gap exceeds 6h start a new batch;
+ * within a real propose window rows are ≤22 minutes apart and nightly
+ * batches sit ≥24h apart, so the threshold has 4–16x margin both ways.
+ * Order-independent (sorts internally); input order is newest-first from
+ * SQL_TAKES_PENDING but nothing here relies on it.
+ */
+export const TAKE_PILE_GAP_MS = 6 * 3_600_000;
+
+export function computeTakePiles(
+  items: TakeProposal[],
+  opts: { gapMs?: number } = {},
+): TakePile[] {
+  const gapMs = opts.gapMs ?? TAKE_PILE_GAP_MS;
+  const dated = new Map<string, Array<{ id: number; at: number; iso: string }>>();
+  const undated = new Map<string, number[]>();
+  for (const it of items) {
+    const source =
+      typeof it.source_id === "string" && it.source_id ? it.source_id : "default";
+    const iso = typeof it.proposed_at === "string" ? it.proposed_at : "";
+    const at = iso ? Date.parse(iso) : NaN;
+    if (Number.isFinite(at)) {
+      const rows = dated.get(source) ?? [];
+      rows.push({ id: it.id, at, iso });
+      dated.set(source, rows);
+    } else {
+      const ids = undated.get(source) ?? [];
+      ids.push(it.id);
+      undated.set(source, ids);
+    }
+  }
+  const out: TakePile[] = [];
+  for (const [source, rows] of dated) {
+    if (rows.length === 0) continue;
+    rows.sort((a, b) => a.at - b.at);
+    // walk back from the newest row while consecutive gaps stay under the
+    // threshold — the newest contiguous run IS the pile
+    let start = rows.length - 1;
+    while (start > 0 && rows[start]!.at - rows[start - 1]!.at <= gapMs) {
+      start--;
+    }
+    const batch = rows.slice(start);
+    const extra = undated.get(source) ?? [];
+    undated.delete(source); // consumed by the pile
+    const ids = [...batch.map((r) => r.id), ...extra];
+    out.push({
+      source,
+      since: batch[0]!.iso,
+      night: batch[batch.length - 1]!.iso,
+      count: ids.length,
+      ids,
+    });
+  }
+  // sources whose every row is undated: the pile is what there is, labels empty
+  for (const [source, ids] of undated) {
+    if (ids.length === 0) continue;
+    out.push({ source, since: "", night: "", count: ids.length, ids });
+  }
+  return out;
+}
+
+/** One active snooze as the client renders it (server-pruned view). */
+export interface TakesSnoozedRow {
+  id: number;
+  source: string;
+  /** when the snooze was set (ISO) */
+  snoozedAt?: string;
+  /** the source has no cycle stamp right now — the honest "won't auto-revive
+   *  until its first completed cycle" copy rides on this */
+  noCycle?: boolean;
+}
+
+/** The relief half of the takes queue (0.5.2, owner-approved D2 option A). */
+export interface TakesRelief {
+  /** newest batch per source — the default view's pile membership */
+  piles: TakePile[];
+  /** ACTIVE snoozes: resurrection already applied (stamp changed or row
+   *  adjudicated entries pruned server-side before shipping) */
+  snoozed: TakesSnoozedRow[];
+  /** muted source ids (deduped) */
+  muted: string[];
+  /** pending count per muted source — the fold's honest numbers */
+  mutedCounts?: Record<string, number>;
+  /** cycle stamps unreadable this pass: resurrection SKIPPED (snoozes ride
+   *  as-is — the safe direction: never a surprise revival, never a wipe) */
+  stampsDown?: boolean;
+  /** state file exists but is unreadable: relief still renders from the
+   *  queue; mutations refuse until the operator fixes the file */
+  stateError?: string;
 }
 
 /** One auto-extracted entity stub awaiting owner review (extraction_pending). */
@@ -1295,6 +1595,104 @@ export interface OpsClientsReport {
   selfClientId?: string;
   /** human-view read command for the CLI-down degradation hint */
   command?: string;
+  error?: string;
+}
+
+// --- Model wiring report (0.5.1) -----------------------------------------------
+// GET /api/ops/model + POST /api/ops/model/test. Every row below is a
+// server-built PICKLIST slice of the upstream payload: key VALUES never
+// appear upstream (env booleans only, probed 0.60.611) and cockpit's own
+// field whitelist keeps it that way even if a future upstream version
+// starts echoing more (AGENTS non-negotiable #7).
+
+/** One `providers explain` option row, sliced to what the card renders. */
+export interface ProviderOptionRow {
+  /** full id, e.g. "zhipu:glm-5.3" */
+  id: string;
+  touchpoint?: string;
+  model?: string;
+  tier?: string;
+  env_ready?: boolean;
+  dims?: number;
+  cost_per_1m_tokens_usd?: number;
+  cost_per_1m_input_usd?: number;
+  cost_per_1m_output_usd?: number;
+}
+
+/** One `models read` tier resolution (utility/reasoning/deep/subagent). */
+export interface ModelsTierRow {
+  tier?: string;
+  resolved?: string;
+  source?: string;
+}
+
+/** One `models read` per-task resolution (e.g. models.dream.synthesize). */
+export interface ModelsTaskRow {
+  key?: string;
+  tier?: string;
+  resolved?: string;
+  description?: string;
+}
+
+/** GET /api/ops/model — the model-wiring card's whole diet. */
+export interface OpsModelReport {
+  status: CheckStatus;
+  /** providers explain --json: env booleans + the option catalog */
+  explain?: {
+    status: CheckStatus;
+    /** provider env-var NAME → set? (booleans only, never values) */
+    env_detected?: Record<string, boolean>;
+    options?: ProviderOptionRow[];
+    recommended?: string;
+    error?: string;
+  };
+  /** models read --json: the brain's ACTIVE wiring per tier and task */
+  wiring?: {
+    status: CheckStatus;
+    tiers?: ModelsTierRow[];
+    per_task?: ModelsTaskRow[];
+    error?: string;
+  };
+  /** doctor model set — static checks only (live probe is the test action) */
+  doctor?: OpsDoctorSet;
+  /**
+   * pg `config` table: the effective base-URL overrides — the ONLY
+   * structured home of "which endpoint is actually in effect" (owner-
+   * approved fixed SELECT, the D1 second case). Values are recipe- and
+   * URL-validated server-side before leaving; rows that fail stay
+   * server-side entirely.
+   */
+  urls?: {
+    status: CheckStatus;
+    overrides?: { recipe: string; url: string }[];
+    error?: string;
+  };
+  /** pinned incident-knowledge note ids → locale admin.model.note.<id> */
+  notes?: string[];
+  error?: string;
+}
+
+/** One `models doctor` probe row, sliced to what the card renders. */
+export interface ModelProbeRow {
+  model?: string;
+  touchpoint?: string;
+  status?: string;
+  message?: string;
+  elapsed_ms?: number;
+}
+
+/**
+ * POST /api/ops/model/test — one live `models doctor --json` pass over the
+ * brain's ACTIVE models (chat/expansion/embedding reachability + the two
+ * zero-cost config touchpoints). "degraded" = the pass ran but some probe
+ * is not ok (that is the test WORKING, not the channel failing); "down" =
+ * the verb itself failed to run. Paid action: admin tier, single-flight,
+ * audited, cost disclosed in the button copy.
+ */
+export interface OpsModelTestResult {
+  status: CheckStatus;
+  probes?: ModelProbeRow[];
+  summary?: { total?: number; ok?: number; failed?: number };
   error?: string;
 }
 

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { TokenVerifier } from "./auth";
 import { BrainRegistry } from "./brains";
 import { loadConfig, ConfigError, type Config } from "./config";
+import { createInboxStateStore } from "./inbox-state";
 import { loadRootEnv } from "./env";
 import { envelope, guardRequest } from "./http";
 import { loadProfiles } from "./profiles";
@@ -34,7 +35,10 @@ import {
   handleOpsCalibration,
   handleOpsAssets,
   handleOpsDeploy,
+  handleOpsModel,
+  handleOpsModelTest,
   handleTakePropose,
+  handleInboxRelief,
   handleTakeResolve,
   handleTrustDrop,
   handleWriteCancel,
@@ -85,6 +89,14 @@ for (const v of brainsConfig.ignoredLegacyVars) {
 const verifier = new TokenVerifier({
   base: cfg.cockpitToken,
   admin: cfg.adminToken,
+});
+
+// 0.5.2 inbox relief state (cockpit-own, never the brain DB): path rules —
+// explicit env wins, else alongside the profiles file (release-safe), else
+// ~/.cockpit/ (never the cwd — that IS the release dir on managed hosts).
+const inboxStore = createInboxStateStore({
+  file: process.env.COCKPIT_INBOX_STATE_FILE,
+  profilesFile: process.env.COCKPIT_PROFILES_FILE,
 });
 
 // Static web root: explicit env wins (compiled-binary deployments), then the
@@ -187,6 +199,8 @@ const server = Bun.serve({
             return await handleSourcesStatus(channels);
           // 0.4.0 ops surface: reads on the base token, grant-read gated to
           // the admin tier inside the handler (two distinct 403 messages).
+          // 0.5.1 adds the third action class: the paid model probe — admin
+          // tier too, for the same reason (money leaves the host).
           case "GET /api/ops/sources-drift":
             return await handleOpsSourceDrift(channels);
           case "GET /api/ops/clients":
@@ -203,6 +217,17 @@ const server = Bun.serve({
             return await handleOpsAssets(channels);
           case "GET /api/ops/deploy":
             return await handleOpsDeploy(channels);
+          // 0.5.1 model wiring: the read is perception (base token); the
+          // LIVE probe is the third action class — paid, outward side effect
+          // — so it gates to the admin tier like the management write does.
+          case "GET /api/ops/model":
+            return await handleOpsModel(channels);
+          case "POST /api/ops/model/test":
+            return await handleOpsModelTest(
+              channels,
+              principal,
+              verifier.adminConfigured,
+            );
           case "POST /api/ops/grant-read": {
             const res = await handleOpsGrantRead(
               channels,
@@ -214,7 +239,11 @@ const server = Bun.serve({
             return res;
           }
           case "GET /api/inbox":
-            return await handleInbox(channels);
+            return await handleInbox(channels, inboxStore);
+          // 0.5.2: cockpit-own relief state (mute/snooze) — NOT a gbrain
+          // action, so no channel-matrix row; base token + audit like any UI write
+          case "POST /api/inbox/relief":
+            return await handleInboxRelief(channels, req, inboxStore);
           case "POST /api/inbox/trust/drop":
             return await handleTrustDrop(channels, req);
           case "POST /api/inbox/edge":
@@ -265,11 +294,12 @@ const server = Bun.serve({
 });
 
 console.log(`[cockpit] v${COCKPIT_VERSION} listening on http://${cfg.bind}:${cfg.port}`);
+console.log(`[cockpit] inbox relief state: ${inboxStore.path} (one file per server; cockpit-owned, never the brain DB)`);
 console.log("[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>'");
 console.log(
   verifier.adminConfigured
-    ? "[cockpit] auth: management writes require the COCKPIT_ADMIN_TOKEN tier"
-    : "[cockpit] auth: COCKPIT_ADMIN_TOKEN unset — management writes answer 403 and degrade to copy-commands",
+    ? "[cockpit] auth: management writes and the paid model probe require the COCKPIT_ADMIN_TOKEN tier"
+    : "[cockpit] auth: COCKPIT_ADMIN_TOKEN unset — management writes and the paid model probe answer 403 and degrade to copy-commands",
 );
 
 process.on("SIGINT", () => {
