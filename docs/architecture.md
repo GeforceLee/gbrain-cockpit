@@ -24,7 +24,12 @@ cockpit server (Bun + TypeScript, zero runtime npm deps)
    ├─① MCP driver ────────► gbrain serve MCP endpoint
    │     reads, page writes (receipt protocol), fact confirmation,
    │     provenance reads (links/backlinks/timeline/sources), write-receipt
-   │     listing, search-evidence assembly
+   │     listing, search-evidence assembly,
+   │     ask surface (0.6): free evidence leg (query; the PAID `expand`
+   │       param is never sent) + paid deep-answer leg (think — save/take
+   │       never sent; a stamped two-step confirm, per-brain single-flight
+   │       and per-call audit gate it server-side) + the free
+   │       why-is-this-page-missing diagnostic (query explain_target)
    │
    ├─② CLI driver ────────► whitelisted `gbrain` subcommands, --json only
    │     trust queue review/drop, edge proposals, takes adjudication
@@ -51,6 +56,9 @@ cockpit server (Bun + TypeScript, zero runtime npm deps)
 | Takes propose accept / reject | none | CLI whitelist (per-row `GBRAIN_SOURCE` env on multi-source brains) | one-key |
 | Fact / memory confirmation (`confirm_memory`) | `memory_confirm` scope | MCP | one-key |
 | Page write (`put_page`) | none | MCP receipt protocol | edit + poll |
+| Free evidence table (`query`) | none | MCP | Ask panel (0.6) |
+| Deep answer (`think`) | paid model call | MCP + paid-action guardrails (stamped confirm flag, single-flight, audit) | Ask panel (0.6) |
+| Why is a page missing (`query explain_target`) | none | MCP | Ask desk-foot (0.6) |
 
 On multi-source brains the adjudication verbs exec the REAL gbrain binary with the proposal row's own `GBRAIN_SOURCE` and the profile's `GBRAIN_HOME` (opt-in via `gbrainBin`/`gbrainHome`; the driver re-asserts the brain config's database name before every exec — the same guard isolated-brain wrapper scripts apply). If the CLI channel is unavailable, one-key CLI actions degrade to copy-command blocks — the action stays possible, owner presence increases. The UI distinguishes the two causes: the gbrain binary was not found (this host may not be the brain host) vs. the binary is present but the probe (`trust review`) failed (degraded — see the Health panel). MCP-channel actions (confirmations, page writes) work from any host that can reach the MCP endpoint.
 

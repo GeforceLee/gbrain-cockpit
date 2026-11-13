@@ -23,7 +23,11 @@ cockpit server(Bun + TypeScript,零运行时 npm 依赖)
    │
    ├─① MCP 通道 ──────► gbrain serve 的 MCP 端点
    │     读取、页面写入(回执协议)、事实确认、
-   │     出处读取(关系/时间线/来源诊断)、写收据列表、搜索证据组装
+   │     出处读取(关系/时间线/来源诊断)、写收据列表、搜索证据组装、
+   │     问一句面(0.6):免费证据腿(query,付费参数 expand 永不发送)
+   │       + 付费深答腿(think,save/take 永不发送;服务端以盖章式两步
+   │         confirm 旗标 + 每脑单飞 + 每调用审计设门)
+   │       + 免费查缺页诊断(query 的 explain_target)
    │
    ├─② CLI 通道 ──────► 白名单内的 `gbrain` 子命令,仅 --json
    │     信任队列审阅/驳回、关系提案、takes 裁决
@@ -50,6 +54,9 @@ cockpit server(Bun + TypeScript,零运行时 npm 依赖)
 | takes propose accept / reject | 无 | CLI 白名单(多源 brain 上按行带 `GBRAIN_SOURCE` env) | 一键 |
 | 事实/记忆确认(`confirm_memory`) | `memory_confirm` scope | MCP | 一键 |
 | 页面写入(`put_page`) | 无 | MCP 回执协议 | 编辑 + 轮询 |
+| 免费证据桌(`query`) | 无 | MCP | 问一句面板(0.6) |
+| 深答(`think`) | 付费模型调用 | MCP + 付费动作护栏(盖章式 confirm 旗标、单飞、审计) | 问一句面板(0.6) |
+| 查为什么缺某页(`query` explain_target) | 无 | MCP | 问一句桌脚(0.6) |
 
 多源 brain 上,裁决动词以提案行自己的 `GBRAIN_SOURCE` 与 profile 的 `GBRAIN_HOME` 直调真实 gbrain 二进制(经 `gbrainBin`/`gbrainHome` 显式开启;驱动每次执行前复断言 brain 配置的库名——与隔离 wrapper 同一道防线)。CLI 通道不可用时,一键 CLI 动作降级为复制命令块——动作仍然可达,但对 owner 在场的要求提高。不可用分两种成因,界面对应区分:未找到 gbrain 二进制(本机可能非 brain 主机)与二进制已就位但探测(`trust review`)未通过(降级,详见健康面板)。MCP 类动作(确认、页面写入)在任何能到达 MCP 端点的主机上都能用。
 

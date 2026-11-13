@@ -1768,3 +1768,102 @@ export interface WriteReceipt {
   detail?: string;
   [k: string]: unknown;
 }
+
+// --- 0.6 ask panel (问一句) ----------------------------------------------------
+// The ask surface is one river: a free evidence leg (MCP `query`) and a paid
+// deep-answer leg (MCP `think`). Both travel MCP and nothing else — no CLI, no
+// copy-command, no pg. `think` is read-only for us (its save/take persist
+// params are local-CLI-only upstream and are NEVER sent), but it burns paid
+// model tokens, which makes it the fourth action class: perception reads are
+// free, this one costs money by design and is audited every call.
+//
+// Shapes live-probed 2026-11-13 against gbrain 0.60.611
+// (internal/probes/ask-panel-0.60.611-20261113.json): query rows carry their
+// own chunk_text excerpt; think answers are markdown with inline `[slug]`
+// citation markers backed by a parallel citations[] array, and gaps[] is the
+// brain's own account of what it could not fully answer.
+
+/** The paid think call's list-price bracket, measured at opus rates
+ *  (probed usage 4–6k tokens/call). Copy says a range, never a promise. */
+export const ASK_THINK_COST_BRACKET = "$0.2–0.5";
+/** Measured think wall-clock range (atlas, 0.60.611): 35.8s and 94.8s. */
+export const ASK_THINK_SECONDS_MIN = 36;
+export const ASK_THINK_SECONDS_MAX = 95;
+/** Driver-side timeout for one think call (probe precedent: 300s budget). */
+export const ASK_THINK_TIMEOUT_MS = 300_000;
+
+/** Free-leg evidence row (MCP `query` hit) — field picklist, passthrough shape
+ *  from the probe; unknown extra fields ride along ignored. */
+export interface AskEvidenceRow {
+  slug: string;
+  title: string;
+  type?: string;
+  chunk_text?: string;
+  chunk_id?: number;
+  score?: number;
+  source_id?: string;
+  effective_date?: string;
+  effective_date_source?: string;
+  status?: string;
+  trust_tier?: string;
+  [k: string]: unknown;
+}
+
+/** GET /api/ask — the free evidence leg (one MCP query, top-K). */
+export interface AskEvidenceReport {
+  status: "ok" | "degraded" | "down";
+  rows: AskEvidenceRow[];
+  /** server-measured wall clock of the query call */
+  tookMs: number;
+  error?: string;
+}
+
+/** think citations[] row (probed: row_num always null so far; when set it
+ *  anchors a take row in the verdict pile — v1 keeps it as data only). */
+export interface AskCitation {
+  page_slug: string;
+  row_num: number | null;
+  citation_index: number;
+  source_id?: string;
+}
+
+/** Normalized think payload — defensive: the synthesis fields exist only when
+ *  the brain had a chat key (synthesis_keyless answers carry evidence only). */
+export interface AskThinkResult {
+  question: string;
+  answer: string;
+  citations: AskCitation[];
+  gaps: string[];
+  pagesGathered?: number;
+  takesGathered?: number;
+  graphHits?: number;
+  modelUsed?: string;
+  rounds?: number;
+  warnings?: string[];
+  synthesis_status?: string;
+  usage?: { input_tokens?: number; output_tokens?: number };
+  diagnostics?: Record<string, unknown>;
+}
+
+/** POST /api/ask/think — the paid deep-answer leg. `keyless` is in-band: the
+ *  brain answered with evidence only because no chat key is wired. */
+export interface AskThinkReport {
+  status: "ok" | "keyless" | "down";
+  result?: AskThinkResult;
+  /** server-measured wall clock of the think call */
+  tookMs?: number;
+  error?: string;
+  /** gbrain agent-contract error envelope (code/message/suggestion/…), shown
+   *  as-is in the failure segment when the call died */
+  envelope?: Record<string, unknown>;
+}
+
+/** POST /api/ask/missing — "why is this page missing from the evidence"
+ *  (MCP `query` with explain_target). Unprobed shape: defensive passthrough. */
+export interface AskMissingReport {
+  status: "ok" | "degraded" | "down";
+  target: string;
+  /** picklist of the plausible explanation fields, when present */
+  lines: string[];
+  error?: string;
+}
