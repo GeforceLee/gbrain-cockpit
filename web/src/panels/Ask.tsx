@@ -365,85 +365,11 @@ export function Ask({
     setHistory((h) => [entry, ...h].slice(0, 12));
   }, []);
 
-  /** free leg: print a new tape (the old one files into the session box) */
-  const runTape = useCallback(
-    async (question: string, direct: boolean) => {
-      if (waiting || evidenceBusy) return;
-      if (tape) {
-        const wasNoAnswer =
-          phaseOf(tape) === "answer" && isNoAnswer(tape.evidence?.rows ?? []);
-        pushHistory({
-          question: tape.question,
-          stamp: stampOf(tape, wasNoAnswer),
-          seconds: tape.result?.tookMs !== undefined
-            ? formatSeconds(tape.result.tookMs)
-            : tape.evidence !== null
-              ? formatSeconds(tape.evidence.tookMs)
-              : "—",
-        });
-      }
-      setSeamDismissed(false);
-      setExpanded(new Set());
-      setWidened(new Map());
-      setMissing(null);
-      setMissingTarget("");
-      const id = ++tapeId.current;
-      const askedAt = Date.now();
-      setTape({ id, question, askedAt, evidence: null, runStartedAt: null, result: null, receipt: null });
-      setEvidenceBusy(true);
-      try {
-        const report = await apiGet<AskEvidenceReport>(
-          `/api/ask?q=${encodeURIComponent(question)}`,
-        );
-        setTape((cur) =>
-          cur && cur.id === id ? { ...cur, evidence: report } : cur,
-        );
-      } catch (err) {
-        setTape((cur) =>
-          cur && cur.id === id
-            ? {
-                ...cur,
-                evidence: {
-                  status: "down",
-                  rows: [],
-                  tookMs: 0,
-                  error: err instanceof ApiError ? err.message : String(err),
-                },
-              }
-            : cur,
-        );
-      } finally {
-        setEvidenceBusy(false);
-      }
-      if (direct) {
-        // 护栏(定案钉死):直达深答省的是「等证据摆完」,不是盖章——滚到付费缝
-        requestAnimationFrame(() =>
-          seamRef.current?.scrollIntoView({ block: "center", behavior: "smooth" }),
-        );
-      }
-    },
-    [waiting, evidenceBusy, tape, pushHistory],
-  );
-
-  const submit = useCallback(() => {
-    const q = draft.trim();
-    if (!q || waiting || evidenceBusy) return;
-    setDraft("");
-    void runTape(q, false);
-  }, [draft, waiting, evidenceBusy, runTape]);
-
-  const direct = useCallback(() => {
-    const q = draft.trim();
-    if (!q || waiting || evidenceBusy) return;
-    setDraft("");
-    void runTape(q, true);
-  }, [draft, waiting, evidenceBusy, runTape]);
-
-  /** paid leg: the stamp. One call + timer + cancel — never polling */
-  const stamp = useCallback(async () => {
-    if (!tape || waiting) return;
-    const id = tape.id;
-    const question = tape.question;
+  /** the paid leg as ONE reusable flight: one call + timer + cancel, never
+   *  polling. Shared by the seam stamp (after reading the evidence) and the
+   *  direct button (owner 2026-11-13: a click on the price-labeled paid
+   *  button IS the confirmation — no forced second stop). */
+  const startThink = useCallback(async (id: number, question: string) => {
     const controller = new AbortController();
     abortRef.current = controller;
     const startedAt = Date.now();
@@ -482,7 +408,85 @@ export function Ask({
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, [tape, waiting]);
+  }, []);
+
+  /** free leg always prints (it feeds the tape's provenance chips); on a
+   *  direct ask the paid leg fires IN PARALLEL — the writing segment shows
+   *  at once and the evidence prints beneath it when the free query lands. */
+  const runTape = useCallback(
+    (question: string, direct: boolean) => {
+      if (waiting || evidenceBusy) return;
+      if (tape) {
+        const wasNoAnswer =
+          phaseOf(tape) === "answer" && isNoAnswer(tape.evidence?.rows ?? []);
+        pushHistory({
+          question: tape.question,
+          stamp: stampOf(tape, wasNoAnswer),
+          seconds: tape.result?.tookMs !== undefined
+            ? formatSeconds(tape.result.tookMs)
+            : tape.evidence !== null
+              ? formatSeconds(tape.evidence.tookMs)
+              : "—",
+        });
+      }
+      setSeamDismissed(false);
+      setExpanded(new Set());
+      setWidened(new Map());
+      setMissing(null);
+      setMissingTarget("");
+      const id = ++tapeId.current;
+      const askedAt = Date.now();
+      setTape({ id, question, askedAt, evidence: null, runStartedAt: null, result: null, receipt: null });
+      setEvidenceBusy(true);
+      apiGet<AskEvidenceReport>(`/api/ask?q=${encodeURIComponent(question)}`)
+        .then((report) => {
+          setTape((cur) => (cur && cur.id === id ? { ...cur, evidence: report } : cur));
+        })
+        .catch((err: unknown) => {
+          setTape((cur) =>
+            cur && cur.id === id
+              ? {
+                  ...cur,
+                  evidence: {
+                    status: "down",
+                    rows: [],
+                    tookMs: 0,
+                    error: err instanceof ApiError ? err.message : String(err),
+                  },
+                }
+              : cur,
+          );
+        })
+        .finally(() => setEvidenceBusy(false));
+      if (direct) {
+        // owner 2026-11-13: the paid button's click is the stamp itself —
+        // fire now, no intermediate stop at the seam
+        void startThink(id, question);
+      }
+    },
+    [waiting, evidenceBusy, tape, pushHistory, startThink],
+  );
+
+  const submit = useCallback(() => {
+    const q = draft.trim();
+    if (!q || waiting || evidenceBusy) return;
+    setDraft("");
+    runTape(q, false);
+  }, [draft, waiting, evidenceBusy, runTape]);
+
+  const direct = useCallback(() => {
+    const q = draft.trim();
+    if (!q || waiting || evidenceBusy) return;
+    setDraft("");
+    runTape(q, true);
+  }, [draft, waiting, evidenceBusy, runTape]);
+
+  /** seam stamp: the paid upgrade AFTER reading the free evidence — this
+   *  path's single conscious paid click */
+  const stamp = useCallback(() => {
+    if (!tape || waiting) return;
+    void startThink(tape.id, tape.question);
+  }, [tape, waiting, startThink]);
 
   const cut = useCallback(() => {
     abortRef.current?.abort();
@@ -689,12 +693,12 @@ export function Ask({
                       <div className="acts">
                         <button type="button" className="btn-paid btn-press" onClick={() => setSeamDismissed(false)}>
                           {t("ask.seam.stamp")}
-                          <span className="sub">{t("ask.direct.sub")}</span>
+                          <span className="sub">{t("ask.seam.stampSub")}</span>
                         </button>
                       </div>
                     ) : (
                       <div className="acts">
-                        <button type="button" className="btn-upgrade btn-press" onClick={() => void stamp()}>
+                        <button type="button" className="btn-upgrade btn-press" onClick={stamp}>
                           {t("ask.seam.stamp")}
                         </button>
                         <button type="button" className="btn-no btn-press" onClick={() => setSeamDismissed(true)}>
