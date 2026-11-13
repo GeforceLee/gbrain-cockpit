@@ -1668,6 +1668,24 @@ function DecisionRail({
   // re-type is cheaper than losing a carefully-picked date)
   const [edgeDate, setEdgeDate] = useState("");
 
+  // One verdict in flight at a time: the stamps disable and every run is
+  // re-entry-blocked — a fast double-click or a mashed ⌘⌫ must never fire a
+  // terminal action twice (reject paths have no undo). The ref, not the
+  // state, is the race-proof gate; the state is only the visual half.
+  const [verdictBusy, setVerdictBusy] = useState(false);
+  const verdictInFlight = useRef(false);
+  const guarded = (run: () => Promise<boolean>) => async (): Promise<boolean> => {
+    if (verdictInFlight.current) return false;
+    verdictInFlight.current = true;
+    setVerdictBusy(true);
+    try {
+      return await run();
+    } finally {
+      verdictInFlight.current = false;
+      setVerdictBusy(false);
+    }
+  };
+
   // The single runtime source of truth for which channel an action travels
   // (shared/ADJUDICATION_CHANNELS) — the check card renders FROM the matrix,
   // so it can never disagree with the code that runs the action.
@@ -1699,8 +1717,9 @@ function DecisionRail({
       variant="drop"
       zh={t(zhKey)}
       en={t(enKey)}
-      how={how}
-      onClick={() => void run()}
+      how={verdictBusy ? t("inbox.stamp.busy") : how}
+      disabled={verdictBusy}
+      onClick={() => void guarded(run)()}
     />
   );
 
@@ -1714,8 +1733,9 @@ function DecisionRail({
       variant="ok"
       zh={t(zhKey)}
       en={t(enKey)}
-      how={how}
-      onClick={() => void run()}
+      how={verdictBusy ? t("inbox.stamp.busy") : how}
+      disabled={verdictBusy}
+      onClick={() => void guarded(run)()}
     />
   );
 
@@ -1890,7 +1910,7 @@ function DecisionRail({
           {stampDrop(
             "inbox.edgeReject",
             "stamp.en.reject",
-            t("inbox.via.cliEdge"),
+            t("inbox.via.cliEdgeDrop"),
             (dropRun = () =>
               act(
                 "/api/inbox/edge",
@@ -1912,15 +1932,17 @@ function DecisionRail({
             <button
               type="button"
               className="small"
-              disabled={!edgeDate}
+              disabled={!edgeDate || verdictBusy}
               onClick={() =>
-                void act(
-                  "/api/inbox/edge",
-                  { op: "date", id, date: edgeDate },
-                  `edge.date ${id} ${edgeDate}`,
-                  undefined,
-                  metaFor("ok", t("inbox.edgeDateApply"), `edge #${id}`),
-                )
+                void guarded(() =>
+                  act(
+                    "/api/inbox/edge",
+                    { op: "date", id, date: edgeDate },
+                    `edge.date ${id} ${edgeDate}`,
+                    undefined,
+                    metaFor("ok", t("inbox.edgeDateApply"), `edge #${id}`),
+                  ),
+                )()
               }
             >
               {t("inbox.edgeDateApply")}
@@ -1929,14 +1951,17 @@ function DecisionRail({
               type="button"
               className="small"
               title={t("inbox.edgeUndo")}
+              disabled={verdictBusy}
               onClick={() =>
-                void act(
-                  "/api/inbox/edge",
-                  { op: "undo", id },
-                  `edge.undo ${id}`,
-                  undefined,
-                  metaFor("ok", t("inbox.edgeUndo"), `edge #${id}`),
-                )
+                void guarded(() =>
+                  act(
+                    "/api/inbox/edge",
+                    { op: "undo", id },
+                    `edge.undo ${id}`,
+                    undefined,
+                    metaFor("ok", t("inbox.edgeUndo"), `edge #${id}`),
+                  ),
+                )()
               }
             >
               ↩ {t("inbox.edgeUndo")}
@@ -2001,7 +2026,7 @@ function DecisionRail({
           {stampDrop(
             "inbox.drop",
             "stamp.en.reject",
-            t("inbox.via.cliTake"),
+            t("inbox.via.cliTakeDrop"),
             (dropRun = () =>
               act(
                 "/api/inbox/takes/propose",
@@ -2153,7 +2178,7 @@ function DecisionRail({
           {stampDrop(
             "inbox.edgeReject",
             "stamp.en.reject",
-            t("inbox.via.cliDecide"),
+            t("inbox.via.cliDecideDrop"),
             (dropRun = () =>
               act(
                 "/api/inbox/contradictions",
@@ -2210,7 +2235,9 @@ function DecisionRail({
 
   // mockup keyboard affordances: ⌘⌫ = one-key drop (when the CLI channel is
   // live), ⌘↵ = copy the terminal-confirmation command. Both stay inert while
-  // typing in inputs so they never eat editing keys.
+  // typing in inputs so they never eat editing keys. The drop runs through
+  // the same re-entry guard as the stamp buttons — a mashed ⌘⌫ is a
+  // double-fire of a terminal action too.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -2227,7 +2254,7 @@ function DecisionRail({
         });
       } else if (e.key === "Backspace" && dropRun) {
         e.preventDefault();
-        void dropRun();
+        void guarded(dropRun)();
       }
     }
     window.addEventListener("keydown", onKey);

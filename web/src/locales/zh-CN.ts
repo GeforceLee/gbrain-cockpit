@@ -188,11 +188,16 @@ export const zhCN = {
   "inbox.batch.reject": "驳回本页全部",
   "inbox.batch.confirm": "再点一次,确认驳回——拒绝没有后悔药(终局,不可撤销)",
   "inbox.noSelection": "从左侧选择一条待裁决项——右侧文档卡与裁决操作轨会在此展开。",
+  // ⌘⌫ 只绑驳回侧(drop):一键「接受」永不宣称 ⌘⌫——想用键盘接受的人
+  // 不能被引导去按出一条不可撤销的驳回
   "inbox.via.cliDrop": "一键 · CLI trust drop · ⌘⌫",
-  "inbox.via.cliEdge": "一键 · CLI edge · ⌘⌫",
-  "inbox.via.cliTake": "一键 · CLI takes · ⌘⌫",
+  "inbox.via.cliEdge": "一键 · CLI edge",
+  "inbox.via.cliEdgeDrop": "一键 · CLI edge · ⌘⌫",
+  "inbox.via.cliTake": "一键 · CLI takes",
+  "inbox.via.cliTakeDrop": "一键 · CLI takes · ⌘⌫",
   "inbox.via.mcp": "一键 · MCP confirm",
   "inbox.via.copy": "复制命令 · 终端确认 · ⌘↵",
+  "inbox.stamp.busy": "处理中……再等一下",
   "inbox.edgeHint": "需要驳回时,把命令中的 accept 改为 reject(同一 ID)。",
   "inbox.takeHint": "接受用这条;驳回用下一条(同一提案 ID)。命令已按该提案所属源生成。",
   "inbox.takeFinality": "驳回即终局:此队列没有撤销,执行前请确认。",
@@ -265,7 +270,8 @@ export const zhCN = {
   "inbox.contradiction.probeRan": "探针上次运行 {at},可见矛盾 {n} 条。",
   "inbox.contradiction.probeUnavailable":
     "探针状态不可读(此 gbrain 无 find_contradictions 或调用失败)。",
-  "inbox.via.cliDecide": "一键 · CLI decide · ⌘⌫",
+  "inbox.via.cliDecide": "一键 · CLI decide",
+  "inbox.via.cliDecideDrop": "一键 · CLI decide · ⌘⌫",
   "inbox.queue.extraction": "实体存根",
   "inbox.queue.extractionDesc":
     "自动抽取的隔离实体存根:未经你复核不会进入 brain。此处只读——处置动词(extraction_review)仅限 owner 令牌,cockpit 不代劳。",

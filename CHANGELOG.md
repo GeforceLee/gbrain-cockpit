@@ -8,6 +8,15 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-13
+
+The stamps-don't-lie release: three broken interface promises found in the 11-12 walkthrough — a real click-through of the demo workstation at live backlog scale (657 pending takes) plus a full-panel code sweep, not a paper review — are now kept. Every window gets its navigator back, a stamp never advertises a key it won't press, and one press is one verdict.
+
+### Fixed — walkthrough hardening (verified live on the demo workstation; deployed and content-verified on leewin the same day)
+- **Narrow-viewport navigation never appeared**: the mobile nav strip's base `display:none` rule sat after the `max-width:1240px` media override in CSS source order — same specificity, the later rule wins — so below 1240px (half-width windows, tablets, phones over tailscale) the app rendered with NO panel navigation at all. The base rule now precedes the query, with a comment pinning the ordering hazard. Verified at 1000px: the strip renders and switches panels.
+- **Accept stamps advertised ⌘⌫**: the takes/edges/contradictions accept stamps carried the same "· ⌘⌫" sub-label as their reject twins, but the binding is reject/drop only — a keyboard user aiming to accept was one keypress away from an irreversible reject (takes reject has no undo). The accept sides drop the hint; the reject sides keep it (and there it is true).
+- **Double-fire on verdicts**: stamp buttons had no in-flight state — a fast double-click or a mashed ⌘⌫ could send a terminal action twice. Every decision-rail write (stamps, edge date/undo, the ⌘⌫ keyboard path) now runs through a re-entry guard: a ref blocks the race, the state disables the stamps and swaps the sub-label to "working…" (`inbox.stamp.busy`).
+
 ## [0.5.2] - 2026-11-12
 
 The inbox-you-can-live-in release: the 614-pending backlog stops being a wall. The inbox opens on today's pile — each source's newest pending batch — and the backlog collapses into one quiet number with the resident line: proposals are flow, not debt; leaving them costs nothing. Verified on the demo workstation's 657-row same-distribution synthetic backlog (the live atlas distribution: one flood night, a tapering tail, a freshest batch) plus a never-cycled dead-account source.
