@@ -11,6 +11,9 @@ import { loadProfiles } from "./profiles";
 import { serveStatic } from "./static";
 import {
   handleAnomalies,
+  handleAskEvidence,
+  handleAskMissing,
+  handleAskThink,
   handleAuditHistory,
   handleBrainHealth,
   handleConfirm,
@@ -276,6 +279,15 @@ const server = Bun.serve({
             return await handleWriteConflicts(channels, url);
           case "POST /api/evidence":
             return await handleEvidence(channels, req);
+          // 0.6 ask panel (问一句): free evidence leg + paid deep-answer leg,
+          // both MCP. The paid verb takes the two-step stamp's server half
+          // (confirm flag), single-flights per profile and audits every call.
+          case "GET /api/ask":
+            return await handleAskEvidence(channels, url);
+          case "POST /api/ask/think":
+            return await handleAskThink(channels, req, principal);
+          case "POST /api/ask/missing":
+            return await handleAskMissing(channels, req);
           default:
             return envelope(404, "E_NOT_FOUND", "unknown route");
         }

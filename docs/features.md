@@ -51,6 +51,15 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - Global topbar box with `/` and ⌘K shortcuts lands here; results show score, type, a plain-text snippet and an **origin chip** (which channel captured the page); click to peek the page in place (the result list stays behind it)
 - **Evidence expansion** per hit (`assemble_evidence`): the window of text around the matched chunk — the drawer stays the full-page view
 
+## Ask (0.6)
+
+- The brain's answering surface as a **chart recorder**: one question prints one tape, in the order things happened — question → evidence (free, `query`, ~2s) → paid seam → writing (36–95s, one blocking call) → the cited brief → gaps. The paid leg (`think`) is a **paid model call every time**, and the paid path takes **exactly one conscious click**: either the amber "Answer it" button in the console (its click IS the stamp — the free evidence prints in parallel while the write starts), or, after reading the free evidence, the seam's stamp. Behind both: a server-side `confirm` flag, per-brain single-flight, and an audit line per call — the 0.5.1 paid-probe precedent, minus the admin gate (the D5 passphrase variant slots into the same seam without relayout)
+- **Provenance is the luxury**: every `[slug]` marker in the answer and gap sentences renders as a hoverable chip — on-tape chips (solid) show the evidence row's real excerpt and click-jump to it with an amber flash; brain-read chips (dashed) say honestly that the brain read that page on its own and offer the Pages panel; gap-only citations get a `—` index. A citations appendix lists every source in citation order
+- **Honesty over theater**: the wait shows only a tape-feed animation, a real elapsed clock with three copy tiers (thresholds from the measured 36–95s range) and a cancel whose receipt says the money may already be spent — no progress bar, no ETA, nothing fake. A question the brain cannot answer prints a refusal brief ("what exists / what's missing"), and think's own `gaps[]` renders verbatim as the gap block
+- **Degrades in-band**: a keyless brain answers with evidence only (a keyless stamp pointing at Admin · Model wiring — never auto-wiring); tool errors render gbrain's structured envelope (code/message/suggestion) with the official `gbrain errors <code>` lookup as copy-only
+- Answers render through the marked → DOMPurify pipeline's semantics (token-tree rendering — links from brain content never become anchors; zero `innerHTML` anywhere); evidence excerpts are typeset verbatim as untrusted text
+- Desk-foot utilities, all free: widen the top evidence (`assemble_evidence`), "why is this page missing" (`query`'s `explain_target`), and the top-K fact line. `query`'s paid `expand` parameter never appears in the UI; think's `save`/`take` (MCP-ignored persist params) are never sent
+
 ## Health
 
 - Overall status plus per-channel cards: MCP latency gauge, brain summary (name, gbrain version, engine, page count), CLI channel (binary found / missing), read-only bypass, and **per-source diagnostics** (`sources_status`: clone state, last sync, pending writes)

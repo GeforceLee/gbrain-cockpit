@@ -51,6 +51,13 @@ export class McpError extends Error {
     message: string,
     readonly status?: number,
     readonly retryAfterMs?: number,
+    /**
+     * gbrain's agent-contract error envelope, whole, when the tool error text
+     * was one JSON block ({code, message, suggestion, docs_cmd, …}). The ask
+     * panel's failure segment renders it field-by-field instead of a flattened
+     * message; every other consumer keeps ignoring it.
+     */
+    readonly envelope?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "McpError";
@@ -150,18 +157,30 @@ export class McpDriver {
       // message, suggestion, …} (agent contract v1, verified 0.60.558).
       // Classify the two scope-related codes so routes can answer in user
       // language instead of a bare 502; everything else stays protocol.
-      const envelope = parseErrorEnvelope(text);
-      if (envelope) {
-        const code = envelope.code ?? envelope.error ?? "";
-        const message = envelope.message ?? text;
-        if (code === "permission_denied" || code === "insufficient_scope") {
-          throw new McpError("denied", message);
-        }
-        if (code === "unknown_source") {
-          throw new McpError("unknown-source", message);
-        }
+      // The whole envelope rides on the error for consumers (ask panel)
+      // that render it field-by-field.
+      const envelope = parseFullEnvelope(text);
+      const code =
+        envelope !== null
+          ? String(envelope.code ?? envelope.error ?? "")
+          : "";
+      const message =
+        envelope !== null && typeof envelope.message === "string"
+          ? envelope.message
+          : text;
+      if (code === "permission_denied" || code === "insufficient_scope") {
+        throw new McpError("denied", message, undefined, undefined, envelope ?? undefined);
       }
-      throw new McpError("protocol", `tool ${name} errored: ${text || "n/a"}`);
+      if (code === "unknown_source") {
+        throw new McpError("unknown-source", message, undefined, undefined, envelope ?? undefined);
+      }
+      throw new McpError(
+        "protocol",
+        `tool ${name} errored: ${text || "n/a"}`,
+        undefined,
+        undefined,
+        envelope ?? undefined,
+      );
     }
     // Prefer the structured payload; fall back to parsing the first text part.
     // `_meta` (upstream's behavior-disclosure notices, hundreds of chars per
@@ -414,6 +433,51 @@ export class McpDriver {
       query: q,
       ...(sourceId ? { source_id: sourceId } : {}),
     });
+  }
+
+  // --- 0.6 ask surface (问一句) -------------------------------------------------
+  // Deliberately OUTSIDE the read cache: the ask panel's segment meta carries
+  // a server-measured wall clock per call, and a cached second ask would print
+  // a lying "0ms" tape. Politeness is preserved by the panel being explicitly
+  // user-driven (one ask = one query), not churning like tab switches.
+  // `expand` is NEVER sent — it is query's hidden PAID parameter (one LLM
+  // call, probed tool schema 2026-11-13) and the ask UI is free-first.
+
+  /**
+   * The free evidence leg: one MCP `query`, top-K rows with chunk_text
+   * excerpts riding along (probed 0.60.611 — rows are self-sufficient for the
+   * evidence table; assemble_evidence is only for widening, see routes).
+   */
+  askEvidence(q: string, limit: number): Promise<unknown> {
+    return this.callTool("query", { query: q, limit }, { timeoutMs: 30_000 });
+  }
+
+  /**
+   * The paid deep-answer leg: MCP `think`. Only `question` is ever sent —
+   * save/take are local-CLI-only upstream (persist never happens from MCP),
+   * and model/rounds/anchor/since/until stay owner-side. Long budget by
+   * design: think measured 94.8s on atlas (probe 2026-11-13); the per-call
+   * timeout override is the single timeout authority (ARCHITECTURE §6).
+   */
+  askThink(
+    question: string,
+    timeoutMs: number,
+  ): Promise<unknown> {
+    return this.callTool("think", { question }, { timeoutMs });
+  }
+
+  /**
+   * "Why is this page missing?" — query's explain_target diagnostic (probed
+   * schema: "Expected page (slug or source:slug): why it is missing"). The
+   * response shape is NOT yet pinned by a probe; routes pass it through
+   * defensively. Free (no expansion, no LLM).
+   */
+  askMissing(q: string, target: string): Promise<unknown> {
+    return this.callTool(
+      "query",
+      { query: q, explain_target: target },
+      { timeoutMs: 30_000 },
+    );
   }
 
   /** Fuzzy slug/title → exact slugs (the jump box's resolver). */
@@ -868,21 +932,18 @@ export class McpDriver {
   }
 }
 
-/** Parse a gbrain agent-contract error envelope from a tool-error text block. */
-function parseErrorEnvelope(
+/** Parse a gbrain agent-contract error envelope (whole object) from a
+ *  tool-error text block; null when the text was not one JSON envelope. */
+function parseFullEnvelope(
   text: string,
-): { error?: string; code?: string; message?: string } | null {
+): Record<string, unknown> | null {
   if (!text.startsWith("{")) return null;
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed.error !== "string" && typeof parsed.code !== "string") {
       return null;
     }
-    return {
-      ...(typeof parsed.error === "string" ? { error: parsed.error } : {}),
-      ...(typeof parsed.code === "string" ? { code: parsed.code } : {}),
-      ...(typeof parsed.message === "string" ? { message: parsed.message } : {}),
-    };
+    return parsed;
   } catch {
     return null;
   }

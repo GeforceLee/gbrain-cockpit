@@ -52,17 +52,21 @@ export async function apiSend<T>(
   path: string,
   method: "POST" | "PUT",
   payload: unknown,
-  opts: { token?: string; timeoutMs?: number } = {},
+  opts: { token?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   // opts.token overrides the stored bearer for THIS request only — the
   // management step-up (0.4.0): the admin token is pasted at the action,
   // travels in the Authorization header of that one call, and is never
   // written to persistent storage. opts.timeoutMs widens the abort budget
   // for calls whose server side legitimately outlives the default (the live
-  // model probe runs paid reachability checks with retries).
+  // model probe runs paid reachability checks with retries). opts.signal is
+  // the CALLER's cancel (the ask panel's "cut the tape"): it fires alongside
+  // the timeout budget, whichever comes first.
   const token = opts.token ?? getToken();
   if (!token) throw new ApiError("no token stored", "E_NO_TOKEN", 0);
 
+  const signals: AbortSignal[] = [AbortSignal.timeout(opts.timeoutMs ?? 30_000)];
+  if (opts.signal) signals.push(opts.signal);
   const res = await fetch(path, {
     method,
     headers: withProfile({
@@ -70,7 +74,7 @@ export async function apiSend<T>(
       "content-type": "application/json",
     }),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+    signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals),
   });
   const body = (await res.json().catch(() => null)) as (Envelope & T) | null;
   if (!res.ok) {

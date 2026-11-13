@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type {
   AnomaliesReport,
+  AskCitation,
+  AskEvidenceReport,
+  AskEvidenceRow,
+  AskMissingReport,
+  AskThinkReport,
+  AskThinkResult,
   AuditHistoryReport,
   BrainHealthReport,
   CliChannelStatus,
@@ -56,6 +62,7 @@ import type {
   WriteRequestsReport,
 } from "@gbrain-cockpit/shared";
 import {
+  ASK_THINK_TIMEOUT_MS,
   authClientsListCommand,
   authRescopeCommand,
   computeTakePiles,
@@ -1426,6 +1433,314 @@ export async function handleEvidence(
     };
     return Response.json(report);
   }
+}
+
+// --- 0.6 ask (问一句) ----------------------------------------------------------
+// One river, two legs, MCP only. The free leg (query) is a perception read;
+// the paid leg (think) is the fourth action class — money leaves the host on
+// every call, so it requires an explicit confirm flag, single-flights per
+// profile, and writes an audit line every time (the 0.5.1 live-probe
+// precedent, minus the admin gate: D5-A is the shipped default — the stamp is
+// the confirmation; the D5-B admin-passphrase variant slots into the seam
+// without touching this handler).
+
+/** sanitize an ask question: control chars out, bounded, never empty */
+function askQuestion(raw: unknown, field = "question"): string {
+  if (typeof raw !== "string") {
+    throw new BadRequestError(`${field} must be a string`);
+  }
+  const q = raw.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  if (q.length < 1 || q.length > 400) {
+    throw new BadRequestError(`${field} must be 1..400 chars`);
+  }
+  return q;
+}
+
+/** query's response varies (array | {results}) — normalize to rows, keeping
+ *  only rows with a string slug (the evidence table's spine). */
+function normalizeQueryRows(r: unknown): AskEvidenceRow[] {
+  const raw: unknown[] = Array.isArray(r)
+    ? r
+    : r !== null &&
+        typeof r === "object" &&
+        Array.isArray((r as Record<string, unknown>).results)
+      ? ((r as Record<string, unknown>).results as unknown[])
+      : [];
+  return raw.filter(
+    (row): row is AskEvidenceRow =>
+      row !== null && typeof row === "object" &&
+      typeof (row as AskEvidenceRow).slug === "string",
+  );
+}
+
+/** Fold think's probed payload (2026-11-13, 0.60.611) into AskThinkResult,
+ *  defensively: every field checked, missing fields stay undefined. */
+function normalizeThink(
+  raw: unknown,
+  question: string,
+): AskThinkResult {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const citations: AskCitation[] = Array.isArray(r.citations)
+    ? r.citations.filter(
+        (c): c is AskCitation =>
+          c !== null && typeof c === "object" &&
+          typeof (c as AskCitation).page_slug === "string",
+      )
+    : [];
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const usageRaw = (r.usage ?? {}) as Record<string, unknown>;
+  const result: AskThinkResult = {
+    question: typeof r.question === "string" ? r.question : question,
+    answer: typeof r.answer === "string" ? r.answer : "",
+    citations,
+    gaps: Array.isArray(r.gaps)
+      ? r.gaps.filter((g): g is string => typeof g === "string")
+      : [],
+    ...(num(r.pagesGathered) !== undefined
+      ? { pagesGathered: num(r.pagesGathered) }
+      : {}),
+    ...(num(r.takesGathered) !== undefined
+      ? { takesGathered: num(r.takesGathered) }
+      : {}),
+    ...(num(r.graphHits) !== undefined
+      ? { graphHits: num(r.graphHits) }
+      : {}),
+    ...(typeof r.modelUsed === "string" ? { modelUsed: r.modelUsed } : {}),
+    ...(num(r.rounds) !== undefined ? { rounds: num(r.rounds) } : {}),
+    ...(Array.isArray(r.warnings)
+      ? { warnings: r.warnings.filter((w): w is string => typeof w === "string") }
+      : {}),
+    ...(typeof r.synthesis_status === "string"
+      ? { synthesis_status: r.synthesis_status }
+      : {}),
+    ...(num(usageRaw.input_tokens) !== undefined ||
+      num(usageRaw.output_tokens) !== undefined
+      ? {
+          usage: {
+            ...(num(usageRaw.input_tokens) !== undefined
+              ? { input_tokens: num(usageRaw.input_tokens) }
+              : {}),
+            ...(num(usageRaw.output_tokens) !== undefined
+              ? { output_tokens: num(usageRaw.output_tokens) }
+              : {}),
+          },
+        }
+      : {}),
+    ...(r.diagnostics !== null && typeof r.diagnostics === "object" &&
+        !Array.isArray(r.diagnostics)
+      ? { diagnostics: r.diagnostics as Record<string, unknown> }
+      : {}),
+  };
+  return result;
+}
+
+/** think's keyless marker: the brain answered with evidence only because no
+ *  chat key is wired (tool docs; unprobed live — kept as a distinct string so
+ *  a future richer marker can extend the check). */
+function thinkKeyless(result: AskThinkResult): boolean {
+  return result.synthesis_status === "synthesis_keyless";
+}
+
+/**
+ * GET /api/ask?q=… — the free evidence leg. One MCP `query`, top-K rows
+ * (K=5, the probed default shape); server-measured timing rides along for the
+ * tape's segment meta. No caching by design (the tape prints honest seconds).
+ */
+export async function handleAskEvidence(
+  ctx: ApiContext,
+  url: URL,
+): Promise<Response> {
+  const q = askQuestion(param(url, "q"), "q");
+  const started = Date.now();
+  try {
+    const rows = normalizeQueryRows(await ctx.mcp.askEvidence(q, 5));
+    const report: AskEvidenceReport = {
+      status: "ok",
+      rows,
+      tookMs: Date.now() - started,
+    };
+    return Response.json(report);
+  } catch (err) {
+    const report: AskEvidenceReport = {
+      status: reportStatus(err),
+      rows: [],
+      tookMs: Date.now() - started,
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+/** single-flight per profile: one paid think per brain at a time. The entry
+ *  remembers its question so a re-stamp of the SAME tape shares the flight
+ *  (double click = one bill), while a DIFFERENT question gets an honest busy
+ *  refusal instead of somebody else's answer. */
+const askThinkLocks = new Map<
+  string,
+  { question: string; run: Promise<AskThinkReport> }
+>();
+
+/**
+ * POST /api/ask/think — the paid deep-answer leg. Body {question, confirm}.
+ * `confirm: true` is the server-side half of the two-step stamp: the paid
+ * verb can never fire from a formless or accidental request. Client abort
+ * ("cut the tape") releases the lock immediately and lets the abandoned
+ * call finish in the background purely so its audit line lands with real
+ * usage numbers — the money was spent the moment the call left.
+ */
+export async function handleAskThink(
+  ctx: ApiContext,
+  req: Request,
+  principal: Principal,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const question = askQuestion(body.question);
+  if (body.confirm !== true) {
+    throw new BadRequestError(
+      "confirm must be true — the paid think call needs the tape's stamp",
+    );
+  }
+  const existing = askThinkLocks.get(ctx.id);
+  if (existing) {
+    if (existing.question === question) {
+      return Response.json(await existing.run);
+    }
+    const report: AskThinkReport = {
+      status: "down",
+      error:
+        "another deep answer is already writing on this brain — wait for the tape or cut it first",
+    };
+    return Response.json(report);
+  }
+  const run = runAskThink(ctx, question, principal, req.signal);
+  askThinkLocks.set(ctx.id, { question, run });
+  const settle = () => askThinkLocks.delete(ctx.id);
+  // client-abort releases the lock NOW (a re-stamp may start); the run itself
+  // keeps going detached — see runAskThink's audit continuation.
+  req.signal?.addEventListener("abort", () => {
+    if (askThinkLocks.get(ctx.id)?.run === run) settle();
+  });
+  run.finally(settle).catch(() => {});
+  return Response.json(await run);
+}
+
+async function runAskThink(
+  ctx: ApiContext,
+  question: string,
+  principal: Principal,
+  signal: AbortSignal | undefined,
+): Promise<AskThinkReport> {
+  const started = Date.now();
+  const audit = (detail: Record<string, unknown>) =>
+    auditWrite(principal.name, {
+      action: "ask.think",
+      profile: ctx.id,
+      detail: { question: question.slice(0, 120), ...detail },
+    });
+  try {
+    const raw = await ctx.mcp.askThink(question, ASK_THINK_TIMEOUT_MS);
+    const result = normalizeThink(raw, question);
+    const tookMs = Date.now() - started;
+    void audit({
+      outcome: thinkKeyless(result) ? "keyless" : "ok",
+      tookMs,
+      ...(result.modelUsed !== undefined ? { model: result.modelUsed } : {}),
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+    });
+    return {
+      status: thinkKeyless(result) ? "keyless" : "ok",
+      result,
+      tookMs,
+    };
+  } catch (err) {
+    const tookMs = Date.now() - started;
+    const abandoned = signal?.aborted === true;
+    const detail: Record<string, unknown> = {
+      outcome: abandoned ? "cancelled-after-abort" : "failed",
+      tookMs,
+    };
+    if (err instanceof McpError && err.envelope) {
+      detail.code = String(err.envelope.code ?? err.envelope.error ?? "");
+    }
+    void audit(detail);
+    return {
+      status: "down",
+      tookMs,
+      error: err instanceof Error ? err.message : String(err),
+      ...(err instanceof McpError && err.envelope
+        ? { envelope: err.envelope }
+        : {}),
+    };
+  }
+}
+
+/**
+ * POST /api/ask/missing — "why is this page missing from the evidence?"
+ * (query's explain_target, free). Response shape unprobed: we pass through a
+ * picklist of the plausible explanation fields and cap everything; the panel
+ * renders whatever lines came back, verbatim.
+ */
+export async function handleAskMissing(
+  ctx: ApiContext,
+  req: Request,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const q = askQuestion(body.q, "q");
+  const rawTarget = body.target;
+  if (
+    typeof rawTarget !== "string" ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9/_.:-]{0,200}$/.test(rawTarget)
+  ) {
+    throw new BadRequestError("target must be a slug-shaped string");
+  }
+  try {
+    const r = (await ctx.mcp.askMissing(q, rawTarget)) as unknown;
+    const report: AskMissingReport = {
+      status: "ok",
+      target: rawTarget,
+      lines: explainLines(r),
+    };
+    return Response.json(report);
+  } catch (err) {
+    const report: AskMissingReport = {
+      status: reportStatus(err),
+      target: rawTarget,
+      lines: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+    return Response.json(report);
+  }
+}
+
+/** Defensive picklist over an unprobed explain_target payload: known-ish
+ *  explanation fields first, then any short string field, capped at 8 lines. */
+function explainLines(r: unknown): string[] {
+  const lines: string[] = [];
+  const push = (v: unknown) => {
+    if (typeof v === "string" && v.trim() && lines.length < 8) {
+      lines.push(v.trim().slice(0, 300));
+    }
+  };
+  const obj = r === null || typeof r !== "object" || Array.isArray(r)
+    ? null
+    : (r as Record<string, unknown>);
+  if (obj === null) {
+    push(typeof r === "string" ? r : JSON.stringify(r));
+    return lines.length > 0
+      ? lines
+      : ["(no explanation fields in the response — shape unprobed)"];
+  }
+  for (const key of ["reason", "why", "note", "message", "explanation"]) {
+    push(obj[key]);
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === "explain_target") continue;
+    if (typeof value === "string") push(value);
+  }
+  return lines.length > 0
+    ? lines
+    : [JSON.stringify(obj).slice(0, 300)];
 }
 
 // --- inbox ------------------------------------------------------------------

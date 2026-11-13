@@ -2102,3 +2102,149 @@ describe("handleInboxRelief (POST /api/inbox/relief)", () => {
     }
   });
 });
+
+// --- 0.6 ask surface: free leg / paid leg / missing ---------------------------
+
+import {
+  handleAskEvidence,
+  handleAskMissing,
+  handleAskThink,
+} from "./api";
+import type {
+  AskEvidenceReport,
+  AskThinkReport,
+} from "@gbrain-cockpit/shared";
+
+const THINK_OK = {
+  question: "q",
+  answer: "ans [kb/x]",
+  citations: [{ page_slug: "kb/x", row_num: null, citation_index: 1 }],
+  gaps: ["gap one", 42, null],
+  pagesGathered: 12,
+  modelUsed: "anthropic:claude-opus-4-7",
+  synthesis_status: "ok",
+  usage: { input_tokens: 3763, output_tokens: 5892 },
+};
+
+function askCtx(
+  mcp: Record<string, unknown>,
+  id = "ask-test",
+): ApiContext {
+  return { id, mcp } as unknown as ApiContext;
+}
+
+function postReq(body: unknown): Request {
+  return new Request("http://x/api/ask/think", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+const OWNER: Principal = { name: "owner", tier: "base" };
+
+describe("handleAskEvidence (GET /api/ask — free leg)", () => {
+  test("normalizes array and {results} envelopes, keeps slug rows only", async () => {
+    for (const answer of [
+      [{ slug: "kb/a", title: "t", chunk_text: "x" }, { broken: true }],
+      { results: [{ slug: "kb/b", title: "t" }] },
+    ]) {
+      const ctx = askCtx({ askEvidence: async () => answer });
+      const res = await handleAskEvidence(ctx, new URL("http://x/api/ask?q=m"));
+      const body = (await res.json()) as AskEvidenceReport;
+      expect(body.status).toBe("ok");
+      expect(body.rows).toHaveLength(1);
+      expect(body.tookMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("channel failure → in-band down with error, never a throw", async () => {
+    const ctx = askCtx({ askEvidence: async () => { throw new McpError("network", "no route"); } });
+    const body = (await (await handleAskEvidence(ctx, new URL("http://x/api/ask?q=m"))).json()) as AskEvidenceReport;
+    expect(body.status).toBe("down");
+    expect(body.error).toContain("no route");
+  });
+
+  test("question validation: missing/oversized/empty-after-trim are 400s", async () => {
+    const ctx = askCtx({ askEvidence: async () => [] });
+    await expect(handleAskEvidence(ctx, new URL("http://x/api/ask"))).rejects.toBeInstanceOf(BadRequestError);
+    await expect(handleAskEvidence(ctx, new URL(`http://x/api/ask?q=${"x".repeat(401)}`))).rejects.toBeInstanceOf(BadRequestError);
+    await expect(handleAskEvidence(ctx, new URL("http://x/api/?q=%20%09"))).rejects.toBeInstanceOf(BadRequestError);
+  });
+});
+
+describe("handleAskThink (POST /api/ask/think — paid leg)", () => {
+  test("confirm flag is the server half of the stamp — absent/false is a 400", async () => {
+    const ctx = askCtx({ askThink: async () => { throw new Error("must not fire"); } });
+    await expect(handleAskThink(ctx, postReq({ question: "q" }), OWNER)).rejects.toBeInstanceOf(BadRequestError);
+    await expect(handleAskThink(ctx, postReq({ question: "q", confirm: "yes" }), OWNER)).rejects.toBeInstanceOf(BadRequestError);
+  });
+
+  test("ok think normalizes: gaps filtered to strings, usage + model ride along", async () => {
+    const ctx = askCtx({ askThink: async () => THINK_OK });
+    const body = (await (await handleAskThink(ctx, postReq({ question: "q", confirm: true }), OWNER)).json()) as AskThinkReport;
+    expect(body.status).toBe("ok");
+    expect(body.result?.gaps).toEqual(["gap one"]);
+    expect(body.result?.usage?.input_tokens).toBe(3763);
+    expect(body.result?.modelUsed).toContain("opus");
+  });
+
+  test("synthesis_keyless answers report keyless (in-band, not down)", async () => {
+    const ctx = askCtx({
+      askThink: async () => ({ ...THINK_OK, synthesis_status: "synthesis_keyless" }),
+    });
+    const body = (await (await handleAskThink(ctx, postReq({ question: "q", confirm: true }), OWNER)).json()) as AskThinkReport;
+    expect(body.status).toBe("keyless");
+  });
+
+  test("tool error with agent-contract envelope → down + envelope passthrough", async () => {
+    const envelope = {
+      error: "invalid_params", code: "invalid_params",
+      message: "Missing required parameter: question",
+      suggestion: "Pass `question` as a string.", docs_cmd: ["gbrain", "errors", "invalid_params"],
+      retryable: false,
+    };
+    const ctx = askCtx({
+      askThink: async () => { throw new McpError("protocol", "tool think errored", undefined, undefined, envelope); },
+    });
+    const body = (await (await handleAskThink(ctx, postReq({ question: "q", confirm: true }), OWNER)).json()) as AskThinkReport;
+    expect(body.status).toBe("down");
+    expect(body.envelope?.code).toBe("invalid_params");
+    expect((body.envelope?.docs_cmd as string[]).join(" ")).toBe("gbrain errors invalid_params");
+  });
+
+  test("single-flight: same question shares the run, a different question gets busy", async () => {
+    let resolve!: (v: unknown) => void;
+    const calls: string[] = [];
+    const ctx = askCtx({
+      askThink: async (q: string) => {
+        calls.push(q);
+        return new Promise((r) => { resolve = r; }).then(() => THINK_OK);
+      },
+    }, "ask-singleflight");
+    const first = handleAskThink(ctx, postReq({ question: "same q", confirm: true }), OWNER);
+    // wait until the flight is actually registered
+    await new Promise((r) => setTimeout(r, 10));
+    const shared = handleAskThink(ctx, postReq({ question: "same q", confirm: true }), OWNER);
+    const busy = (await (await handleAskThink(ctx, postReq({ question: "other q", confirm: true }), OWNER)).json()) as AskThinkReport;
+    expect(busy.status).toBe("down");
+    expect(busy.error).toContain("already writing");
+    resolve(THINK_OK);
+    const firstBody = (await (await first).json()) as AskThinkReport;
+    const sharedBody = (await (await shared).json()) as AskThinkReport;
+    expect(firstBody.status).toBe("ok");
+    expect(sharedBody.status).toBe("ok");
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("handleAskMissing (POST /api/ask/missing — free diagnostic)", () => {
+  test("target must be slug-shaped; ok payload passes picklist lines", async () => {
+    const ctx = askCtx({
+      askMissing: async () => ({ reason: "trust floor", note: 42, extra: "second line" }),
+    });
+    const ok = (await (await handleAskMissing(ctx, postReq({ q: "q", target: "kb/migration0068" }))).json()) as { status: string; lines: string[] };
+    expect(ok.status).toBe("ok");
+    expect(ok.lines[0]).toBe("trust floor");
+    await expect(handleAskMissing(ctx, postReq({ q: "q", target: "not a slug!" }))).rejects.toBeInstanceOf(BadRequestError);
+  });
+});

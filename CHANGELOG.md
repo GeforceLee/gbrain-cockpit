@@ -8,6 +8,21 @@ Releases stay `0.x` until the owner promotes a release line.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-13
+
+The cockpit-answers release: the seventh panel, 问一句 (Ask), turns the brain's answering surface into a chart recorder. Ask in plain words — 找证据 searches the brain in ~2 s for free (no model involved, per gbrain's own definition of `query`); 要答案 has the model read the relevant pages and write a brief where every claim carries its citation (`think`, a paid call, measured 36–95 s). One tape prints everything in the order it happened, honestly clocked, with the brain's own account of what it couldn't answer. Verified live on leewin against gbrain 0.60.611 — the full chain (free search, paid stamp, single-flight, audit) exercised against the atlas brain.
+
+### Added — the Ask panel (问一句, seventh tab between Search and Health)
+- **One tape per question**: question → evidence (free, ~2 s) → paid seam → writing (36–95 s, one blocking call) → the cited brief → gaps — every segment timestamped, keep-alive across tab switches.
+- **Exactly one conscious paid click** (owner verdict, iterated live): the amber 要答案 button carries the price and its click IS the stamp — the free evidence prints in parallel beneath the writing segment. Prefer reading first? 找证据 prints the evidence and the seam's stamp is the single click there. Behind both: a server-side `confirm` flag (formless requests can never bill), per-brain single-flight, and an audit line per call including the after-abort one; cutting the tape lands a receipt that says the money may already be spent.
+- **Provenance is the luxury**: every `[slug]` marker in answers and gap sentences renders as a hoverable chip — on-tape chips show the row's real excerpt and click-jump with an amber flash; model-read chips say honestly that the model read that page itself and offer the Pages panel; gap-only citations get a `—` index. A citations appendix lists every source in citation order.
+- **Honesty over theater**: the wait shows a tape-feed animation, a real elapsed clock with three copy tiers (thresholds from the measured range) and a cancel — no progress bars, no ETA, nothing fake. An unanswerable question prints a refusal brief ("what exists / what's missing"); the brain's own `gaps[]` prints verbatim as the gap block; a keyless brain answers with evidence only and points at Admin · Model wiring (never auto-wires); tool errors render gbrain's structured envelope with the official `gbrain errors <code>` lookup as copy-only.
+- **Untrusted-content discipline**: answer markdown renders from the marked token tree (structural zero-innerHTML — links from brain content never become anchors); evidence excerpts typeset verbatim; the conversation-ingest wrapper peels into a dim cap line.
+- **Free desk-foot utilities**: widen the top evidence (`assemble_evidence`), "why is this page missing" (`query`'s `explain_target`, defensively shaped — unprobed), and the top-K fact line. `query`'s paid `expand` parameter never appears; `think`'s `save`/`take` (MCP-ignored) are never sent; think stays read-only end to end.
+- **Routes** (MCP only — no new tables, no CLI): `GET /api/ask`, `POST /api/ask/think`, `POST /api/ask/missing`. D5 (admin passphrase before the stamp) and D6 (whether cockpit stores ask history) stay owner decisions — both slots reserved, unpicked.
+- **Copy speaks gbrain's own definitions**: 找证据/要答案 picked by the owner over two review rounds of plain-word pairs; the design doc's internal leg metaphor was caught leaking into UI copy and retired everywhere (owner verdict); "brain-read" chips renamed 模型自读 — the model reads them, the brain stays the brain.
+- Probed before built: `internal/probes/ask-panel-0.60.611-20261113` pins every shape the panel renders (citations/gaps arrays, usage, the 36–95 s wall clock, the $0.2–0.5 list-price bracket, the error envelope).
+
 ## [0.5.3] - 2026-11-13
 
 The stamps-don't-lie release: three broken interface promises found in the 11-12 walkthrough — a real click-through of the demo workstation at live backlog scale (657 pending takes) plus a full-panel code sweep, not a paper review — are now kept. Every window gets its navigator back, a stamp never advertises a key it won't press, and one press is one verdict.

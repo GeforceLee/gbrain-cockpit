@@ -13,6 +13,7 @@ import {
 } from "./lib/brain";
 import { clearAudit } from "./lib/auditLog";
 import { Admin } from "./panels/Admin";
+import { Ask } from "./panels/Ask";
 import { Health } from "./panels/Health";
 import { Inbox } from "./panels/Inbox";
 import { Nebula } from "./panels/Nebula";
@@ -24,6 +25,7 @@ export type PanelId =
   | "nebula"
   | "pages"
   | "search"
+  | "ask"
   | "health"
   | "admin";
 
@@ -32,6 +34,7 @@ const PANELS: readonly PanelId[] = [
   "nebula",
   "pages",
   "search",
+  "ask",
   "health",
   "admin",
 ];
@@ -148,6 +151,8 @@ function App() {
     [show],
   );
   const consumeNebulaFocus = useCallback(() => setNebulaFocus(null), []);
+  // keyless ask tape's "wire the key" exit — lands on Admin · model wiring
+  const openAdmin = useCallback(() => show("admin"), [show]);
 
   function submitSearch() {
     const value = query.trim();
@@ -385,6 +390,13 @@ function App() {
                         onConsumeSeed={consumeSeed}
                         onOpenPage={openPage}
                         onOpenGraph={openInGraph}
+                      />
+                    ) : null}
+                    {id === "ask" && visited.includes(id) ? (
+                      <Ask
+                        active={panelId === "ask"}
+                        onOpenPage={openPage}
+                        onOpenAdmin={openAdmin}
                       />
                     ) : null}
                     {id === "health" && visited.includes(id) ? <Health /> : null}
