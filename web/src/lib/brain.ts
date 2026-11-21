@@ -3,7 +3,10 @@
 // A module-level external store (the auditLog precedent) rather than React
 // context: lib/api.ts must read the current id synchronously on every
 // fetch, and a context would force a circular import. The store talks to
-// the server with a bare fetch + getToken() for the same reason.
+// the server with a bare fetch + getToken() for the same reason. Its one
+// lib/api import, withBase, is a pure path-prefix helper referenced only
+// at fetch time — no module-eval-time coupling either way, so the edge is
+// load-safe.
 //
 // One cockpit token gates every profile (V1 single-token decision) —
 // switching profiles switches the BRAIN, never the operator.
@@ -11,6 +14,7 @@
 import { useSyncExternalStore } from "react";
 import type { ProfileInfo, ProfilesResponse } from "@gbrain-cockpit/shared";
 import { getToken } from "./token";
+import { withBase } from "./api";
 
 const PROFILE_KEY = "cockpit.profile";
 
@@ -94,7 +98,7 @@ export async function bootstrapProfiles(): Promise<void> {
   const token = getToken();
   if (token) {
     try {
-      const res = await fetch("/api/profiles", {
+      const res = await fetch(withBase("/api/profiles"), {
         headers: { authorization: `Bearer ${token}` },
       });
       if (res.ok) body = (await res.json()) as ProfilesResponse;

@@ -8,6 +8,15 @@ export { getToken, setToken } from "./token";
 import { getToken } from "./token";
 import { currentProfileId, healAfterUnknownProfile } from "./brain";
 
+// Mount-point prefix for runtime fetch URLs: vite dev serves from "/"
+// (BASE_URL "/", prefix empty — local dev untouched), release builds set
+// base /cockpit/ (BASE_URL "/cockpit/"). The edge proxy strips the prefix
+// before :8787, so API calls must carry it from the browser. vite's base
+// rewrites index.html asset refs only — runtime strings like these fetch
+// paths go through withBase instead.
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+export const withBase = (path: string) => BASE + path;
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -28,7 +37,7 @@ export async function apiGet<T>(path: string): Promise<T> {
   const token = getToken();
   if (!token) throw new ApiError("no token stored", "E_NO_TOKEN", 0);
 
-  const res = await fetch(path, {
+  const res = await fetch(withBase(path), {
     headers: withProfile({ authorization: `Bearer ${token}` }),
     // a hung cockpit must not leave the UI busy forever (V1.0 promise, paid)
     signal: AbortSignal.timeout(30_000),
@@ -67,7 +76,7 @@ export async function apiSend<T>(
 
   const signals: AbortSignal[] = [AbortSignal.timeout(opts.timeoutMs ?? 30_000)];
   if (opts.signal) signals.push(opts.signal);
-  const res = await fetch(path, {
+  const res = await fetch(withBase(path), {
     method,
     headers: withProfile({
       authorization: `Bearer ${token}`,
