@@ -420,8 +420,71 @@ export interface ProfilesResponse {
    * two-tier install (management reads ride the base token; only the
    * grant write asks for the admin token at step-up). Absent/false ⇒ the
    * sixth panel never renders; single-token installs see zero change.
+   * Named tokens always get false and a profile list cut down to the
+   * brains on their grant sheet (their first granted brain is defaultId).
    */
   adminTier?: boolean;
+}
+
+// --- Named tokens (0.7: per-person access with a grant sheet) ----------------
+// "看" (view) is implicit on every token and never modelled; a sheet stores
+// the brains the token may enter, whether it may adjudicate, and (second
+// step) the sources it may edit. The owner's two env tokens bypass the sheet.
+
+export interface MePermissions {
+  adjudicate: boolean;
+  /** source ids for a named token; "all" for the owner's env tokens */
+  editSources: string[] | "all";
+  /** ops reads, health diagnostics, audit tail, write-receipt lists */
+  ops: boolean;
+  /** POST /api/ask/think — money leaves the host */
+  paidThink: boolean;
+  /** may list tokens */
+  tokens: boolean;
+  /** may issue / re-grant / revoke (the admin env token only) */
+  tokensWrite: boolean;
+}
+
+/** GET /api/me — who is calling and what the sheet allows. */
+export interface MeResponse {
+  /** "owner" = one of the two env tokens; "token" = a named token */
+  kind: "owner" | "token";
+  name: string;
+  /** deployment capability (COCKPIT_ADMIN_TOKEN set) — the owner's UI only */
+  adminConfigured: boolean;
+  /** brains this caller may enter; the first one is the default brain */
+  brains: string[];
+  defaultBrain: string;
+  permissions: MePermissions;
+}
+
+/** One registry row as the management UI sees it — never a hash or a secret. */
+export interface TokenRecord {
+  id: string;
+  name: string;
+  brains: string[];
+  adjudicate: boolean;
+  editSources: string[];
+  createdAt: string;
+  createdBy: string;
+  revokedAt: string | null;
+  revokedBy: string | null;
+  /** in-memory high-water mark, persisted at most hourly; null until used */
+  lastUsedAt: string | null;
+}
+
+export interface TokensResponse {
+  tokens: TokenRecord[];
+}
+
+/** POST /api/tokens — `token` is the plaintext, present in this one response. */
+export interface TokenIssuedResponse {
+  token: string;
+  record: TokenRecord;
+}
+
+export interface TokenGrantsResponse {
+  record: TokenRecord;
 }
 
 // --- Owner copy-commands -----------------------------------------------------
@@ -704,13 +767,33 @@ export const ERROR_CODES = [
   "E_UPSTREAM_AUTH",
   "E_RATE_LIMITED",
   "E_INTERNAL",
+  "E_NOT_CONFIGURED",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
+/**
+ * What a 403 lacks. The first three name a sheet entry the caller could be
+ * given; "owner-only" marks a class no named token can ever hold (ops,
+ * paid think, token management) so the UI says "admin only", not "you lack
+ * X" — which would read as requestable.
+ */
+export type PermissionMissing =
+  | "adjudicate"
+  | "edit"
+  | "brain"
+  | "owner-only"
+  /** the owner's base env token met a management write: the admin token
+   *  must be pasted for this one action */
+  | "admin-tier";
+
 export interface ErrorEnvelope {
   error: string;
   code: ErrorCode;
+  /** E_FORBIDDEN only: which grant the caller lacks */
+  missing?: PermissionMissing;
+  /** with missing "edit": the source that was not granted */
+  source?: string;
 }
 
 // --- Health report ---------------------------------------------------------
