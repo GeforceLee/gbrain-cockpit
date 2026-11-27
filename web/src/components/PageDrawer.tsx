@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useI18n } from "../lib/i18n";
 import { relationCount, usePageBundle, type PageRef } from "../lib/pages";
+import { canEditSource, useMe } from "../lib/me";
 import { firstLine } from "../lib/text";
 import { PageBody } from "./PageBody";
 import { Tag } from "./Tag";
@@ -36,6 +37,7 @@ export function PageDrawer({
   onOpenSibling?: (ref: PageRef) => void;
 }) {
   const { t } = useI18n();
+  const { me } = useMe();
   // full bundle: tags + relation counts ride the same fetch (V1.1 light rows)
   const { bundle, error, loading } = usePageBundle(page, { full: true });
 
@@ -54,6 +56,9 @@ export function PageDrawer({
   const shown = bundle?.page;
   // the page the server actually resolved (its source wins over the ref's)
   const sourceId = shown?.source_id ?? page.sourceId;
+  // the jump into the editor is offered only where saving is possible at all
+  const mayEdit = me?.kind === "owner" || canEditSource(sourceId);
+  const showEdit = onEdit !== undefined && mayEdit;
 
   return (
     // sticky zero-size anchor: panels scroll the whole stage (unlike
@@ -165,9 +170,9 @@ export function PageDrawer({
             <PageBody className="drawer-content" content={shown.content ?? ""} />
           )}
         </div>
-        {(onEdit || onShowGraph) && (
+        {(showEdit || onShowGraph) && (
           <div className="drawer-actions">
-            {onEdit && (
+            {showEdit && (
               <button
                 type="button"
                 className="linkish"

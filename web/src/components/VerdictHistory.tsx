@@ -11,11 +11,22 @@ import { getAuditLines, subscribeAudit } from "../lib/auditLog";
 // own record of what became of each proposal). Refreshes ride the same
 // cockpit:verdict event the Inbox dispatches after every action.
 
+/** A nested value reads as JSON, never as "[object Object]". */
+function detailLine(detail: unknown): string {
+  if (detail === null || typeof detail !== "object" || Array.isArray(detail)) return "";
+  return Object.entries(detail as Record<string, unknown>)
+    .slice(0, 3)
+    .map(([k, v]) => `${k}=${v !== null && typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+    .join(" · ");
+}
+
 export function VerdictHistory() {
   const { t } = useI18n();
   const lines = useSyncExternalStore(subscribeAudit, getAuditLines);
   const verdicts = lines.filter((l) => l.meta).slice(-8).reverse();
   const [server, setServer] = useState<AuditHistoryReport | null>(null);
+  // the audit tail is owner-only: a named token's response has no `audit`
+  const audit = server?.audit ?? [];
 
   const loadServer = useCallback(() => {
     apiGet<AuditHistoryReport>("/api/audit-history?limit=12")
@@ -75,27 +86,35 @@ export function VerdictHistory() {
         </tbody>
       </table>
 
-      {(server?.audit?.length ?? 0) > 0 && (
+      {audit.length > 0 && (
         <details className="detail-block">
           <summary className="cap">
-            {t("inbox.history.serverAudit")} · {(server!.audit ?? []).length}
+            {t("inbox.history.serverAudit")} · {audit.length}
           </summary>
           <table>
+            <thead>
+              <tr>
+                <th style={{ width: 120 }}>{t("inbox.history.when")}</th>
+                <th>{t("inbox.history.action")}</th>
+                <th style={{ width: 110 }}>{t("inbox.history.who")}</th>
+                <th>{t("inbox.history.detail")}</th>
+              </tr>
+            </thead>
             <tbody>
-              {(server!.audit ?? []).map((row, i) => (
+              {audit.map((row, i) => (
                 <tr key={`${row.at ?? i}-${i}`}>
                   <td className="mono soft-cell" style={{ width: 120 }}>
                     {String(row.at ?? "").replace("T", " ").slice(5, 16)}
                   </td>
                   <td className="mono">{String(row.action ?? "?")}</td>
-                  <td>
-                    {row.detail && typeof row.detail === "object"
-                      ? Object.entries(row.detail as Record<string, unknown>)
-                          .slice(0, 3)
-                          .map(([k, v]) => `${k}=${String(v)}`)
-                          .join(" · ")
-                      : ""}
+                  <td className="soft-cell" style={{ width: 110 }}>
+                    {String(row.actor ?? "")}
+                    {row.actor_kind === "token" ? (
+                      // a teammate's named token, not one of the admin's
+                      <span className="ministamp warn"> {t("inbox.history.tokenBadge")}</span>
+                    ) : null}
                   </td>
+                  <td>{detailLine(row.detail)}</td>
                 </tr>
               ))}
             </tbody>

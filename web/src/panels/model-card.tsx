@@ -11,7 +11,8 @@ import {
 } from "@gbrain-cockpit/shared";
 import { PALETTE } from "../design/tokens";
 import { CopyCommand } from "../components/CopyCommand";
-import { ApiError, apiSend } from "../lib/api";
+import { apiSend } from "../lib/api";
+import { stepUpErrorMessage } from "../lib/errors";
 import { currentProfile } from "../lib/brain";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { firstLine } from "../lib/text";
@@ -48,7 +49,12 @@ export function ModelCard({
 
   useEffect(() => {
     if (armed) {
-      disarmTimer.current = setTimeout(() => setArmed(false), 4000);
+      // long enough to fetch and paste the admin token (4 s closed the
+      // prompt mid-paste); unattended, the prompt still clears itself
+      disarmTimer.current = setTimeout(() => {
+        setArmed(false);
+        setAdminToken("");
+      }, 120_000);
     }
     return () => {
       if (disarmTimer.current) clearTimeout(disarmTimer.current);
@@ -124,15 +130,18 @@ export function ModelCard({
         // live probes retry on flaky endpoints — outlive the default 30s
         { token: adminToken, timeoutMs: 60_000 },
       );
-      setAdminToken(""); // step-up material is single-use by design
       setArmed(false);
       setTest(body);
       refresh();
     } catch (err) {
       setActionError(
-        err instanceof ApiError ? `${err.message} (${err.code})` : String(err),
+        stepUpErrorMessage(err, t),
       );
     } finally {
+      // single-use by design — on FAILURE too: a kept-alive panel would
+      // otherwise re-open the prompt with the admin token still in it
+      setAdminToken("");
+      setArmed(false);
       setSending(false);
     }
   }
@@ -291,7 +300,8 @@ export function ModelCard({
             ) : (
               <>
                 <input
-                  type="password"
+                  type="text"
+                  className="token-masked"
                   value={adminToken}
                   onChange={(e) => setAdminToken(e.target.value)}
                   placeholder={t("health.drift.tokenHint")}
@@ -304,6 +314,17 @@ export function ModelCard({
                   disabled={sending || adminToken.length === 0}
                 >
                   {sending ? t("admin.model.testing") : t("admin.model.testConfirm")}
+                </button>
+                <button
+                  type="button"
+                  className="linkish"
+                  onClick={() => {
+                    if (disarmTimer.current) clearTimeout(disarmTimer.current);
+                    setArmed(false);
+                    setAdminToken("");
+                  }}
+                >
+                  {t("common.cancel")}
                 </button>
               </>
             )}

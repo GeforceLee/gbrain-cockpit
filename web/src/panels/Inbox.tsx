@@ -36,6 +36,7 @@ import { copyCommandText } from "../lib/clipboard";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { currentProfile } from "../lib/brain";
+import { useMe } from "../lib/me";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { isSlugLike, useSlugSiblings, type PageRef } from "../lib/pages";
 import { firstLine } from "../lib/text";
@@ -220,6 +221,8 @@ export function Inbox({
   onTotal?: (total: number) => void;
 }) {
   const { t, locale } = useI18n();
+  // named tokens adjudicate but never see the owner's terminal material
+  const owner = useMe().me?.kind === "owner";
   const [report, setReport] = useState<InboxReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -344,38 +347,30 @@ export function Inbox({
   // trust CLI family): surface unavailability per queue instead of "empty".
   // The trust queue backs proposals/held/facts/others; edges and takes have
   // their own channels.
-  const trustDown =
-    report && report.trust.status !== "ok" ? firstLine(report.trust.error) : null;
-  const queueDown: Partial<Record<QueueId, string>> = {
-    ...(trustDown
-      ? { proposals: trustDown, held: trustDown, facts: trustDown, others: trustDown }
-      : {}),
-    ...(report && report.edgeProposals.status !== "ok"
-      ? { edges: firstLine(report.edgeProposals.error) }
-      : {}),
-    ...(report && report.takes.status !== "ok"
-      ? { takes: firstLine(report.takes.error) }
-      : {}),
-    ...(report && report.contradictions.status !== "ok"
-      ? { contradictions: firstLine(report.contradictions.error) }
-      : {}),
-    ...(report && report.extraction.status !== "ok"
-      ? { extraction: firstLine(report.extraction.error) }
-      : {}),
-    ...(report && report.activeTakes.status !== "ok"
-      ? { judgments: firstLine(report.activeTakes.error) }
-      : {}),
+  // The STATUS says a channel is down; the reason string is only its
+  // detail (a named token is sent no reason — the line then stands alone).
+  const queueDown: Partial<Record<QueueId, string>> = {};
+  const markDown = (ids: QueueId[], status: string | undefined, reason: unknown) => {
+    if (status === undefined || status === "ok") return;
+    const line = firstLine(typeof reason === "string" ? reason : undefined);
+    for (const id of ids) queueDown[id] = line;
   };
+  markDown(["proposals", "held", "facts", "others"], report?.trust.status, report?.trust.error);
+  markDown(["edges"], report?.edgeProposals.status, report?.edgeProposals.error);
+  markDown(["takes"], report?.takes.status, report?.takes.error);
+  markDown(["contradictions"], report?.contradictions.status, report?.contradictions.error);
+  markDown(["extraction"], report?.extraction.status, report?.extraction.error);
+  markDown(["judgments"], report?.activeTakes.status, report?.activeTakes.error);
   const downNotices = (tabId: TabId): string[] => {
     if (tabId === "all") {
-      return [...new Set(Object.values(queueDown).filter(Boolean))] as string[];
+      return [...new Set(Object.values(queueDown))].filter((x): x is string => x !== undefined);
     }
     // pile level: the union of member-queue channel states (any member down
     // marks the pile's data incomplete — the "?" on the tab says so too)
     const members = PILE_MEMBERS[tabId];
     const notices = members
       .map((q) => queueDown[q])
-      .filter((x): x is string => Boolean(x));
+      .filter((x): x is string => x !== undefined);
     return [...new Set(notices)];
   };
 
@@ -702,7 +697,9 @@ export function Inbox({
       return true;
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : String(err);
-      appendAudit(`${auditText} -> ERR ${firstLine(msg)}`);
+      // the session log keeps the server's own words — it is never localized
+      const said = err instanceof ApiError ? err.extra.raw : msg;
+      appendAudit(`${auditText} -> ERR ${firstLine(said)}`);
       setActionError(msg);
       return false;
     }
@@ -799,7 +796,8 @@ export function Inbox({
         done++;
       } catch (err) {
         const msg = err instanceof ApiError ? err.message : String(err);
-        appendAudit(`${isTake ? "takes.propose" : "edge"}.reject ${auditRef} -> ERR ${firstLine(msg)}`);
+        const said = err instanceof ApiError ? err.extra.raw : msg;
+        appendAudit(`${isTake ? "takes.propose" : "edge"}.reject ${auditRef} -> ERR ${firstLine(said)}`);
         setActionError(msg);
         break;
       }
@@ -855,7 +853,7 @@ export function Inbox({
           plain words, closed by default (nothing here is needed to work) */}
       <details className="detail-block inbox-guide">
         <summary className="cap">{t("inbox.guide.summary")}</summary>
-        <p className="muted small">{t("inbox.guide.body")}</p>
+        <p className="muted small">{t(owner ? "inbox.guide.body" : "inbox.guide.bodyNamed")}</p>
       </details>
 
       <div className="inbox-meta">
@@ -876,7 +874,9 @@ export function Inbox({
                 // other unavailable state (found but probe unverified — or a
                 // pre-reason payload) gets the neutral copy: the probe
                 // failed, the Health panel has the details.
-                report?.cliChannel.reason === "binary-not-found"
+                !owner
+                ? t("inbox.cliDownNamed")
+                : report?.cliChannel.reason === "binary-not-found"
                 ? t("inbox.cliMissing")
                 : t("inbox.cliUnverified")}
           </span>
@@ -1062,7 +1062,7 @@ export function Inbox({
             </div>
             {downNotices(tab).map((err, i) => (
               <p key={i} className="muted empty-note">
-                {t("inbox.queueUnavailable")}: {err}
+                {err ? `${t("inbox.queueUnavailable")}: ${err}` : t("inbox.queueUnavailable")}
               </p>
             ))}
             {tab !== "all" && (
@@ -1070,7 +1070,12 @@ export function Inbox({
               // drafts 2026-11-10); constituent queues carry their own head
               // lines inside the pile via sectionHeads
               <p className="muted empty-note">
-                {t(`inbox.stack.${tab}Desc` as MessageKey)}
+                {/* two piles describe steps only the owner can take */}
+                {!owner && tab === "trust"
+                  ? t("inbox.stack.trustDescNamed")
+                  : !owner && tab === "stubs"
+                    ? t("inbox.stack.stubsDescNamed")
+                    : t(`inbox.stack.${tab}Desc` as MessageKey)}
               </p>
             )}
             {tab === "trust" && report?.trust.counts && (
@@ -1185,6 +1190,7 @@ export function Inbox({
                     cliAvailable={cliAvailable}
                     cliCommand={cliCommand}
                     canConfirm={canConfirm}
+                    owner={owner}
                     act={act}
                     takeCommands={report.takes.commands}
                     reliefV={reliefV}
@@ -1629,17 +1635,42 @@ function DocumentCard({
 
 // --- decision rail ---------------------------------------------------------------
 
+/**
+ * A terminal copy-command is the owner's material (it is pasted into a
+ * shell on the brain host). A named token — which the server sends no
+ * command name at all — sees who does the step instead.
+ */
+function OwnerCommand({
+  owner,
+  command,
+  hint,
+}: {
+  owner: boolean;
+  command: string;
+  hint?: string;
+}) {
+  const { t } = useI18n();
+  return owner ? (
+    <CopyCommand command={command} hint={hint} />
+  ) : (
+    <p className="confirm-readonly">{t("inbox.ownerAction")}</p>
+  );
+}
+
 function DecisionRail({
   entry,
   cliAvailable,
   cliCommand,
   canConfirm,
+  owner,
   act,
   takeCommands,
   reliefV,
   reliefOp,
 }: {
   entry: Entry;
+  /** the owner's env token: terminal commands are theirs to run */
+  owner: boolean;
   cliAvailable: boolean;
   /** the profile's command name for copy-command templates */
   cliCommand: string;
@@ -1804,14 +1835,18 @@ function DecisionRail({
             : null}
           {!cliAvailable ? (
             // degrade: one-key drop becomes a copy-command block too
-            <CopyCommand command={trustDropCommand(cliCommand, ref)} />
+            <OwnerCommand owner={owner} command={trustDropCommand(cliCommand, ref)} />
           ) : null}
           {/* layer-3 hint (owner standard 2026-11-10): the elevation button
               explains WHY it is a paste, not a click — the limit told as
               design, so future-us never wonders where the button went */}
-          <p className="confirm-readonly">{t("inbox.stack.trustWhy")}</p>
-          {copyStamp(acceptCmd)}
-          <CopyCommand command={acceptCmd} />
+          <p className="confirm-readonly">{t(owner ? "inbox.stack.trustWhy" : "inbox.stack.trustWhyNamed")}</p>
+          {owner ? (
+            <>
+              {copyStamp(acceptCmd)}
+              <CopyCommand command={acceptCmd} />
+            </>
+          ) : null}
         </>
       );
       rows = [
@@ -1825,7 +1860,7 @@ function DecisionRail({
           label: entry.queueId === "proposals" ? t("channel.row.accept") : t("channel.row.release"),
           channel: entry.queueId === "proposals" ? ch("trust.proposal.accept") : ch("held-write.release"),
           verdict: "na",
-          note: t("channel.terminal"),
+          note: t(owner ? "channel.terminal" : "channel.ownerOnly"),
         },
         { label: t("channel.row.mcp"), channel: "mcp", verdict: "na", note: t("channel.none") },
         { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
@@ -1840,7 +1875,7 @@ function DecisionRail({
           {canConfirm === false ? (
             // known-missing memory_confirm scope: the stamp would only ever
             // 502 — show why instead of a button that cannot succeed
-            <p className="confirm-readonly">{t("inbox.confirmReadOnly")}</p>
+            <p className="confirm-readonly">{t(owner ? "inbox.confirmReadOnly" : "inbox.confirmOwnerOnly")}</p>
           ) : (
             stampOk("inbox.factConfirm", "stamp.en.confirm", t("inbox.via.mcp"), () =>
               act(
@@ -1867,7 +1902,7 @@ function DecisionRail({
                 )),
             )
           ) : (
-            <CopyCommand command={trustDropCommand(cliCommand, ref)} />
+            <OwnerCommand owner={owner} command={trustDropCommand(cliCommand, ref)} />
           )}
         </>
       );
@@ -1881,7 +1916,7 @@ function DecisionRail({
           verdict: canConfirm === false ? "na" : "yes",
           note:
             canConfirm === false
-              ? t("inbox.confirmReadOnly")
+              ? t(owner ? "inbox.confirmReadOnly" : "inbox.confirmOwnerOnly")
               : t("channel.onekey"),
         },
         {
@@ -1969,7 +2004,7 @@ function DecisionRail({
           </div>
         </>
       ) : (
-        <CopyCommand
+        <OwnerCommand owner={owner}
           command={edgeAcceptCommand(cliCommand, id)}
           hint={t("inbox.edgeHint")}
         />
@@ -2039,14 +2074,14 @@ function DecisionRail({
         </>
       ) : degradedCmds && pasteSafe ? (
         <>
-          <CopyCommand command={degradedCmds.accept} hint={t("inbox.takeHint")} />
-          <CopyCommand
+          <OwnerCommand owner={owner} command={degradedCmds.accept} hint={t("inbox.takeHint")} />
+          <OwnerCommand owner={owner}
             command={degradedCmds.reject}
             hint={t("inbox.takeFinality")}
           />
         </>
       ) : (
-        <p className="confirm-readonly">{t("inbox.takeUnscoped")}</p>
+        <p className="confirm-readonly">{t(owner ? "inbox.takeUnscoped" : "inbox.ownerAction")}</p>
       );
       rows = [
         {
@@ -2151,7 +2186,7 @@ function DecisionRail({
           label: t("channel.row.explain"),
           channel: "copy-command",
           verdict: "na",
-          note: t("channel.terminal"),
+          note: t(owner ? "channel.terminal" : "channel.ownerOnly"),
         },
         { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
       ];
@@ -2191,11 +2226,11 @@ function DecisionRail({
         </>
       ) : (
         <>
-          <CopyCommand
+          <OwnerCommand owner={owner}
             command={contradictionAcceptCommand(cliCommand, id)}
             hint={t("inbox.contradiction.hint")}
           />
-          <CopyCommand
+          <OwnerCommand owner={owner}
             command={contradictionRejectCommand(cliCommand, id)}
             hint={t("inbox.contradiction.undoNote")}
           />
@@ -2222,12 +2257,12 @@ function DecisionRail({
       // others: explain only — read path, no adjudication surface here
       const trust = entry.item as TrustReviewItem;
       rail = (
-        <CopyCommand
+        <OwnerCommand owner={owner}
           command={trustExplainCommand(cliCommand, safeRef(trust.ref))}
         />
       );
       rows = [
-        { label: t("channel.row.explain"), channel: "cli-whitelist", verdict: "na", note: t("channel.terminal") },
+        { label: t("channel.row.explain"), channel: "cli-whitelist", verdict: "na", note: t(owner ? "channel.terminal" : "channel.ownerOnly") },
         { label: t("channel.row.db"), channel: "postgres", verdict: "no", note: t("channel.never") },
       ];
     }
@@ -2246,7 +2281,7 @@ function DecisionRail({
         target !== null &&
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
       if (typing) return;
-      if (e.key === "Enter" && acceptCmd) {
+      if (e.key === "Enter" && acceptCmd && owner) {
         e.preventDefault();
         void copyCommandText(acceptCmd).then(() => {
           setCopied(true);

@@ -9,10 +9,12 @@ export function commandHash(s: string): string {
   return String(Math.abs(h));
 }
 
-export async function copyCommandText(command: string): Promise<void> {
+/** True when the text is on the clipboard; false when the browser refused
+ *  the clipboard API and the caller must tell the user to press Ctrl/⌘-C. */
+export async function copyCommandText(command: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(command);
-    return;
+    return true;
   } catch {
     // clipboard API unavailable (non-secure context) — select for manual copy
     const node = document.getElementById("cmd-" + commandHash(command));
@@ -22,7 +24,7 @@ export async function copyCommandText(command: string): Promise<void> {
       const selection = getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
-      return;
+      return false;
     }
     const scratch = document.createElement("textarea");
     scratch.value = command;
@@ -37,5 +39,6 @@ export async function copyCommandText(command: string): Promise<void> {
       // last resort: leave the scratch textarea selected so Ctrl/Cmd-C works
     }
     scratch.remove();
+    return false;
   }
 }

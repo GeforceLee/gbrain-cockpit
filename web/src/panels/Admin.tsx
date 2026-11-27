@@ -12,6 +12,7 @@ import { ApiError, apiGet } from "../lib/api";
 import { currentProfile } from "../lib/brain";
 import { useI18n } from "../lib/i18n";
 import { ModelCard } from "./model-card";
+import { TokenCard } from "./token-card";
 
 // Admin panel (0.4.x): the management surface proper. Visibility is a
 // DEPLOYMENT capability (COCKPIT_ADMIN_TOKEN configured — the server says
@@ -70,6 +71,8 @@ export function Admin() {
       </div>
 
       <div className="hgrid">
+        <TokenCard />
+
         <div className="hcard span8">
           <p className="cap" title={t("admin.clientsDesc")}>
             {t("admin.clients")}

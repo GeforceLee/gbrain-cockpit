@@ -14,7 +14,7 @@ import { RadialGauge } from "../components/RadialGauge";
 import { DriftCard } from "../components/DriftCard";
 import { CalibrationCard, NightlyCard } from "./nightly-cards";
 import { AssetCard, DeployCard, WritesCard } from "./ops-cards";
-import { ApiError, apiGet, setToken } from "../lib/api";
+import { ApiError, apiGet, logout } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
 
 // The Health panel exercises the whole stack live: auth, the API client, the
@@ -110,9 +110,9 @@ export function Health() {
           <button
             type="button"
             onClick={() => {
-              // back to the app-level token gate (fresh reload re-checks it)
-              setToken(null);
-              window.location.reload();
+              // back to the app-level token gate (a full reload clears the
+              // whole session — nothing of this user stays behind)
+              logout();
             }}
           >
             {t("health.changeToken")}

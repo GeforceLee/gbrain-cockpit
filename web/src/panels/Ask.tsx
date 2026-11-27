@@ -9,6 +9,7 @@ import {
 } from "@gbrain-cockpit/shared";
 import { apiGet, apiSend, ApiError } from "../lib/api";
 import { useI18n, type MessageKey } from "../lib/i18n";
+import { useMe } from "../lib/me";
 import type { PageRef } from "../lib/pages";
 import {
   chipLabel,
@@ -327,6 +328,9 @@ export function Ask({
   onOpenAdmin: () => void;
 }) {
   const { t } = useI18n();
+  // the paid deep answer is the owner's (money leaves the host on every
+  // call): a named token gets the free evidence leg and nothing priced
+  const paid = useMe().me?.permissions.paidThink === true;
   const [draft, setDraft] = useState("");
   const [tape, setTape] = useState<Tape | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -604,33 +608,42 @@ export function Ask({
           >
             {waiting ? t("ask.wait.submitLocked") : t("ask.submit")}
           </button>
-          <button
-            type="button"
-            className="btn-paid btn-press"
-            disabled={waiting || evidenceBusy || !draft.trim()}
-            onClick={direct}
-          >
-            {t("ask.direct")}
-            <span className="sub">{t("ask.direct.sub")}</span>
-          </button>
+          {paid ? (
+            <button
+              type="button"
+              className="btn-paid btn-press"
+              disabled={waiting || evidenceBusy || !draft.trim()}
+              onClick={direct}
+            >
+              {t("ask.direct")}
+              <span className="sub">{t("ask.direct.sub")}</span>
+            </button>
+          ) : null}
         </div>
         <div className="row2">
           <span className={`lamp ${evidenceLampOn ? "on" : ""}`}>
             <span className="dot" />
             {t("ask.lamp.evidence")}
           </span>
-          <span className={`lamp pay ${waiting || deepLampOn ? "on" : ""}`}>
+          {paid ? (
+            <span className={`lamp pay ${waiting || deepLampOn ? "on" : ""}`}>
             <span className="dot" />
             {t("ask.lamp.deep")}
           </span>
+          ) : null}
           <span className="odo">
             <span className="cell"><span className="lab">{t("ask.odo.elapsed")}</span><span className="n">{elapsedText}</span></span>
-            <span className="cell"><span className="lab">{t("ask.odo.in")}</span><span className="n">{waiting ? "…" : (usage?.input_tokens === undefined ? "—" : usage.input_tokens.toLocaleString("en-US"))}</span></span>
-            <span className="cell"><span className="lab">{t("ask.odo.out")}</span><span className="n">{waiting ? "…" : (usage?.output_tokens === undefined ? "—" : usage.output_tokens.toLocaleString("en-US"))}</span></span>
+            {/* token usage only exists where the model writes */}
+            {paid ? (
+              <>
+                <span className="cell"><span className="lab">{t("ask.odo.in")}</span><span className="n">{waiting ? "…" : (usage?.input_tokens === undefined ? "—" : usage.input_tokens.toLocaleString("en-US"))}</span></span>
+                <span className="cell"><span className="lab">{t("ask.odo.out")}</span><span className="n">{waiting ? "…" : (usage?.output_tokens === undefined ? "—" : usage.output_tokens.toLocaleString("en-US"))}</span></span>
+              </>
+            ) : null}
             <span className="cell"><span className="lab">{t("ask.odo.pages")}</span><span className="n">{waiting ? "…" : (tape?.result?.result?.pagesGathered === undefined ? (tape?.evidence ? String(tape.evidence.rows.length) : "—") : String(tape.result.result.pagesGathered))}</span></span>
           </span>
         </div>
-        <div className="why">{t("ask.console.why")}</div>
+        <div className="why">{t(paid ? "ask.console.why" : "ask.console.whyFree")}</div>
       </div>
 
       {/* ============ 纸带 ============ */}
@@ -678,7 +691,7 @@ export function Ask({
                   />
 
                 {/* 付费缝 (证据态;盖章后消失) */}
-                {phase === "evidence" ? (
+                {phase === "evidence" && paid ? (
                   <div className="seg seg-seam seam" ref={seamRef}>
                     <div className="seg-head">
                       <span className="mark">▸ {clock(tape.askedAt + (tape.evidence?.tookMs ?? 0))}</span>
@@ -782,11 +795,13 @@ export function Ask({
                       <div className="t">{t("ask.key.title")}</div>
                       <div className="d">{t("ask.key.body")}</div>
                       <div className="mono-note">{t("ask.key.note")}</div>
-                      <div className="go">
-                        <button type="button" className="linklike" onClick={onOpenAdmin}>
-                          {t("ask.key.go")}
-                        </button>
-                      </div>
+                      {paid ? (
+                        <div className="go">
+                          <button type="button" className="linklike" onClick={onOpenAdmin}>
+                            {t("ask.key.go")}
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
@@ -806,31 +821,38 @@ export function Ask({
 
 function EmptyTape({ history }: { history: HistoryEntry[] }) {
   const { t } = useI18n();
+  const paid = useMe().me?.permissions.paidThink === true;
   return (
     <div className="sg-empty">
       <div className="tapestart">
         <div className="t">{t("ask.empty.title")}</div>
-        <div className="sub">{t("ask.empty.sub")}</div>
+        <div className="sub">{t(paid ? "ask.empty.sub" : "ask.empty.subFree")}</div>
       </div>
       <div className="howto">
         <div className="beats">
           <div className="beat"><span className="n">{t("ask.empty.step1.n")}</span><span className="t">{t("ask.empty.beat1")}</span></div>
           <div className="beat"><span className="n">{t("ask.empty.step2.n")}</span><span className="t">{t("ask.empty.beat2")}</span></div>
-          <div className="beat paid"><span className="n">{t("ask.empty.step3.n")}</span><span className="t">{t("ask.empty.beat3")}</span></div>
+          {paid ? (
+            <div className="beat paid"><span className="n">{t("ask.empty.step3.n")}</span><span className="t">{t("ask.empty.beat3")}</span></div>
+          ) : null}
         </div>
         <ul className="promises">
-          <li><span className="k">{t("ask.promise.cite.k")}</span><span>{t("ask.promise.cite")}</span></li>
-          <li><span className="k">{t("ask.promise.honest.k")}</span><span>{t("ask.promise.honest")}</span></li>
-          <li><span className="k">{t("ask.promise.river.k")}</span><span>{t("ask.promise.river")}</span></li>
+          <li><span className="k">{t("ask.promise.cite.k")}</span><span>{t(paid ? "ask.promise.cite" : "ask.promise.citeFree")}</span></li>
+          {paid ? (
+            <li><span className="k">{t("ask.promise.honest.k")}</span><span>{t("ask.promise.honest")}</span></li>
+          ) : null}
+          {paid ? (
+            <li><span className="k">{t("ask.promise.river.k")}</span><span>{t("ask.promise.river")}</span></li>
+          ) : null}
         </ul>
         <details className="tour">
           <summary>{t("ask.tour.summary")}</summary>
           <div className="body">
-            <div>{t("ask.tour.1")}</div>
-            <div>{t("ask.tour.2")}</div>
-            <div>{t("ask.tour.3")}</div>
-            <div>{t("ask.tour.4")}</div>
-            <div>{t("ask.tour.5")}</div>
+            <div>{t(paid ? "ask.tour.1" : "ask.tour.1Free")}</div>
+            <div>{t(paid ? "ask.tour.2" : "ask.tour.2Free")}</div>
+            {paid ? <div>{t("ask.tour.3")}</div> : null}
+            {paid ? <div>{t("ask.tour.4")}</div> : null}
+            {paid ? <div>{t("ask.tour.5")}</div> : null}
           </div>
         </details>
       </div>
@@ -907,6 +929,7 @@ function EvidenceSegment({
   missing: AskMissingReport | null;
 }) {
   const { t } = useI18n();
+  const paid = useMe().me?.permissions.paidThink === true;
   const evidence = tape.evidence;
 
   if (noAnswer) {
@@ -960,7 +983,7 @@ function EvidenceSegment({
         .replace("{n}", String(evidence.rows.length))
         .replace("{secs}", formatSeconds(evidence.tookMs))
         .replace("{source}", sources.join(" · ") || "—")
-    : t("ask.ev.down");
+    : t(paid ? "ask.ev.down" : "ask.ev.downFree");
 
   return (
     <div className="seg seg-ev">
@@ -969,8 +992,10 @@ function EvidenceSegment({
         <span className="t">{t("ask.seg.evidence")}</span>
         <span className="right mono dim10">{meta}</span>
       </div>
-      <div className="selfline">{t("ask.seg.evidence.self")}</div>
-      {evidence.status !== "ok" ? (
+      <div className="selfline">{t(paid ? "ask.seg.evidence.self" : "ask.seg.evidence.selfFree")}</div>
+      {/* the server's own words are the owner's diagnostics; a teammate has
+          the plain line above and nothing else */}
+      {evidence.status !== "ok" && paid ? (
         <div className="ev-error mono">{evidence.error ?? ""}</div>
       ) : null}
       {evidence.rows.map((row) => {
@@ -1041,7 +1066,7 @@ function EvidenceSegment({
           </button>
         </span>
         <span>
-          {t("ask.foot.topk")
+          {t(paid ? "ask.foot.topk" : "ask.foot.topkFree")
             .replace("{n}", String(evidence.rows.length))
             .replace("{pages}", String(tape.result?.result?.pagesGathered ?? "—"))}
         </span>
@@ -1197,9 +1222,10 @@ function FailSegment({ report }: { report: AskThinkReport | null }) {
   const env = (report?.envelope ?? {}) as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   const code = str(env.code) || str(env.error) || "error";
-  const docsCmd = Array.isArray(env.docs_cmd)
-    ? env.docs_cmd.filter((s): s is string => typeof s === "string").join(" ")
-    : "";
+  const docsCmd =
+    useMe().me?.permissions.paidThink === true && Array.isArray(env.docs_cmd)
+      ? env.docs_cmd.filter((s): s is string => typeof s === "string").join(" ")
+      : "";
   return (
     <div className="seg seg-fail">
       <div className="seg-head">
