@@ -1,0 +1,10 @@
+# Known false positives for the secret scan (gitleaks-action reads this file).
+# One fingerprint per line: <commit>:<file>:<rule>:<line>
+#
+# Both entries are the same made-up registry row id used by the server
+# tests (`tk_0123456789ab`). A token id is a public row identifier, not a
+# credential — the plaintext never appears anywhere — but its shape next to
+# `tokenId:` trips the generic-api-key rule. The fingerprints are bound to
+# that commit and those lines, so nothing else is silenced.
+e4b44fdd95b9e2e608bd93c5f5e7cf0443f8b3e9:server/src/authz.test.ts:generic-api-key:23
+e4b44fdd95b9e2e608bd93c5f5e7cf0443f8b3e9:server/src/router.test.ts:generic-api-key:617
