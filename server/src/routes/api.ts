@@ -76,7 +76,7 @@ import {
   type TakesRelief,
   type TakesSnoozedRow,
 } from "@gbrain-cockpit/shared";
-import { auditTail, auditWrite } from "../audit";
+import { auditTail, auditWrite, AuditWriteError } from "../audit";
 import type {
   InboxStateSnapshot,
   InboxStateStore,
@@ -84,7 +84,18 @@ import type {
 import { buildDeployUnitText, DEPLOY_NOTES } from "./deploy-unit";
 import type { BrainRegistry, BrainChannels } from "../brains";
 import type { Principal } from "../auth";
-import { BadRequestError, envelope, readJsonBody } from "../http";
+import type { Actor } from "../authz";
+import {
+  BadRequestError,
+  envelope,
+  PayloadTooLargeError,
+  readJsonBody,
+} from "../http";
+import {
+  TokenNotFoundError,
+  TokenRegistryError,
+  TokenValidationError,
+} from "../tokens";
 import { CliExecutionError, CliValidationError } from "../drivers/cli";
 import type { ScopedExecOpts } from "../drivers/cli";
 import { McpError } from "../drivers/mcp";
@@ -92,13 +103,28 @@ import { TakesSourceGuardError, buildTakeQueueCommands } from "../drivers/takes-
 import { cliReason } from "./health";
 
 // API surface (core-loop milestone). Every handler receives an already
-// authenticated request routed to ONE brain's channels (the x-brain-profile
-// header picked the profile in index.ts); param validation is
+// authenticated request routed to ONE brain's channels (the router picked
+// the profile and ran the permission class); param validation is
 // regex-whitelisted before it reaches any driver (AGENTS.md #6), and errors
-// map to the envelope.
+// map to the envelope. Handlers never re-check permissions — the router's
+// gate is the single authority — and they read "who is calling" from
+// `ctx.actor` for the audit trail.
 
-/** One brain's three channels — what every handler below operates on. */
-export type ApiContext = BrainChannels;
+/** One brain's three channels plus this request's caller — what every
+ *  handler below operates on. The router builds a per-request copy; the
+ *  per-brain channels object itself is shared and never carries an actor. */
+export type ApiContext = BrainChannels & { readonly actor: Actor };
+
+/**
+ * The inbox relief state is per caller: the owner's two env tokens share
+ * one view (the pre-0.7 key, so existing mutes/snoozes carry over), each
+ * named token gets its own — one person's mute must not empty another's
+ * inbox. `#` cannot occur in a profile id, so the key is unambiguous.
+ */
+export function reliefKey(ctx: ApiContext): string {
+  const actor = ctx.actor;
+  return actor?.kind === "token" ? `${ctx.id}#${actor.tokenId}` : ctx.id;
+}
 
 // --- validation patterns (single place, no scattered regexes) --------------
 
@@ -135,6 +161,28 @@ function requirePattern(value: string | undefined, name: string, re: RegExp): st
 export function mapError(err: unknown): Response {
   if (err instanceof BadRequestError || err instanceof CliValidationError) {
     return envelope(400, "E_BAD_REQUEST", err.message);
+  }
+  if (err instanceof PayloadTooLargeError) {
+    return envelope(413, "E_BAD_REQUEST", err.message);
+  }
+  if (err instanceof TokenValidationError) {
+    return envelope(400, "E_BAD_REQUEST", err.message);
+  }
+  if (err instanceof TokenNotFoundError) {
+    return envelope(404, "E_NOT_FOUND", err.message);
+  }
+  if (err instanceof TokenRegistryError) {
+    // the message is cockpit's own (never file contents, never a token)
+    console.error(`[tokens] ${err.message}`);
+    return envelope(500, "E_INTERNAL", err.message);
+  }
+  if (err instanceof AuditWriteError) {
+    console.error(`[audit] ${err.message}`);
+    return envelope(
+      500,
+      "E_INTERNAL",
+      "the audit trail is not writable — nothing changed; fix ~/.cockpit-audit and retry",
+    );
   }
   if (err instanceof TakesSourceGuardError) {
     // The source-scoped takes guard refused the exec (brain config/database
@@ -978,6 +1026,9 @@ export async function handleOpsGrantRead(
       adminConfigured
         ? "management writes require the COCKPIT_ADMIN_TOKEN tier — paste it at the action's step-up prompt"
         : "COCKPIT_ADMIN_TOKEN is not configured on this cockpit — set it in the server env, or use the copy-command on the brain host",
+      {},
+      // "wrong token" only when there is an admin token to paste
+      adminConfigured ? { missing: "admin-tier" as const } : {},
     );
   }
   const inflight = grantLocks.get(ctx.id);
@@ -1041,7 +1092,7 @@ async function runGrantRead(ctx: ApiContext): Promise<OpsGrantReadResult> {
   }
   await ctx.mcp.forceRenew();
   ctx.mcp.invalidateAll();
-  await auditWrite("owner (admin)", {
+  await auditWrite(ctx.actor, {
     action: "ops.grant-read",
     profile: ctx.id,
     detail: {
@@ -1323,6 +1374,8 @@ export async function handleOpsModelTest(
       adminConfigured
         ? "the live model probe requires the COCKPIT_ADMIN_TOKEN tier — paste it at the action's step-up prompt"
         : "COCKPIT_ADMIN_TOKEN is not configured on this cockpit — set it in the server env, or run `gbrain models doctor` on the brain host",
+      {},
+      adminConfigured ? { missing: "admin-tier" as const } : {},
     );
   }
   const inflight = modelTestLocks.get(ctx.id);
@@ -1354,7 +1407,7 @@ async function runModelTest(ctx: ApiContext): Promise<OpsModelTestResult> {
       typeof rawSummary?.failed === "number"
         ? rawSummary.failed
         : probes.filter((p) => p.status !== undefined && p.status !== "ok").length;
-    await auditWrite("owner (admin)", {
+    await auditWrite(ctx.actor, {
       action: "ops.model-test",
       profile: ctx.id,
       detail: { total: probes.length, failed },
@@ -1367,7 +1420,7 @@ async function runModelTest(ctx: ApiContext): Promise<OpsModelTestResult> {
     };
   } catch (err) {
     const message = firstLineOf(err instanceof Error ? err.message : String(err));
-    await auditWrite("owner (admin)", {
+    await auditWrite(ctx.actor, {
       action: "ops.model-test",
       profile: ctx.id,
       detail: { error: message },
@@ -1633,7 +1686,7 @@ async function runAskThink(
 ): Promise<AskThinkReport> {
   const started = Date.now();
   const audit = (detail: Record<string, unknown>) =>
-    auditWrite(principal.name, {
+    auditWrite(ctx.actor, {
       action: "ask.think",
       profile: ctx.id,
       detail: { question: question.slice(0, 120), ...detail },
@@ -1879,7 +1932,7 @@ async function reliefPart(
   const piles = computeTakePiles(items);
   let snapshot: InboxStateSnapshot;
   try {
-    snapshot = await store.read(ctx.id);
+    snapshot = await store.read(reliefKey(ctx));
   } catch (err) {
     return {
       piles,
@@ -1957,7 +2010,7 @@ export async function handleInboxRelief(
       throw new BadRequestError("invalid source");
     }
     detail = { source };
-    await store.mutate(ctx.id, (s) => {
+    await store.mutate(reliefKey(ctx), (s) => {
       if (op === "mute") {
         if (!s.muted.some((m) => m.source === source)) {
           s.muted.push({ source, at: store.now() });
@@ -1974,7 +2027,7 @@ export async function handleInboxRelief(
     );
     detail = { id };
     if (op === "unsnooze") {
-      await store.mutate(ctx.id, (s) => {
+      await store.mutate(reliefKey(ctx), (s) => {
         s.snoozed = s.snoozed.filter((e) => e.id !== Number(id));
       });
     } else {
@@ -2005,7 +2058,7 @@ export async function handleInboxRelief(
         );
       }
       detail = { id, source };
-      await store.mutate(ctx.id, (s) => {
+      await store.mutate(reliefKey(ctx), (s) => {
         if (!s.snoozed.some((e) => e.id === Number(id))) {
           s.snoozed.push({
             id: Number(id),
@@ -2017,7 +2070,7 @@ export async function handleInboxRelief(
       });
     }
   }
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: `inbox.relief.${op}`,
     profile: ctx.id,
     detail,
@@ -2162,11 +2215,30 @@ export async function handleInbox(
 export async function handleProfiles(
   registry: BrainRegistry,
   adminConfigured: boolean,
+  actor?: Actor,
 ): Promise<Response> {
-  const body: ProfilesResponse = await registry.profileInfos();
+  const named = actor?.kind === "token" ? actor : undefined;
+  const allowed = named?.brains;
+  const body: ProfilesResponse = await registry.profileInfos(allowed);
   // deployment capability (COCKPIT_ADMIN_TOKEN set?), not a browser state —
   // gates the Admin panel's visibility for every base-token session
-  body.adminTier = adminConfigured;
+  body.adminTier = named ? false : adminConfigured;
+  if (named) {
+    // Only the brains on the sheet, without the CLI command name (it builds
+    // the owner's terminal copy-commands), and the sheet's first brain that
+    // still exists as the default — it is guaranteed to be in the list, so
+    // the client never targets a brain it was not shown.
+    body.profiles = body.profiles.map((p) => ({
+      id: p.id,
+      name: p.name,
+      ...(p.readOnly !== undefined ? { readOnly: p.readOnly } : {}),
+      canConfirm: false,
+    }));
+    body.defaultId =
+      allowed?.find((id) => body.profiles.some((p) => p.id === id)) ??
+      body.profiles[0]?.id ??
+      "";
+  }
   return Response.json(body);
 }
 
@@ -2230,7 +2302,7 @@ export async function handleTrustDrop(
   }
   const result = await ctx.cli.trustDrop(ref);
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: "trust.drop",
     profile: ctx.id,
     detail: { ref },
@@ -2281,7 +2353,7 @@ export async function handleEdgeAction(
       throw new BadRequestError("op must be accept|reject|undo|date");
   }
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: `edge-proposals.${op}`,
     profile: ctx.id,
     detail: { id },
@@ -2351,7 +2423,7 @@ export async function handleTakePropose(
       ? await ctx.cli.takesProposeAccept(id, scoped)
       : await ctx.cli.takesProposeReject(id, scoped);
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: `takes.propose.${op}`,
     profile: ctx.id,
     detail: { id, ...(sourceId ? { source_id: sourceId } : {}) },
@@ -2392,7 +2464,7 @@ export async function handleContradictionAction(
       throw new BadRequestError("op must be accept|reject|undo");
   }
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: `contradictions.${op}`,
     profile: ctx.id,
     detail: { id },
@@ -2424,7 +2496,7 @@ export async function handleTakeResolve(
     throw new BadRequestError("quality must be correct|incorrect|partial|unresolvable");
   }
   const result = await ctx.mcp.takesResolve(slug, row, quality);
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: "takes.resolve",
     profile: ctx.id,
     detail: { slug, row, quality },
@@ -2469,7 +2541,7 @@ export async function handleWriteCancel(
     REQUEST_ID_RE,
   );
   const receipt = await ctx.mcp.cancelWriteRequest(requestId);
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: "write.cancel",
     profile: ctx.id,
     detail: { request_id: requestId, status: receipt?.status },
@@ -2514,16 +2586,23 @@ export async function handleAnomalies(ctx: ApiContext): Promise<Response> {
 export async function handleAuditHistory(
   ctx: ApiContext,
   url: URL,
+  actor?: Actor,
 ): Promise<Response> {
   const limitRaw = Number.parseInt(param(url, "limit") ?? "30", 10);
   const limit =
     Number.isInteger(limitRaw) && limitRaw > 0 && limitRaw <= 100 ? limitRaw : 30;
-  const audit = await auditTail(limit);
+  // The audit tail carries the owner's own actions (paid questions included)
+  // and is owner-only; a named token gets just the decided rows, which are
+  // brain data it can read anyway and which tell it what is already handled.
+  const audit = actor?.kind === "token" ? undefined : await auditTail(limit);
   let decided: DecidedTakeRow[] | undefined;
   if (ctx.pg?.configured) {
     decided = await ctx.pg.decidedTakeProposals().catch(() => undefined);
   }
-  const report: AuditHistoryReport = { audit, ...(decided ? { decided } : {}) };
+  const report: AuditHistoryReport = {
+    ...(audit ? { audit } : {}),
+    ...(decided ? { decided } : {}),
+  };
   return Response.json(report);
 }
 
@@ -2539,7 +2618,7 @@ export async function handleConfirm(
   );
   const result = await ctx.mcp.confirmMemory({ ref });
   ctx.mcp.invalidateAll();
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: "memory.confirm",
     profile: ctx.id,
     detail: { ref },
@@ -2591,7 +2670,7 @@ export async function handlePageWrite(
     requestId,
   });
   if (receipt.status === "committed") ctx.mcp.invalidateAll();
-  await auditWrite("owner", {
+  await auditWrite(ctx.actor, {
     action: "page.write",
     profile: ctx.id,
     detail: { slug, request_id: requestId, status: receipt.status },

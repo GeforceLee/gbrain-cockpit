@@ -1430,7 +1430,9 @@ export interface AuditHistoryRow {
 
 /** GET /api/audit-history — the verdict history's two server sides. */
 export interface AuditHistoryReport {
-  audit: AuditHistoryRow[];
+  /** absent for named tokens: the audit tail (with the owner's paid
+   *  questions) is owner-only; they get just the decided rows */
+  audit?: AuditHistoryRow[];
   /** decided take_proposals rows; absent when the bypass is down */
   decided?: DecidedTakeRow[];
 }

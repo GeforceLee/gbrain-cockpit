@@ -78,11 +78,11 @@ export function VerdictHistory() {
       {(server?.audit?.length ?? 0) > 0 && (
         <details className="detail-block">
           <summary className="cap">
-            {t("inbox.history.serverAudit")} · {server!.audit.length}
+            {t("inbox.history.serverAudit")} · {(server!.audit ?? []).length}
           </summary>
           <table>
             <tbody>
-              {server!.audit.map((row, i) => (
+              {(server!.audit ?? []).map((row, i) => (
                 <tr key={`${row.at ?? i}-${i}`}>
                   <td className="mono soft-cell" style={{ width: 120 }}>
                     {String(row.at ?? "").replace("T", " ").slice(5, 16)}

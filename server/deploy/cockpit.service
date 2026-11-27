@@ -24,6 +24,12 @@ WorkingDirectory=/opt/gbrain-cockpit/current
 ExecStart=/usr/local/bin/bun /opt/gbrain-cockpit/current/server/src/index.ts
 Restart=always
 RestartSec=3
+# A configuration error must stop, not loop forever: a broken token registry
+# or a mistyped origin list refuses every boot, and without a limit systemd
+# would retry ~29,000 times a day. Recover with `systemctl reset-failed
+# cockpit` after fixing the file.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 # The audit trail lives under ~cockpit/.cockpit-audit (outside the program dir).
 
 [Install]

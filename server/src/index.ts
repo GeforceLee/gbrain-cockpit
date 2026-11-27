@@ -6,52 +6,15 @@ import { BrainRegistry } from "./brains";
 import { loadConfig, ConfigError, type Config } from "./config";
 import { createInboxStateStore } from "./inbox-state";
 import { loadRootEnv } from "./env";
-import { envelope, guardRequest } from "./http";
+import { envelope, guardRequest, withApiHeaders } from "./http";
 import { loadProfiles } from "./profiles";
 import { serveStatic } from "./static";
-import {
-  handleAnomalies,
-  handleAskEvidence,
-  handleAskMissing,
-  handleAskThink,
-  handleAuditHistory,
-  handleBrainHealth,
-  handleConfirm,
-  handleContradictionAction,
-  handleEdgeAction,
-  handleEvidence,
-  handleGraph,
-  handleInbox,
-  handlePage,
-  handlePageFacets,
-  handlePageWrite,
-  handlePages,
-  handleProfiles,
-  handleSearch,
-  handleSources,
-  handleSourcesStatus,
-  handleOpsSourceDrift,
-  handleOpsClients,
-  handleOpsDreamRuns,
-  handleOpsGrantRead,
-  handleOpsNightly,
-  handleOpsCalibration,
-  handleOpsAssets,
-  handleOpsDeploy,
-  handleOpsModel,
-  handleOpsModelTest,
-  handleTakePropose,
-  handleInboxRelief,
-  handleTakeResolve,
-  handleTrustDrop,
-  handleWriteCancel,
-  handleWriteConflicts,
-  handleWriteRequest,
-  handleWriteRequests,
-  handleResolveSlugs,
-  mapError,
-} from "./routes/api";
+import { TokenRegistry } from "./tokens";
+import { OWNER_ADMIN } from "./authz";
+import { auditWrite, auditWriteStrict, ensureAuditWritable } from "./audit";
+import { handleApi, type RouteDeps } from "./router";
 import { getHealthReport, toCoarse } from "./routes/health";
+import { mapError } from "./routes/api";
 
 loadRootEnv();
 
@@ -115,6 +78,30 @@ const distRoot = resolveDistRoot();
 
 const registry = await BrainRegistry.create(brainsConfig);
 
+// The audit trail must be writable before anything is adjudicated or issued
+// (0.7): a cockpit that cannot record who did what says so at boot.
+try {
+  await ensureAuditWritable();
+} catch (err) {
+  console.error(`[cockpit] audit trail is not writable: ${(err as Error).message}`);
+  console.error("[cockpit] fix the permissions on ~/.cockpit-audit (owned by the service user, mode 700) and start again");
+  process.exit(1);
+}
+
+// Named-token registry (0.7): off unless COCKPIT_TOKENS_FILE names it. Load
+// failures are fatal (ConfigError) — a registry this code cannot understand
+// is never treated as "empty". Management mutations are audited BEFORE the
+// registry changes, by the admin actor.
+const tokens = cfg.tokensFile
+  ? TokenRegistry.load(cfg.tokensFile, {
+      knownBrains: () => new Set(registry.profileIds()),
+      auditStrict: (action, detail) => auditWriteStrict(OWNER_ADMIN, { action, detail }),
+      auditSoft: async (action, detail) => {
+        await auditWrite(OWNER_ADMIN, { action, detail });
+      },
+    })
+  : null;
+
 // Startup banner: one line per profile, availability only.
 for (const p of brainsConfig.profiles) {
   const ch = registry.resolve(p.id)!;
@@ -140,186 +127,104 @@ if (brainsConfig.mode === "legacy-env") {
     `[cockpit] ${brainsConfig.profiles.length} brain profile(s) from COCKPIT_PROFILES_FILE — switch with the x-brain-profile header`,
   );
 }
+if (tokens) {
+  const rows = tokens.list();
+  console.log(
+    `[cockpit] named-token registry: ${cfg.tokensFile} (${rows.filter((t) => t.revokedAt === null).length} active, ${rows.filter((t) => t.revokedAt !== null).length} revoked)`,
+  );
+  for (const brain of tokens.unknownBrains()) {
+    console.warn(
+      `[cockpit] named-token registry: a token names brain "${brain}", which is not in brains.json — requests for it answer 403`,
+    );
+  }
+}
+console.log(
+  `[cockpit] write origins: ${cfg.allowedOrigins.length > 0 ? cfg.allowedOrigins.join(", ") : "Origin must equal Host (COCKPIT_ALLOWED_ORIGINS unset)"}`,
+);
+
+const routeDeps: RouteDeps = { cfg, verifier, registry, tokens, inboxStore };
 
 const server = Bun.serve({
   hostname: cfg.bind,
   port: cfg.port,
+  // Never the development error page: it echoes the error message (DSNs
+  // included), the stack and the working directory to the caller.
+  development: false,
   async fetch(req): Promise<Response> {
-    const url = new URL(req.url);
-
-    // Coarse, unauthenticated health for uptime pollers — statuses only.
-    // Reflects the DEFAULT profile (documented: uptime semantics stay
-    // stable regardless of which brain the UI is looking at).
-    if (url.pathname === "/healthz") {
-      if (req.method !== "GET") {
-        return envelope(405, "E_METHOD_NOT_ALLOWED" as ErrorCode, "only GET is allowed");
-      }
-      const def = registry.resolve(null);
-      return Response.json(toCoarse(await getHealthReport(def!)));
-    }
-
-    const rejected = guardRequest(req, url, cfg);
-    if (rejected) return rejected;
-
-    if (url.pathname.startsWith("/api/")) {
-      const principal = verifier.verify(req.headers.get("authorization"));
-      if (!principal) {
-        return envelope(401, "E_UNAUTHENTICATED", "missing or invalid bearer token");
-      }
-
-      // Profile routing: absent header = the default profile (0.1.1 curl
-      // scripts and single-instance installs stay zero-aware); a malformed
-      // or unknown id is a 400, never a silent fallback to the wrong brain.
-      const profileId = req.headers.get("x-brain-profile");
-      if (profileId !== null && !PROFILE_ID_RE.test(profileId)) {
-        return envelope(400, "E_BAD_REQUEST", "invalid x-brain-profile header");
-      }
-      const channels = registry.resolve(profileId);
-      if (!channels) {
-        return envelope(400, "E_BAD_REQUEST", `unknown brain profile: ${profileId}`);
-      }
-
-      const route = `${req.method} ${url.pathname}`;
-      try {
-        switch (route) {
-          case "GET /api/profiles":
-            return await handleProfiles(registry, verifier.adminConfigured);
-          case "GET /api/healthz":
-            return Response.json(await getHealthReport(channels));
-          case "GET /api/graph":
-            return await handleGraph(channels);
-          case "GET /api/pages":
-            return await handlePages(channels, url);
-          case "GET /api/pages/facets":
-            return await handlePageFacets(channels, url);
-          case "GET /api/page":
-            return await handlePage(channels, url);
-          case "GET /api/search":
-            return await handleSearch(channels, url);
-          case "GET /api/sources":
-            return await handleSources(channels);
-          case "GET /api/sources/status":
-            return await handleSourcesStatus(channels);
-          // 0.4.0 ops surface: reads on the base token, grant-read gated to
-          // the admin tier inside the handler (two distinct 403 messages).
-          // 0.5.1 adds the third action class: the paid model probe — admin
-          // tier too, for the same reason (money leaves the host).
-          case "GET /api/ops/sources-drift":
-            return await handleOpsSourceDrift(channels);
-          case "GET /api/ops/clients":
-            return await handleOpsClients(channels);
-          case "GET /api/ops/dream-runs":
-            return await handleOpsDreamRuns(channels);
-          // 0.5.0 nightly-cycle observability: reads on the base token
-          // (perception is free; run-now actions stay copy-command)
-          case "GET /api/ops/nightly":
-            return await handleOpsNightly(channels);
-          case "GET /api/ops/calibration":
-            return await handleOpsCalibration(channels);
-          case "GET /api/ops/assets":
-            return await handleOpsAssets(channels);
-          case "GET /api/ops/deploy":
-            return await handleOpsDeploy(channels);
-          // 0.5.1 model wiring: the read is perception (base token); the
-          // LIVE probe is the third action class — paid, outward side effect
-          // — so it gates to the admin tier like the management write does.
-          case "GET /api/ops/model":
-            return await handleOpsModel(channels);
-          case "POST /api/ops/model/test":
-            return await handleOpsModelTest(
-              channels,
-              principal,
-              verifier.adminConfigured,
-            );
-          case "POST /api/ops/grant-read": {
-            const res = await handleOpsGrantRead(
-              channels,
-              principal,
-              verifier.adminConfigured,
-            );
-            // derived whoami hints may change with the widened grant
-            registry.invalidateProfileInfos();
-            return res;
-          }
-          case "GET /api/inbox":
-            return await handleInbox(channels, inboxStore);
-          // 0.5.2: cockpit-own relief state (mute/snooze) — NOT a gbrain
-          // action, so no channel-matrix row; base token + audit like any UI write
-          case "POST /api/inbox/relief":
-            return await handleInboxRelief(channels, req, inboxStore);
-          case "POST /api/inbox/trust/drop":
-            return await handleTrustDrop(channels, req);
-          case "POST /api/inbox/edge":
-            return await handleEdgeAction(channels, req);
-          case "POST /api/inbox/contradictions":
-            return await handleContradictionAction(channels, req);
-          case "POST /api/inbox/takes/propose":
-            return await handleTakePropose(channels, req);
-          case "POST /api/inbox/takes/resolve":
-            return await handleTakeResolve(channels, req);
-          case "POST /api/write-cancel":
-            return await handleWriteCancel(channels, req);
-          case "GET /api/resolve-slugs":
-            return await handleResolveSlugs(channels, url);
-          case "GET /api/brain-health":
-            return await handleBrainHealth(channels);
-          case "GET /api/anomalies":
-            return await handleAnomalies(channels);
-          case "GET /api/audit-history":
-            return await handleAuditHistory(channels, url);
-          case "POST /api/inbox/confirm":
-            return await handleConfirm(channels, req);
-          case "PUT /api/page":
-            return await handlePageWrite(channels, req);
-          case "GET /api/write-request":
-            return await handleWriteRequest(channels, url);
-          case "GET /api/write-requests":
-            return await handleWriteRequests(channels, url);
-          case "GET /api/write-conflicts":
-            return await handleWriteConflicts(channels, url);
-          case "POST /api/evidence":
-            return await handleEvidence(channels, req);
-          // 0.6 ask panel (问一句): free evidence leg + paid deep-answer leg,
-          // both MCP. The paid verb takes the two-step stamp's server half
-          // (confirm flag), single-flights per profile and audits every call.
-          case "GET /api/ask":
-            return await handleAskEvidence(channels, url);
-          case "POST /api/ask/think":
-            return await handleAskThink(channels, req, principal);
-          case "POST /api/ask/missing":
-            return await handleAskMissing(channels, req);
-          default:
-            return envelope(404, "E_NOT_FOUND", "unknown route");
+    try {
+      // inside the try on purpose: a Host the URL parser cannot take must
+      // answer the JSON envelope, not a runtime default page
+      const url = new URL(req.url);
+      // Coarse, unauthenticated health for uptime pollers — statuses only.
+      // Reflects the DEFAULT profile (documented: uptime semantics stay
+      // stable regardless of which brain the UI is looking at).
+      if (url.pathname === "/healthz") {
+        if (req.method !== "GET") {
+          return envelope(405, "E_METHOD_NOT_ALLOWED" as ErrorCode, "only GET is allowed");
         }
-      } catch (err) {
-        return mapError(err);
+        const def = registry.resolve(null);
+        return withApiHeaders(Response.json(toCoarse(await getHealthReport(def!))));
       }
-    }
 
-    // Static web app (production form): the built SPA from web/dist.
-    if (req.method === "GET" && distRoot) {
-      return await serveStatic(distRoot, url.pathname);
-    }
+      const rejected = guardRequest(req, url, cfg);
+      if (rejected) return rejected;
 
-    return envelope(404, "E_NOT_FOUND", "unknown route");
+      if (url.pathname.startsWith("/api/")) {
+        return await handleApi(req, url, routeDeps);
+      }
+
+      // Static web app (production form): the built SPA from web/dist.
+      if (req.method === "GET" && distRoot) {
+        return await serveStatic(distRoot, url.pathname);
+      }
+
+      return envelope(404, "E_NOT_FOUND", "unknown route");
+    } catch (err) {
+      // ONE catch-all for the whole request path (the gate included): an
+      // unexpected throw answers the JSON envelope, never Bun's error page.
+      return mapError(err);
+    }
+  },
+  // errors Bun itself raises below the fetch layer get the same envelope
+  error(err): Response {
+    return mapError(err);
   },
 });
 
 console.log(`[cockpit] v${COCKPIT_VERSION} listening on http://${cfg.bind}:${cfg.port}`);
 console.log(`[cockpit] inbox relief state: ${inboxStore.path} (one file per server; cockpit-owned, never the brain DB)`);
-console.log("[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>'");
+console.log(
+  tokens
+    ? "[cockpit] auth: /api/* takes 'Authorization: Bearer <token>' — the env tokens or a named token from the registry"
+    : "[cockpit] auth: /api/* requires 'Authorization: Bearer <COCKPIT_TOKEN>' (named tokens off — COCKPIT_TOKENS_FILE unset)",
+);
 console.log(
   verifier.adminConfigured
-    ? "[cockpit] auth: management writes and the paid model probe require the COCKPIT_ADMIN_TOKEN tier"
+    ? "[cockpit] auth: management writes, the paid model probe and token management require the COCKPIT_ADMIN_TOKEN tier"
     : "[cockpit] auth: COCKPIT_ADMIN_TOKEN unset — management writes and the paid model probe answer 403 and degrade to copy-commands",
 );
 
-process.on("SIGINT", () => {
+// After the listener is up (a boot loop must not flood the trail).
+if (tokens) {
+  const rows = tokens.list();
+  try {
+    await auditWriteStrict(OWNER_ADMIN, {
+      action: "registry.loaded",
+      detail: {
+        active: rows.filter((t) => t.revokedAt === null).length,
+        revoked: rows.filter((t) => t.revokedAt !== null).length,
+      },
+    });
+  } catch (err) {
+    console.error(`[audit] registry.loaded line not written: ${(err as Error).message}`);
+  }
+}
+
+function shutdown(): void {
   console.log("[cockpit] shutting down");
+  tokens?.dispose();
   server.stop(true);
   process.exit(0);
-});
-process.on("SIGTERM", () => {
-  server.stop(true);
-  process.exit(0);
-});
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
