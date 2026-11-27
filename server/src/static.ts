@@ -1,11 +1,14 @@
 import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
+import { SECURITY_HEADERS } from "./http";
 
 // Static serving of the built web app (ARCHITECTURE §5-12): every request
 // path is resolved against the dist root and must stay inside it — `..`,
 // encoded variants, NUL bytes, and absolute forms are rejected before any
 // filesystem call. Assets get immutable caching (content-hashed names),
-// index.html always revalidates.
+// index.html always revalidates. Every response carries the anti-framing
+// headers (0.7): the app holds a bearer token, so another site must not be
+// able to frame it and overlay a click on an irreversible action.
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -24,7 +27,8 @@ const MIME: Record<string, string> = {
 // throws ERR_BODY_ALREADY_USED on its second send (found live: /favicon.ico
 // does not exist in dist, so every page load re-requested the same object
 // until the second one killed the request). Always mint a fresh Response.
-const notFound = (): Response => new Response("not found", { status: 404 });
+const notFound = (): Response =>
+  new Response("not found", { status: 404, headers: { ...SECURITY_HEADERS } });
 
 /** Resolve a request path to a file inside distRoot, or null if unsafe/absent. */
 export function resolveStaticPath(
@@ -72,6 +76,7 @@ export async function serveStatic(
   return new Response(data, {
     status: 200,
     headers: {
+      ...SECURITY_HEADERS,
       "content-type": MIME[ext]!,
       "content-length": String(size),
       "cache-control": isHtml

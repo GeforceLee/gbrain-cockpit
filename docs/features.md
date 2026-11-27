@@ -26,6 +26,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - **Batch reject** for a page of takes (two-step confirm; terminal-confirmation actions are never batched)
 - **Session audit block + recent-verdicts table**: every action stamps itself into a fixed receipt slot — no toasts, no lost history
 - Queue cards paginate with a user-selectable page size; page references (take source page, edge/trust targets) open the shared page drawer in place — the tab, page and selection you're working from never reset
+- **For an access token with the adjudicate grant** (0.7): every stamp and the batch reject work as usual. In place of the copy blocks that carry terminal commands there is one line — "The admin does this step on the brain host" — for accepting a trust proposal and releasing a held write; confirming a fact is the admin's too (dropping is yours). The recent-verdicts block shows the proposal-outcomes table only, and your mutes and snoozes are yours alone
 
 ## Graph — the whole-brain map
 
@@ -41,6 +42,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - **Three filter dimensions**: type facets, a slug-prefix box (server-side `slug_prefix` narrowing) and a tag box (upstream's `tag` filter — list rows never carry tags upstream, so this is a free-input filter, not a chip list); plus the source filter, all server-side
 - Deep pagination through upstream's `offset` windows — every page of a 10k-page brain is reachable, not just the first window
 - In-place editing on the full write-receipt protocol: optimistic-lock conflict instead of silent overwrite, idempotent request ids, receipt polling on timeout (never a re-send)
+- **Editing is not open to access tokens yet** (0.7): the admin's env tokens save as before; an access token reads, and where it would edit sees "This source is not yours to edit; ask your admin if it needs a change". The write-receipts section is the admin's, and a page detail handed to an access token carries no source file path
 - **Write-receipts section** (lazy, fetched on expand): what gbrain itself recorded for this token's writes — status, request id, slug, time — plus a banner of pages whose writes keep ending in `source_changed` conflicts; the upstream truth next to the session-side audit table
 - **Detail view with full provenance**: tags, origin (which channel wrote the page), created date, source file, trust tier, revision; **relations** — outgoing (`get_links`) and backlinks (`get_backlinks`), each row with its type, per-edge provenance and a context excerpt, click to jump; a read-only **timeline**; the **version-history** list. A missing or failed section self-describes as unavailable instead of erroring
 - Page bodies render as markdown through the marked → DOMPurify pipeline everywhere (detail view, page drawer, graph peek) — gbrain stores pages as markdown (its repo-of-Markdown design), and imported content is persistent untrusted input: scripts/images/forms are stripped, external links open hardened (`_blank` + `noopener`). Pages stored inside the conversation-ingest wrapper (a quoted-excerpt line plus a text fence around the whole body) are unwrapped at render time; any other shape renders exactly as stored
@@ -59,6 +61,7 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - **Degrades in-band**: a keyless brain answers with evidence only (a keyless stamp pointing at Admin · Model wiring — never auto-wiring); tool errors render gbrain's structured envelope (code/message/suggestion) with the official `gbrain errors <code>` lookup as copy-only
 - Answers render through the marked → DOMPurify pipeline's semantics (token-tree rendering — links from brain content never become anchors; zero `innerHTML` anywhere); evidence excerpts are typeset verbatim as untrusted text
 - Desk-foot utilities, all free: widen the top evidence (`assemble_evidence`), "why is this page missing" (`query`'s `explain_target`), and the top-K fact line. `query`'s paid `expand` parameter never appears in the UI; think's `save`/`take` (MCP-ignored persist params) are never sent
+- **The paid leg belongs to the admin's env tokens** (0.7): an access token gets the free evidence leg and "why is this page missing" only — every paid control (the answer button, the paid seam after the evidence, the tour's paid steps, the exit to Admin) is simply not shown
 
 ## Health
 
@@ -71,18 +74,50 @@ Cross-panel ground rules: panels stay alive across switches (queue tab, paginati
 - **Asset-health card** (0.5.0): backup coverage, git convergence, unindexed files, ghost pages — "not a git repo" and "not computed yet" are real states, not errors
 - **Write audit** (0.5.0): this token's own write receipts and the repeatedly-conflicting pages in one place
 - **Deploy checkup** (0.5.0): the brain's checkout topology plus the generated per-source two-segment unit text — pure reference material with the 2026-11-10 post-mortem's pitfall notes (repo_path one-key-two-locks, systemd quoting, the 100-page propose window, whole-brain grading, cron-blindness); cockpit never installs, edits or runs units
-- **Admin panel** (0.4.x, conditional): appears only when the deployment configures the admin tier — the OAuth client registry read-only (cockpit's own row highlighted), per-row revoke as copy-command only, the grant-widening entry, and (0.5.1) the **model-wiring card**: the brain's active wiring (which model each tier and task actually resolves to), which provider keys are set (booleans only — key values never enter the UI), the endpoints in effect (a fixed read-only SELECT over the engine config table's `provider_base_urls.*` rows — the only structured home of the effective endpoint; owner-approved, values URL-validated server-side), the static provider doctor checks, a paid one-click live probe of the exact path dream takes (`models doctor`, admin step-up, single-flight, cost disclosed), and copy-command fix guidance carrying the 2026-11-12 probe-pinned pitfall notes (zhipu's pay-as-you-go vs subscription endpoints, the parent-key addressing trap, env shadowing, restart-to-apply, breaker unlock). Endpoints are never pre-filled — the owner decides
+- **Admin panel** (0.4.x, conditional): appears only to the admin's env tokens, and only when the deployment configures the admin token — since 0.7 the **Access tokens card** sits at its top (see [Access tokens](#access-tokens)); below it, the OAuth client registry read-only (cockpit's own row highlighted), per-row revoke as copy-command only, the grant-widening entry, and (0.5.1) the **model-wiring card**: the brain's active wiring (which model each tier and task actually resolves to), which provider keys are set (booleans only — key values never enter the UI), the endpoints in effect (a fixed read-only SELECT over the engine config table's `provider_base_urls.*` rows — the only structured home of the effective endpoint; owner-approved, values URL-validated server-side), the static provider doctor checks, a paid one-click live probe of the exact path dream takes (`models doctor`, admin step-up, single-flight, cost disclosed), and copy-command fix guidance carrying the 2026-11-12 probe-pinned pitfall notes (zhipu's pay-as-you-go vs subscription endpoints, the parent-key addressing trap, env shadowing, restart-to-apply, breaker unlock). Endpoints are never pre-filled — the owner decides
 - Coarse unauthenticated `/healthz` for uptime pollers (statuses only, no data)
+
+## Access tokens
+
+The admin's two env tokens stay as they are. On top of them the admin can give every teammate an **access token** of their own: it carries a name and a **permission sheet**, and the person sees and does only what the sheet allows. This is step one of two — **view + adjudicate**. **Editing pages per source is not open yet.**
+
+- **The Access tokens card** (Admin, top; the admin's env tokens only): one row per person — name, the brains they may enter, `adjudicate` or `view only`, issued and last used — with **Change permissions** and **Revoke** on each row and **Issue a token** above; revoked tokens fold away under a quiet count
+- **Issuing**: a name, the brains, and whether they may adjudicate — then paste the admin token once. All three actions (issue, change, revoke) work that way: the admin token rides that one request and is cleared afterwards, whether the action succeeded or failed. The new token is shown **once**, as text with a Copy button; the dialog only closes on "I saved it"
+- **Three permissions**: **view** — every token: pages, search, the graph, the free evidence leg of Ask · **brains** — which brain instances it may enter (at least one) · **adjudicate** — handle the Inbox. The sources a token may edit are reserved for step two: the form does not offer them and the server rejects them
+- **What the card says out loud**: adjudicate is not per source — whoever holds it can change a page in any source by accepting a proposal. View is not per source either
+- **Revoking** is two steps — say it, then paste the admin token — and the prompt names the token and says that it takes effect at once and cannot be undone
+
+Who sees what:
+
+| Panel | The admin's env tokens | Access token with adjudicate | View-only access token |
+|---|---|---|---|
+| Inbox | yes | yes — no copy blocks, no fact confirm | hidden |
+| Graph | yes | yes | yes |
+| Pages | yes — edit | yes — read | yes — read |
+| Search | yes | yes | yes |
+| Ask | yes — free + paid | yes — free evidence only | yes — free evidence only |
+| Health | yes | hidden | hidden |
+| Admin | when the admin token is configured | hidden | hidden |
+| Lands on at sign-in | Inbox | Inbox | Pages |
+
+- **Sign-in**: paste an access token — the admin's env token or one issued to you. The server is asked whether it is valid *before* it is stored; it then lives in this browser only and travels as a request header only. The field is a plain text field with a visual mask, not a password field, so browsers neither save nor autofill it
+- **Who is signed in**: the bottom-left corner shows the name and its permissions — `owner · full access` for the admin's env tokens, `Zhang San · view, adjudicate` for an access token — next to a **Sign out** button. On a shared computer, sign out when you are done: it clears the whole session
+- **If the server cannot confirm who you are** (the who-am-I call failed for a reason other than a dead token): a banner says so and only the basics are shown — browse, search, graph, free evidence — until you reload. Nothing is assumed: a request that times out never turns a teammate into the admin.
+- **Refusals in plain words**: "Your access token has no adjudicate permission. Ask your admin to handle the proposal." · "Your access token may not enter this brain." · and, for what no access token can ever hold, "This action is for the admin only." — never "you lack X", which would sound requestable. An invalid or revoked token returns to sign-in and says why; a wrong admin token pasted at a management action is reported inside the card only, and never signs the admin out
+- **Permissions changed while signed in**: nothing moves under your feet. The next click that is no longer allowed is refused with the plain words above; when the tab returns to the foreground (and every five minutes) the UI re-checks and offers a reload if your permissions changed; if the brain you are viewing was taken off the sheet, it switches to the first one still allowed and tells you
+- **Not open yet** (step two): saving pages in named sources — `PUT /api/page` with `source_id`, one gbrain write client per editable source — and with it the sources entry on the sheet. Also not planned for now: finer-than-source edit permissions, signing in with another system's token, and token expiry, renaming or un-revoking (revoke and issue a new one instead)
+
+How it is enforced: [Authentication and authorization](architecture.md#authentication-and-authorization).
 
 ## Everywhere
 
 - **Bilingual zh-CN / English**, from the first release: every panel, action, empty state and error carries a one-line self-description; the language switch persists per browser
-- **Token gate**: one `COCKPIT_TOKEN`, stored client-side only, sent as a header only
-- **Brain switcher** (multi-profile hosts): the top bar swaps which gbrain deployment every call targets — panels remount on switch, so one brain's queues never render as another's; single-profile hosts see no switcher
+- **Sign-in**: any valid access token — the admin's env token or one issued to a teammate; verified with the server before it is stored, kept client-side only, sent as a header only (see [Access tokens](#access-tokens))
+- **Brain switcher** (multi-profile hosts): the top bar swaps which gbrain deployment every call targets — panels remount on switch, so one brain's queues never render as another's; single-profile hosts see no switcher. An access token is offered only the brains on its sheet, and names the brain on every call
 - **Source axis** (federated brains): pages, search hits, graph nodes and takes carry their source; Pages/Search filter by it server-side (narrow-only — the grant stays the enforcement point); the graph can color nodes by source with cross-source relations in dashed ink; the Inbox groups takes by source
-- Keyboard affordances: `⌘K` / `/` search · `⌘⌫` one-key drop · `⌘↵` copy the terminal command
+- Keyboard affordances: `⌘K` / `/` search · `⌘⌫` one-key drop · `⌘↵` copy the terminal command (the admin's env tokens only)
 - Untrusted-content discipline: imported brain content only ever enters the DOM through the one marked → DOMPurify pipeline (PageBody); graph labels draw on canvas, everything else stays plain text
 
 ## Roadmap (not in 0.1)
 
-Graph MCP-composite fallback · `/metrics` · dream-window telemetry banner · Docker channel · multi-token support
+Graph MCP-composite fallback · `/metrics` · dream-window telemetry banner · Docker channel · per-source editing for access tokens (step two)

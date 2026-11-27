@@ -73,7 +73,19 @@ jobs:
             sleep 1
           done
           [ "$code" = "200" ] || { echo "static root answered $code"; kill "$SRV" 2>/dev/null; exit 1; }
-          curl -fsS http://127.0.0.1:8788/ | grep -q "<title>gbrain-cockpit" && echo "web bundle served ✓"
+          index=$(curl -fsS http://127.0.0.1:8788/)
+          grep -q "<title>gbrain-cockpit" <<< "$index" || { echo "the root is not the web bundle"; kill "$SRV" 2>/dev/null; exit 1; }
+          # …and the bundle is mounted at "/": the script index.html loads first
+          # must be root-relative and must load. A build with a path prefix
+          # baked in still answers 200 at "/" — and renders a blank page.
+          asset=$(grep -o 'src="/[^"]*"' <<< "$index" | head -1 | sed 's/^src="//; s/"$//')
+          case "$asset" in
+            /assets/*) ;;
+            *) echo "index.html loads '$asset' first — a release bundle must mount at /"; kill "$SRV" 2>/dev/null; exit 1 ;;
+          esac
+          code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8788$asset")
+          [ "$code" = "200" ] || { echo "bundle script $asset answered $code"; kill "$SRV" 2>/dev/null; exit 1; }
+          echo "web bundle served, mounted at / ✓"
           kill "$SRV" 2>/dev/null || true
 
       - name: Upload release artifacts (linux)

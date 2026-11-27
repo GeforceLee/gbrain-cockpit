@@ -29,3 +29,6 @@ tmp/
 # TypeScript incremental build info
 *.tsbuildinfo
 inbox-state.json
+# Named-token registry (0.7): SHA-256 digests + names + grant sheets
+tokens.json
+tokens.json.lock

@@ -5,7 +5,8 @@ import type {
 } from "@gbrain-cockpit/shared";
 import { PALETTE } from "../design/tokens";
 import { CopyCommand } from "./CopyCommand";
-import { ApiError, apiSend } from "../lib/api";
+import { apiSend } from "../lib/api";
+import { stepUpErrorMessage } from "../lib/errors";
 import { useI18n } from "../lib/i18n";
 
 // Source-visibility drift (0.4.0): the pg bypass sees the whole database,
@@ -43,7 +44,12 @@ export function DriftCard({
   useEffect(() => {
     // the Inbox batch-arm precedent: 4s to change your mind
     if (armed) {
-      disarmTimer.current = setTimeout(() => setArmed(false), 4000);
+      // long enough to fetch and paste the admin token (4 s closed the
+      // prompt mid-paste); unattended, the prompt still clears itself
+      disarmTimer.current = setTimeout(() => {
+        setArmed(false);
+        setAdminToken("");
+      }, 120_000);
     }
     return () => {
       if (disarmTimer.current) clearTimeout(disarmTimer.current);
@@ -63,7 +69,6 @@ export function DriftCard({
         {},
         { token: adminToken },
       );
-      setAdminToken(""); // step-up material is single-use by design
       setArmed(false);
       setResult(
         body.added.length === 0
@@ -73,9 +78,13 @@ export function DriftCard({
       refresh();
     } catch (err) {
       setActionError(
-        err instanceof ApiError ? `${err.message} (${err.code})` : String(err),
+        stepUpErrorMessage(err, t),
       );
     } finally {
+      // single-use by design — on FAILURE too: a kept-alive panel would
+      // otherwise re-open the prompt with the admin token still in it
+      setAdminToken("");
+      setArmed(false);
       setSending(false);
     }
   }
@@ -132,7 +141,8 @@ export function DriftCard({
               ) : (
                 <>
                   <input
-                    type="password"
+                    type="text"
+                    className="token-masked"
                     value={adminToken}
                     onChange={(e) => setAdminToken(e.target.value)}
                     placeholder={t("health.drift.tokenHint")}
@@ -145,6 +155,17 @@ export function DriftCard({
                     disabled={sending || adminToken.length === 0}
                   >
                     {sending ? t("health.drift.sending") : t("health.drift.grantConfirm")}
+                  </button>
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => {
+                      if (disarmTimer.current) clearTimeout(disarmTimer.current);
+                      setArmed(false);
+                      setAdminToken("");
+                    }}
+                  >
+                    {t("common.cancel")}
                   </button>
                 </>
               )}

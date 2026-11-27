@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { COCKPIT_VERSION } from "@gbrain-cockpit/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { COCKPIT_VERSION, type MeResponse } from "@gbrain-cockpit/shared";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TokenGate } from "./components/TokenGate";
-import { getToken } from "./lib/api";
+import { apiGet, getToken, logout } from "./lib/api";
+import { getMe, useMe } from "./lib/me";
 import type { PageRef } from "./lib/pages";
 import { useI18n, type MessageKey } from "./lib/i18n";
 import {
@@ -45,19 +46,30 @@ const DEFAULT_PANEL: PanelId = "inbox";
 function App() {
   const { locale, setLocale, t } = useI18n();
   const brain = useBrain();
+  const { me } = useMe();
+  // WHO is shown is never guessed. Only an explicit "owner" is an owner;
+  // while the identity is unresolved (the /api/me call failed for a reason
+  // other than a dead token) the shell shows the least it can — a colleague
+  // must not see the owner's desks and priced buttons because a request
+  // timed out. A banner says so and offers a reload.
+  const owner = me?.kind === "owner";
+  const identityUnknown = me === null;
+  const adjudicates = me?.permissions.adjudicate === true;
+  // Where a session lands: the adjudication desk for whoever may adjudicate,
+  // the page browser for a view-only token.
+  const defaultPanel: PanelId = adjudicates ? "inbox" : "pages";
   const [panelId, setPanelId] = useState<PanelId>(DEFAULT_PANEL);
-  // Admin visibility is a DEPLOYMENT capability (COCKPIT_ADMIN_TOKEN set —
-  // the server reports it via /api/profiles), not a browser state; single-
-  // token installs render the exact five-panel shell as before.
-  const visiblePanels = brain.adminTier
-    ? PANELS
-    : PANELS.filter((id) => id !== "admin");
-  useEffect(() => {
-    // orphan guard: if the admin tier disappears mid-session (server env
-    // changed + a heal refetch), an active Admin tab must not strand the
-    // stage on a removed slot — fall back to the product default.
-    if (!visiblePanels.includes(panelId)) setPanelId(DEFAULT_PANEL);
-  }, [visiblePanels, panelId]);
+  // Admin visibility is a DEPLOYMENT capability for the owner (the server
+  // reports COCKPIT_ADMIN_TOKEN via /api/profiles) and never shown to a named
+  // token; neither is Health (its cards read the owner-only ops surface),
+  // and the Inbox needs the adjudicate grant.
+  const visiblePanels = useMemo<readonly PanelId[]>(() => {
+    if (owner) return brain.adminTier ? PANELS : PANELS.filter((id) => id !== "admin");
+    return PANELS.filter(
+      (id) => id !== "admin" && id !== "health" && (id !== "inbox" || adjudicates),
+    );
+  }, [owner, brain.adminTier, adjudicates]);
+  const [grantsChanged, setGrantsChanged] = useState(false);
   // keep-alive: a panel mounts on first visit and stays mounted afterwards
   // (hidden via CSS), so tab / pagination / selection / scroll / graph
   // camera survive every switch — leaving a panel never resets it
@@ -82,6 +94,34 @@ function App() {
     if (tokenReady) void bootstrapProfiles();
   }, [tokenReady]);
 
+  // Grants can change while the app is open (no push): re-ask "who am I"
+  // when the tab comes back and every few minutes, and offer a reload when
+  // the answer differs from what this session was built on.
+  useEffect(() => {
+    if (!tokenReady) return;
+    let alive = true;
+    const check = async () => {
+      try {
+        const next = await apiGet<MeResponse>("/api/me");
+        if (alive && JSON.stringify(next) !== JSON.stringify(getMe())) {
+          setGrantsChanged(true);
+        }
+      } catch {
+        // a dead session is already being handled by the api client
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    const timer = setInterval(() => void check(), 5 * 60_000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [tokenReady]);
+
   // Switching brains switches worlds: reset the shell state that would
   // otherwise leak the previous brain's data into the new one (a pending
   // focus slug would auto-open the WRONG brain's same-named page; the
@@ -98,6 +138,21 @@ function App() {
   }, [profileId, brain.loaded]);
 
   const activeProfile = brain.profiles.find((p) => p.id === brain.currentId);
+  // the Ask panel's self-description comes in a priced and an unpriced form
+  const panelDesc = (id: PanelId): string => {
+    if (!owner && id === "ask") return t("panel.ask.descFree");
+    if (!owner && id === "pages") return t("panel.pages.descFree");
+    return t(`panel.${id}.desc` as MessageKey);
+  };
+  const permLabel = identityUnknown
+    ? t("shell.perms.unknown")
+    : owner
+      ? t("shell.perms.all")
+      : adjudicates
+        ? t("shell.perms.viewAdjudicate")
+        : t("shell.perms.view");
+  const noticeText =
+    brain.notice === "denied" ? t("shell.profile.denied") : t("shell.profile.unavailable");
 
   useEffect(() => {
     document.title = activeProfile
@@ -133,6 +188,16 @@ function App() {
     setPanelId(id);
     setVisited((v) => (v.includes(id) ? v : [...v, id]));
   }, []);
+  useEffect(() => {
+    // orphan guard: a tab that is not on this session's list (the admin
+    // tier disappeared on a heal refetch; a view-only token's default would
+    // be the Inbox it does not have) must not strand the stage on a removed
+    // slot — land on this session's own default instead. It waits for the
+    // session to resolve: before "who am I" answers there is no inbox tab
+    // on anyone's list, and running early would park the admin on Pages.
+    if (!tokenReady || !brain.loaded) return;
+    if (!visiblePanels.includes(panelId)) show(defaultPanel);
+  }, [tokenReady, brain.loaded, visiblePanels, panelId, defaultPanel, show]);
 
   const openPage = useCallback(
     (ref: PageRef) => {
@@ -177,8 +242,10 @@ function App() {
               <div className="sub mono">v{COCKPIT_VERSION} · MINT AUDIT</div>
             </div>
           </div>
-          <p className="nav-label">{t("shell.navLabel")}</p>
-          {visiblePanels.map((id) => (
+          {tokenReady && <p className="nav-label">{t("shell.navLabel")}</p>}
+          {/* before sign-in there is no "who": no tabs, no identity */}
+          {tokenReady &&
+            visiblePanels.map((id) => (
             <button
               key={id}
               type="button"
@@ -203,7 +270,7 @@ function App() {
                   <span className="count">{inboxTotal}</span>
                 ) : null}
               </span>
-              <span className="desc">{t(`panel.${id}.desc` as MessageKey)}</span>
+              <span className="desc">{panelDesc(id)}</span>
             </button>
           ))}
           <div className="side-foot">
@@ -221,13 +288,21 @@ function App() {
               </div>
               <div className="legend">{t("side.dream.legend")}</div>
             </div>
-            <div className="owner">
-              <span className="dot" />
-              <span>
-                {t("shell.owner")}{" "}
-                <span className="mono">· {t("shell.principal")}</span>
+            {tokenReady && (
+            <div className="identity">
+              <span className="who">
+                <span className="dot" />
+                {me && <b>{me.name}</b>}
+                {/* the dot separator only when there is a name to separate */}
+                <span className="perms">
+                  <span className="mono">{me ? "· " : ""}{permLabel}</span>
+                </span>
               </span>
+              <button type="button" className="linkish logout" onClick={logout}>
+                {t("shell.logout")}
+              </button>
             </div>
+            )}
           </div>
         </aside>
 
@@ -249,7 +324,7 @@ function App() {
                   </span>
                 ) : null}
               </h1>
-              <p className="self">{t(`panel.${panelId}.desc` as MessageKey)}</p>
+              <p className="self">{panelDesc(panelId)}</p>
             </div>
             <div className="right">
               {brain.profiles.length > 1 ? (
@@ -272,9 +347,9 @@ function App() {
                   type="button"
                   className="profile-notice"
                   onClick={clearBrainNotice}
-                  title={t("shell.profile.unavailable")}
+                  title={noticeText}
                 >
-                  {t("shell.profile.unavailable")}
+                  {noticeText}
                 </button>
               ) : null}
               <div className="search">
@@ -317,7 +392,8 @@ function App() {
 
           {/* the sidebar reappears as a strip on narrow viewports (CSS-gated) */}
           <nav className="side-mobile" aria-label={t("app.title")}>
-            {visiblePanels.map((id) => (
+              {tokenReady &&
+                visiblePanels.map((id) => (
               <button
                 key={id}
                 type="button"
@@ -339,6 +415,25 @@ function App() {
             ))}
           </nav>
 
+          {/* while the identity itself is unconfirmed, that is the news — the
+              "permissions changed" line would only repeat it */}
+          {grantsChanged && !identityUnknown && (
+            <div className="session-banner" role="status">
+              <span>{t("shell.permissionsChanged")}</span>
+              <button type="button" className="linkish" onClick={() => window.location.reload()}>
+                {t("shell.reloadNow")}
+              </button>
+            </div>
+          )}
+          {tokenReady && brain.loaded && identityUnknown && (
+            <div className="session-banner" role="status">
+              <span>{t("shell.identityUnknown")}</span>
+              <button type="button" className="linkish" onClick={() => window.location.reload()}>
+                {t("common.retry")}
+              </button>
+            </div>
+          )}
+
           <main className="stage">
             {!tokenReady ? (
               <TokenGate onAuthed={() => setTokenReady(true)} />
@@ -346,6 +441,11 @@ function App() {
               // profile list resolving — first paint waits for the final id
               <div className="stage-boot" aria-live="polite">
                 {t("shell.profile.loading")}
+              </div>
+            ) : brain.profiles.length === 0 ? (
+              // every brain on this token's sheet is gone from brains.json
+              <div className="stage-boot" role="status">
+                {t("shell.noBrain")}
               </div>
             ) : (
               // keep-alive stage: every visited panel stays mounted inside

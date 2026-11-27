@@ -244,26 +244,6 @@
   font-family: var(--f-mono);
 }
 
-.owner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 4px 0;
-  font-size: 11px;
-}
-
-.owner .dot {
-  width: 9px;
-  height: 9px;
-  background: var(--ok);
-  border: 2px solid var(--ink);
-}
-
-.owner .mono {
-  font-size: 10px;
-  opacity: 0.6;
-}
-
 /* --- main column --- */
 
 .main {
@@ -456,4 +436,49 @@
   .side-mobile .nav-item {
     width: auto;
   }
+}
+
+/* 0.7 identity block: who is signed in, what their token may do, sign out. */
+.identity {
+  display: grid;
+  gap: 6px;
+  padding: 10px 4px 0;
+  font-size: 11px;
+}
+
+.identity .who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.identity .dot {
+  width: 9px;
+  height: 9px;
+  background: var(--ok);
+  border: 2px solid var(--ink);
+}
+
+.identity .perms .mono {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.identity .logout {
+  align-self: flex-start;
+  font-size: 11px;
+}
+
+/* Grants changed elsewhere: one quiet line, one click to pick them up. */
+.session-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  margin-bottom: 10px;
+  border: 2px dashed var(--warn);
+  background: var(--warn-pale);
+  font-size: 12px;
 }

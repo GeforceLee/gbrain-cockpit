@@ -8,6 +8,7 @@ import type {
 import { appendAudit, type AuditMeta } from "../lib/auditLog";
 import { ApiError, apiGet, apiSend } from "../lib/api";
 import { currentProfile } from "../lib/brain";
+import { canEditSource, useMe } from "../lib/me";
 import { useI18n, type MessageKey } from "../lib/i18n";
 import { pageRefQuery, useSlugSiblings, type PageBundle, type PageRef } from "../lib/pages";
 import { PageBody } from "../components/PageBody";
@@ -318,6 +319,16 @@ export function Pages({
     }
   }
 
+  // 0.7: who may save this page — the owner always; a named token only
+  // with this source on its sheet. The server is the enforcer; this only
+  // decides whether the button or its reason is shown.
+  const { me } = useMe();
+  const owner = me?.kind === "owner";
+  const mayEdit = owner
+    ? currentProfile()?.readOnly !== true
+    : canEditSource(bundle?.page.source_id);
+  const editBlockReason = owner ? t("pages.readOnly") : t("pages.notYours");
+
   const inDetail = selected !== null;
   const slugSiblings = useSlugSiblings(
     inDetail ? (selected?.slug ?? null) : null,
@@ -382,11 +393,16 @@ export function Pages({
           {/* 写收据 — gbrain-side truth, lazy: fetches on first expand only.
               Read-only profiles never fetch: receipts are this token's own
               writes and a read grant has none (gbrain refuses the listing). */}
-          <WriteReceiptsSection
-            sourceId={sourceFilter || undefined}
-            readOnly={currentProfile()?.readOnly === true}
-            onOpenPage={(ref) => void openPage(ref)}
-          />
+          {owner && (
+            // receipts are recorded per gbrain client, not per person: a
+            // named token would see other people's writes (and could not
+            // cancel any of them) — the section is the owner's
+            <WriteReceiptsSection
+              sourceId={sourceFilter || undefined}
+              readOnly={currentProfile()?.readOnly === true}
+              onOpenPage={(ref) => void openPage(ref)}
+            />
+          )}
           <div className="list-tools">
             <span className="muted">
               {t("pages.listCaption")} · {filterTotal ?? rowsCount}
@@ -495,12 +511,16 @@ export function Pages({
               </button>
             )}
             {bundle && editor.mode === "idle" && (
-              // Read-grant profile (no write scope): a save could only ever
-              // fail upstream — show the reason instead of an impossible
-              // button. The server stays the enforcer; UX narrowing only.
-              currentProfile()?.readOnly === true ? (
-                <span className="readonly-note" title={t("pages.readOnly")}>
-                  {t("pages.readOnly")}
+              // A save that could only ever fail upstream gets its reason
+              // instead of an impossible button: a read-grant profile, or a
+              // named token without this source on its sheet. The server
+              // stays the enforcer; UX narrowing only.
+              !mayEdit ? (
+                <span
+                  className="readonly-note"
+                  title={editBlockReason}
+                >
+                  {editBlockReason}
                 </span>
               ) : (
                 <button type="button" onClick={() => setEditor({ mode: "editing", draft: bundle.page.content ?? "" })}>

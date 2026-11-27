@@ -6,7 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Releases stay `0.x` until the owner promotes a release line.
 
-## [Unreleased]
+## [0.7.0] - 2026-11-27
+
+The everyone-gets-their-own-key release: named access tokens. Until now the only way to let a teammate in was to hand out `COCKPIT_TOKEN`, which also opens the ops surface and the paid deep answer. Now the admin issues each person an access token of their own — it carries a name and a permission sheet (which brains it may enter, whether it may adjudicate), can be changed or revoked at any moment, and the audit trail says who did what. This is step one of two, **view + adjudicate**; letting access tokens edit pages, source by source, is step two and is **not open yet**. Deployments that leave `COCKPIT_TOKENS_FILE` unset keep the two env tokens as their only sign-in credentials, as in 0.6 — everything below still applies to them.
+
+### Added — named access tokens (step 1: view + adjudicate)
+- **Two kinds of sign-in credential, one API.** `COCKPIT_TOKEN` and `COCKPIT_ADMIN_TOKEN` keep their meaning — view, adjudicate, ops reads and the paid deep answer; the admin token adds management writes. An **access token** is issued in the web UI, one per teammate, and does exactly what its sheet says.
+- **The permission sheet.** Every access token can view. The sheet adds the brains it may enter (at least one; the first is its default) and whether it may adjudicate. Its third entry — the sources it may edit — is reserved: the field is part of the registry format, but the server rejects any non-empty list and the issue form does not show it. Two limits are deliberate and stated in the UI: view is not per source (a token reads every source the deployment's gbrain credential can read), and adjudicate is not per source either (accepting a proposal writes into the page the proposal came from).
+- **What an access token can never call** — refused by the server with a 403 that names what is missing: everything under `/api/ops/*`, the paid deep answer (`POST /api/ask/think`), the four health diagnostics (`GET /api/healthz`, `/api/brain-health`, `/api/sources/status`, `/api/anomalies`), fact confirmation (`POST /api/inbox/confirm`), the write-receipt family (`GET /api/write-requests`, `GET /api/write-conflicts`, `POST /api/write-cancel`), page saves (`PUT /api/page`, `GET /api/write-request`) and token management. What it does get is trimmed: inbox data without command text, the CLI command name and upstream error text; page details without the host file path; the audit history without the raw audit tail; a token without the adjudicate grant gets only the edge-proposal queue from `GET /api/inbox` (the graph draws "new relations" from it). `POST /api/evidence` and `POST /api/ask/missing` are reads that happen to carry a body — they belong to view.
+- **New routes are closed to access tokens by construction.** Every `/api` route is now one row in a single route table (`server/src/router.ts`): method, path, its class (view / adjudicate / edit / reserved for the admin's env tokens) and the handler. The class is mandatory, a route that changes data cannot file itself as a read (except the two body-carrying reads on a fixed list), and a class without a verdict does not build. Every request passes one gate before any handler runs — verify the token, may it enter this brain, does its class pass — and the class verdict runs before body validation, so a malformed body from an under-granted token is a 403, never a 400. The 403 carries `missing` (`adjudicate`, `edit` with the `source`, `brain`, or `owner-only` — the reserved class) and the UI turns it into plain words. A test walks every row of the table with a view-only token, an adjudicating token and both env tokens.
+- **The token registry.** `COCKPIT_TOKENS_FILE` points at a machine-local JSON file — an absolute path, outside the release tree. It stores SHA-256 digests only; the plaintext exists in exactly one HTTP response, at issue time. Reading it fails closed: the file must already exist, be owned by the service account, not be writable by group or others, and not sit in a directory open to everyone for writing — anything else refuses the boot, a missing file included (a registry this code cannot read is never treated as "empty"). One server per registry, enforced by a lock file. Grant changes and revocations apply to the next request — no restart — and revoking is final. Hand edits only while the server is stopped, and a hand edit that grants editing is refused at boot.
+- **Names cannot impersonate the admin.** A token name is 1–40 characters — Latin or Chinese letters, digits, spaces and a few punctuation marks. `admin`, `owner`, `root`, their Chinese equivalents and look-alikes built from digits (`adm1n`, `0wner`) are refused at issue, and so is a name already carried by a token that is still active.
+- **Management API.** `GET /api/me` (who is calling: name, brains, sheet) · `GET /api/tokens` (the roster — either env token) · `POST /api/tokens` (issue) · `PUT /api/tokens/grants` (replace the whole sheet) · `POST /api/tokens/revoke` — the last three need the admin token. Request shapes are strict: an unknown field is a 400. Management actions are audit-first — the audit line lands before the registry changes, and no line means no change.
+- **Brain routing.** An access token sees only the brains on its sheet. The browser names the brain on every request; a command line that omits the header lands on the first brain of the sheet. A brain off the sheet and a brain that does not exist answer identically, so a token cannot probe which brains exist. When the sheet drops the brain being viewed, the UI switches to the first one still allowed and says so.
+- **Audit under real names.** An access token's write actions land with `actor` = its name, plus `actor_kind: "token"` and its `actor_id`. The env tokens keep their strings (`owner` / `owner (admin)`).
+- **Inbox mute and snooze are per person.** The admin's two env tokens share one view (existing state carries over untouched); each access token has its own — one person's mute no longer empties another's inbox.
+
+### Added — sign-in and the web UI
+- **The Access tokens card** (Admin, top): one row per person — name, brains, `adjudicate` or `view only`, issued and last used — with **Change permissions** and **Revoke** on each row and **Issue a token** above; revoked tokens fold away under a quiet count.
+- **Sign-in verifies first.** The server is asked whether the pasted token is valid before it is stored; a wrong or revoked one is refused at the gate with a plain reason instead of bouncing every panel into errors. The field is a plain text field with a visual mask, not a password field — browsers save and autofill those, the last thing a shared computer wants.
+- **Who is signed in.** The bottom-left corner shows the name and its permissions (`owner · full access` for the admin's env tokens) and a **Sign out** button, which clears the whole session.
+- **Panels follow permissions.** An access token never sees Health or Admin; without the adjudicate grant it does not see Inbox either and lands on Pages. Whatever a token may not do is not drawn: no edit button, no write-receipts section, no paid controls in Ask, no copy blocks in the Inbox (accept / release read "The admin does this step on the brain host"; fact confirm is the admin's — drop is yours).
+- **Refusals in plain words.** "Your access token has no adjudicate permission" · "Your access token may not enter this brain" · and, for what no access token can ever hold, "This action is for the admin only" — never "you lack X", which would sound requestable. An invalid or revoked token returns to the sign-in gate and says why; a wrong admin token pasted at a management action is reported inside that card only and never signs the admin out.
+- **Permissions changed under an open session.** No push: when the tab returns (and every five minutes) the UI re-asks who is signed in and offers a reload if the answer differs.
+- **If the server cannot confirm who is signed in** (the who-am-I call fails for a reason other than a dead token), a banner says so and only the basics are shown until a reload — a timeout never turns a teammate into the admin.
+
+### Security
+- **No development error page.** The runtime's debug page is switched off and one catch-all wraps the whole request path: an unexpected failure answers the JSON error envelope, never a stack trace, an internal message or the working directory.
+- **Anti-framing and nosniff.** The app's pages and assets and every `/api/*` response send `Content-Security-Policy: frame-ancestors 'self'` (another site cannot frame cockpit and overlay a click on an irreversible action; same-origin pages still can) and `X-Content-Type-Options: nosniff`.
+- **API responses are never cached**: every `/api/*` response carries `Cache-Control: no-store` — they are per-caller, and one of them carries a plaintext token once.
+- **Request body cap**: bodies are capped at 8 MB while streaming (a declared or actual size over the cap answers 413).
+- **A private audit trail**: the audit directory is 0700 and its files 0600 (the trail now lists every person's name and grants), and a cockpit that cannot write to it refuses to start instead of failing mid-action.
+- **Every view answer for an access token is free of command material, host paths and internal addresses**; when the knowledge base fails, an access token gets plain words, with the same status and code.
+
+### Added — deployment
+- **Mount under a path prefix (opt-in).** `COCKPIT_BASE=/cockpit/ bun run build` bakes the prefix into the web bundle, for a proxy that strips it in front of `:8787`. Unset, the bundle mounts at `/` — which is how the release binaries and `web-dist.tar.gz` are built.
+
+### Changed — for the existing env tokens
+- **API behaviour is unchanged**: what they reach and what they get back is as before, and no re-login is needed.
+- **Writes through a Host-rewriting proxy now succeed** once the entry address is in the new `COCKPIT_ALLOWED_ORIGINS`; the cross-site check itself is not relaxed. `COCKPIT_ALLOWED_HOSTS` now accepts a portless entry both as written and with `COCKPIT_PORT` appended — until now only the port-appended spelling matched, so a public domain could not be registered at all.
+- **Sign-in verifies the token before storing it**: a wrong or revoked token is refused at the gate with a plain reason, instead of being saved and bouncing every panel into errors. The token field is no longer a password field, and **Sign out** at the bottom left joins the Health panel's "Change token".
+- **A pasted admin token is cleared once the action is over, whether it succeeded or failed** — in the token card and in the two pre-existing step-up cards (grant widening, the model probe), which used to keep it after a failure. In those two cards the paste prompt now stays open for two minutes (it used to close after four seconds).
+- **The server-audit table in the verdict history** gains a "who" column and badges access-token actions.
+- **With `COCKPIT_TOKENS_FILE` set, boot writes one audit line** — `registry.loaded`, with the active and revoked counts.
+- **The systemd unit caps restarts** (`StartLimitIntervalSec=60`, `StartLimitBurst=5`): a configuration error — a broken token registry, a mistyped origin list — stops the service instead of looping forever. Fix the file, then `systemctl reset-failed cockpit` and start it again.
+
+### Not yet open — step 2
+- **Per-source editing for access tokens**: `PUT /api/page` carrying `source_id`, one gbrain write client per editable source (gbrain allows a single write source per client credential), and the sources entry on the sheet. Until then `PUT /api/page` answers every access token with a 403.
+- Finer-than-source edit permissions · signing in with another system's token · token expiry, renaming and un-revoking.
 
 ## [0.6.0] - 2026-11-13
 
@@ -223,7 +270,14 @@ First public release. Full notes: [v0.1.0 release](https://github.com/GeforceLee
 - Token auth (fail-closed), owner-presence copy-command actions, session
   audit log, tag-built binaries for `darwin-arm64` / `linux-x64`.
 
-[Unreleased]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.5.3...v0.6.0
+[0.5.3]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/GeforceLee/gbrain-cockpit/compare/v0.2.0...v0.2.1

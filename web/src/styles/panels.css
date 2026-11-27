@@ -2183,3 +2183,138 @@ button.batch-arm {
   .ask .console input { min-width: 160px; }
   .ask .row2 { gap: 10px; }
 }
+
+/* ================= 0.7 access tokens (the admin's key rack) ================= */
+
+.tk-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.tk-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tk-row.tk-revoked {
+  opacity: 0.6;
+}
+
+.tk-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tk-who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tk-acts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.tk-acts .tk-danger {
+  color: var(--stop);
+}
+
+.tk-form {
+  display: grid;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.tk-form > label > .cap {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.tk-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.tk-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+/* the per-action admin-token prompt */
+.tk-stepup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tk-stepup input {
+  flex: 1 1 240px;
+  font: inherit;
+  padding: 6px 8px;
+  border: 2px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* the one-time plaintext: a modal only "I saved it" closes */
+.tk-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+}
+
+.tk-modal::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--ink);
+  opacity: 0.55;
+}
+
+.tk-modal-card {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  width: min(560px, calc(100% - 32px));
+  padding: 18px 20px;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  box-shadow: 8px 8px 0 var(--ink);
+}
+
+.tk-plain {
+  display: block;
+  font-family: var(--f-mono);
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-all;
+  user-select: all;
+  padding: 10px 12px;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+}
+
+/* the sign-in field masks by CSS, not by type="password" (which browsers
+   save and autofill — the last thing a shared computer wants) */
+.token-masked {
+  -webkit-text-security: disc;
+}

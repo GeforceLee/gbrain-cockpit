@@ -179,6 +179,25 @@ export class BrainRegistry {
     return ch;
   }
 
+  /**
+   * Channels for EXACTLY this id — no default fallback. The named-token
+   * brain gate uses this: `resolve()`'s fallback to brains.json's first
+   * brain would route a request into a brain that is not on the caller's
+   * sheet.
+   */
+  resolveExact(id: string): BrainChannels | null {
+    return this.#profiles.has(id) ? this.resolve(id) : null;
+  }
+
+  has(id: string): boolean {
+    return this.#profiles.has(id);
+  }
+
+  /** Every profile id, in brains.json order. */
+  profileIds(): string[] {
+    return [...this.#profiles.keys()];
+  }
+
   get profileCount(): number {
     return this.#profiles.size;
   }
@@ -186,11 +205,13 @@ export class BrainRegistry {
   /**
    * The wire list for GET /api/profiles — ids, labels, CLI command name and
    * a whoami-derived readOnly hint. Never any secret. readOnly is undefined
-   * when whoami can't be reached: unknown is not "read-only".
+   * when whoami can't be reached: unknown is not "read-only". `only` limits
+   * the derivation to those ids (a named token's sheet).
    */
-  async profileInfos(): Promise<ProfilesResponse> {
+  async profileInfos(only?: readonly string[]): Promise<ProfilesResponse> {
     const profiles: ProfileInfo[] = [];
     for (const p of this.#profiles.values()) {
+      if (only && !only.includes(p.id)) continue;
       profiles.push(await this.#deriveProfileInfo(p));
     }
     return { defaultId: this.defaultId, profiles };
